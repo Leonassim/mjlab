@@ -21,6 +21,7 @@ def unitree_g1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   cfg.sim.mujoco.ccd_iterations = 500
   cfg.sim.contact_sensor_maxmatch = 500
+  cfg.sim.nconmax = 45
 
   cfg.scene.entities = {"robot": get_g1_robot_cfg()}
 
@@ -166,6 +167,7 @@ def unitree_g1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.sim.njmax = 300
   cfg.sim.mujoco.ccd_iterations = 50
   cfg.sim.contact_sensor_maxmatch = 64
+  cfg.sim.nconmax = None
 
   # Switch to flat terrain.
   assert cfg.scene.terrain is not None
