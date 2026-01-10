@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar, Literal
 
 import torch
@@ -13,18 +13,27 @@ from mjlab.utils.noise import noise_model
 NoiseParam = float | tuple[float, ...]
 
 
-def _to_tensor(value: NoiseParam, device: torch.device) -> torch.Tensor:
-  """Convert a noise parameter to a tensor on the specified device."""
-  if isinstance(value, tuple):
-    return torch.tensor(value, device=device)
-  return torch.tensor(value, device=device)
-
-
 @dataclass(kw_only=True)
 class NoiseCfg(abc.ABC):
   """Base configuration for a noise term."""
 
   operation: Literal["add", "scale", "abs"] = "add"
+
+  # Cache for converted tensors, keyed by device string.
+  _tensor_cache: dict[str, dict[str, torch.Tensor]] = field(
+    default_factory=dict, init=False, repr=False
+  )
+
+  def _get_cached_tensor(
+    self, name: str, value: NoiseParam, device: torch.device
+  ) -> torch.Tensor:
+    """Get a cached tensor for the given parameter on the specified device."""
+    device_key = str(device)
+    if device_key not in self._tensor_cache:
+      self._tensor_cache[device_key] = {}
+    if name not in self._tensor_cache[device_key]:
+      self._tensor_cache[device_key][name] = torch.tensor(value, device=device)
+    return self._tensor_cache[device_key][name]
 
   @abc.abstractmethod
   def apply(self, data: torch.Tensor) -> torch.Tensor:
@@ -37,7 +46,7 @@ class ConstantNoiseCfg(NoiseCfg):
 
   @override
   def apply(self, data: torch.Tensor) -> torch.Tensor:
-    bias = _to_tensor(self.bias, data.device)
+    bias = self._get_cached_tensor("bias", self.bias, data.device)
 
     if self.operation == "add":
       return data + bias
@@ -61,8 +70,8 @@ class UniformNoiseCfg(NoiseCfg):
 
   @override
   def apply(self, data: torch.Tensor) -> torch.Tensor:
-    n_min = _to_tensor(self.n_min, data.device)
-    n_max = _to_tensor(self.n_max, data.device)
+    n_min = self._get_cached_tensor("n_min", self.n_min, data.device)
+    n_max = self._get_cached_tensor("n_max", self.n_max, data.device)
 
     # Generate uniform noise in [0, 1) and scale to [n_min, n_max).
     noise = torch.rand_like(data) * (n_max - n_min) + n_min
@@ -88,8 +97,8 @@ class GaussianNoiseCfg(NoiseCfg):
 
   @override
   def apply(self, data: torch.Tensor) -> torch.Tensor:
-    mean = _to_tensor(self.mean, data.device)
-    std = _to_tensor(self.std, data.device)
+    mean = self._get_cached_tensor("mean", self.mean, data.device)
+    std = self._get_cached_tensor("std", self.std, data.device)
 
     # Generate standard normal noise and scale.
     noise = mean + std * torch.randn_like(data)
