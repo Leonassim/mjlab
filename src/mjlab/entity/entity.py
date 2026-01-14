@@ -643,16 +643,33 @@ class Entity:
     root_velocity: torch.Tensor,
     env_ids: torch.Tensor | slice | None = None,
   ):
-    """Set the root velocity into the simulation. Like `write_root_state_to_sim()`
-    but only sets linear and angular velocity.
+    """Set the root link (body origin) velocity into the simulation. Like
+    `write_root_state_to_sim()` but only sets linear and angular velocity.
 
     Args:
       root_velocity: Tensor of shape (N, 6) where N is the number of environments.
-        Contains linear velocity (3) and angular velocity (3), both in world frame.
+        Contains linear velocity (3) at body origin and angular velocity (3),
+        both in world frame.
       env_ids: Optional tensor or slice specifying which environments to set. If
         None, all environments are set.
     """
     self._data.write_root_velocity(root_velocity, env_ids)
+
+  def write_root_com_velocity_to_sim(
+    self,
+    root_velocity: torch.Tensor,
+    env_ids: torch.Tensor | slice | None = None,
+  ):
+    """Set the root COM velocity into the simulation.
+
+    Args:
+      root_velocity: Tensor of shape (N, 6) where N is the number of environments.
+        Contains linear velocity (3) at COM and angular velocity (3),
+        both in world frame.
+      env_ids: Optional tensor or slice specifying which environments to set. If
+        None, all environments are set.
+    """
+    self._data.write_root_com_velocity(root_velocity, env_ids)
 
   def write_joint_state_to_sim(
     self,
