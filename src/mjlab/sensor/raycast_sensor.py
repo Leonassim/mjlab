@@ -705,6 +705,7 @@ class RayCastSensor(Sensor[RayCastData]):
     # Transform ray directions (per-ray).
     world_rays = torch.einsum("bij,nj->bni", rot_mat, self._local_directions)
 
+    assert self._ray_pnt is not None and self._ray_vec is not None
     pnt_torch = wp.to_torch(self._ray_pnt).view(num_envs, self._num_rays, 3)
     vec_torch = wp.to_torch(self._ray_vec).view(num_envs, self._num_rays, 3)
     pnt_torch.copy_(world_origins)
@@ -716,6 +717,7 @@ class RayCastSensor(Sensor[RayCastData]):
     else:
       self._raycast_direct()
 
+    assert self._ray_dist is not None and self._ray_normal is not None
     self._distances = wp.to_torch(self._ray_dist)
     self._normals_w = wp.to_torch(self._ray_normal).view(num_envs, self._num_rays, 3)
     self._distances[self._distances > self.cfg.max_distance] = -1.0
