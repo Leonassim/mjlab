@@ -28,7 +28,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Run the demo (no installation needed):
 
 ```bash
-uvx --from mjlab --with "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp@4ce1c3e9fd635f6589f8b91b2cfba1739cba01a3" demo
+uvx --from mjlab --with "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp@7c20a44bfed722e6415235792a1b247ea6b6a6d3" demo
 ```
 
 This launches an interactive viewer with a pre-trained Unitree G1 agent tracking a reference dance motion in MuJoCo Warp.
@@ -56,7 +56,7 @@ uv run demo
 **From PyPI:**
 
 ```bash
-uv add mjlab "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp@4ce1c3e9fd635f6589f8b91b2cfba1739cba01a3"
+uv add mjlab "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp@7c20a44bfed722e6415235792a1b247ea6b6a6d3"
 ```
 
 A Dockerfile is also provided.
