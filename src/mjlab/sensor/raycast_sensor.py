@@ -443,6 +443,7 @@ class RayCastSensor(Sensor[RayCastData]):
   """Raycast sensor for terrain and obstacle detection."""
 
   def __init__(self, cfg: RayCastSensorCfg) -> None:
+    super().__init__()
     self.cfg = cfg
     self._data: mjwarp.Data | None = None
     self._model: mjwarp.Model | None = None
@@ -562,8 +563,7 @@ class RayCastSensor(Sensor[RayCastData]):
     if self._use_cuda_graph:
       self._create_graph()
 
-  @property
-  def data(self) -> RayCastData:
+  def _compute_data(self) -> RayCastData:
     self._perform_raycast()
     assert self._distances is not None and self._normals_w is not None
     assert self._hit_pos_w is not None
