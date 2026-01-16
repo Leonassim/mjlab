@@ -334,7 +334,6 @@ class BuiltinSensor(Sensor[torch.Tensor]):
     dim = sensor.dim[0]
     self._data_view = self._data.sensordata[:, start : start + dim]
 
-  @property
-  def data(self) -> torch.Tensor:
+  def _compute_data(self) -> torch.Tensor:
     assert self._data_view is not None
     return self._data_view

@@ -110,13 +110,21 @@ def create_scene_with_sensor(
   return scene, sim
 
 
-def step_and_settle(sim: Simulation, num_steps: int = 30):
+def step_and_settle(sim: Simulation, num_steps: int = 30, scene: Scene | None = None):
   """Run simulation steps to allow physics to stabilize and contacts to form.
 
   Useful after placing objects to let them fall under gravity and establish
-  stable contact with ground or other objects before testing contact detection."""
+  stable contact with ground or other objects before testing contact detection.
+
+  Args:
+    sim: The simulation to step.
+    num_steps: Number of steps to run.
+    scene: Optional scene to update after each step (for sensor cache invalidation).
+  """
   for _ in range(num_steps):
     sim.step()
+    if scene is not None:
+      scene.update(dt=sim.cfg.mujoco.timestep)
 
 
 ##
@@ -290,7 +298,7 @@ def test_regex_pattern_matching(device):
   root_state[:, 3] = 1.0
   biped_entity.write_root_state_to_sim(root_state)
 
-  step_and_settle(sim, num_steps=20)
+  step_and_settle(sim, num_steps=20, scene=scene)
 
   data = sensor.data
   # Both feet should detect ground contact.
@@ -552,6 +560,7 @@ def test_air_time_tracking(device):
   # Let it settle and establish ground contact.
   for _ in range(30):
     sim.step()
+    scene.update(dt=sim.cfg.mujoco.timestep)
 
   data1 = sensor.data
   # Check that we have ground contact initially.
@@ -564,6 +573,7 @@ def test_air_time_tracking(device):
   # Simulate being in air.
   for _ in range(20):
     sim.step()
+    scene.update(dt=sim.cfg.mujoco.timestep)
 
   data2 = sensor.data
   # Should have no ground contact while in air.
@@ -579,6 +589,7 @@ def test_air_time_tracking(device):
 
   for _ in range(30):
     sim.step()
+    scene.update(dt=sim.cfg.mujoco.timestep)
 
   data3 = sensor.data
   # Should have ground contact again.
