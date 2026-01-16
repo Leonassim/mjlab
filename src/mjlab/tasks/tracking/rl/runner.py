@@ -42,7 +42,7 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
       path=policy_path,
       filename=filename,
     )
-    # Attach metadata (use empty string for run_path if not using wandb)
+    # Attach metadata (use "local" for run_path if not using wandb)
     run_name = wandb.run.name if self.logger_type == "wandb" and wandb.run else "local"
     attach_onnx_metadata(
       self.env.unwrapped,
