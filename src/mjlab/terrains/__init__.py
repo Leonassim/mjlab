@@ -1,4 +1,7 @@
 from mjlab.terrains.heightfield_terrains import (
+  HfDiscreteObstaclesTerrainCfg as HfDiscreteObstaclesTerrainCfg,
+)
+from mjlab.terrains.heightfield_terrains import (
   HfPyramidSlopedTerrainCfg as HfPyramidSlopedTerrainCfg,
 )
 from mjlab.terrains.heightfield_terrains import (
