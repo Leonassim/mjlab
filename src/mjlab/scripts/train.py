@@ -227,7 +227,6 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
 def main():
   # Parse first argument to choose the task.
   # Import tasks to populate the registry.
-  import mjlab
   import mjlab.tasks  # noqa: F401
 
   all_tasks = list_tasks()

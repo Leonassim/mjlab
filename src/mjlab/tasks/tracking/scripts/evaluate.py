@@ -177,7 +177,6 @@ def run_evaluate(task_id: str, cfg: EvaluateConfig) -> dict[str, float]:
 
 
 def main():
-  import mjlab
   import mjlab.tasks  # noqa: F401
 
   tracking_tasks = [t for t in list_tasks() if "Tracking" in t]

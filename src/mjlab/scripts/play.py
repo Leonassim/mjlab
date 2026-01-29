@@ -212,7 +212,6 @@ def run_play(task_id: str, cfg: PlayConfig):
 def main():
   # Parse first argument to choose the task.
   # Import tasks to populate the registry.
-  import mjlab
   import mjlab.tasks  # noqa: F401
 
   all_tasks = list_tasks()

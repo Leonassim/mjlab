@@ -28,6 +28,7 @@ import numpy as np
 import torch
 import tyro
 
+import mjlab
 import mjlab.terrains as terrain_gen
 from mjlab.entity import EntityCfg
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
@@ -248,6 +249,4 @@ def main(
 
 
 if __name__ == "__main__":
-  import mjlab
-
   tyro.cli(main, config=mjlab.TYRO_FLAGS)
