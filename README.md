@@ -175,6 +175,24 @@ make docs
 
 ---
 
+## Citation
+
+If you use mjlab in your research, please cite:
+
+```bibtex
+@misc{zakka2026mjlablightweightframeworkgpuaccelerated,
+  title={mjlab: A Lightweight Framework for GPU-Accelerated Robot Learning},
+  author={Kevin Zakka and Qiayuan Liao and Brent Yi and Louis Le Lay and Koushil Sreenath and Pieter Abbeel},
+  year={2026},
+  eprint={2601.22074},
+  archivePrefix={arXiv},
+  primaryClass={cs.RO},
+  url={https://arxiv.org/abs/2601.22074},
+}
+```
+
+---
+
 ## License
 
 mjlab is licensed under the [Apache License, Version 2.0](LICENSE).
