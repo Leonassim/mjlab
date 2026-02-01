@@ -121,6 +121,9 @@ class ViserPlayViewer(BaseViewer):
     # Geom groups tab.
     self._scene.create_geom_groups_gui(tabs)
 
+    # Site groups tab.
+    self._scene.create_site_groups_gui(tabs)
+
   @override
   def _process_actions(self) -> None:
     """Process queued actions and sync UI state."""
