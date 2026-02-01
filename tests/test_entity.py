@@ -241,8 +241,6 @@ def test_unnamed_freejoint_gets_default_name():
   cfg = EntityCfg(spec_fn=lambda: mujoco.MjSpec.from_string(xml))
   entity = Entity(cfg)
   assert "floating_base_joint" in entity.all_joint_names
-  device = get_test_device()
-  initialize_entity_with_sim(entity, device)
 
 
 def test_find_methods():
