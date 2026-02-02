@@ -118,11 +118,8 @@ class ViserPlayViewer(BaseViewer):
         ]
         self._reward_plotter = ViserRewardPlotter(self._server, term_names)
 
-    # Geom groups tab.
-    self._scene.create_geom_groups_gui(tabs)
-
-    # Site groups tab.
-    self._scene.create_site_groups_gui(tabs)
+    # Groups tab (geoms and sites).
+    self._scene.create_groups_gui(tabs)
 
   @override
   def _process_actions(self) -> None:

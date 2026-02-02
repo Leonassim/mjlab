@@ -108,7 +108,7 @@ class ViserMujocoScene(DebugVisualizer):
     default_factory=lambda: [True, True, True, False, False, False]
   )
   site_groups_visible: list[bool] = field(
-    default_factory=lambda: [False, False, False, False, False, False]
+    default_factory=lambda: [True, True, True, False, False, False]
   )
   show_contact_points: bool = False
   show_contact_forces: bool = False
@@ -441,45 +441,42 @@ class ViserMujocoScene(DebugVisualizer):
           self.meansize_override = meansize_input.value
           self._request_update()
 
-  def create_geom_groups_gui(self, tabs) -> None:
-    """Add geom groups tab to the given tab group.
+  def create_groups_gui(self, tabs) -> None:
+    """Add unified groups tab with geoms and sites folders.
 
     Args:
-      tabs: The viser tab group to add the geom groups tab to.
+      tabs: The viser tab group to add the groups tab to.
     """
-    with tabs.add_tab("Geoms", icon=viser.Icon.EYE):
-      for i in range(6):
-        cb = self.server.gui.add_checkbox(
-          f"Group {i}",
-          initial_value=self.geom_groups_visible[i],
-          hint=f"Show/hide geoms in group {i}",
-        )
+    with tabs.add_tab("Groups", icon=viser.Icon.EYE):
+      # Geoms folder
+      with self.server.gui.add_folder("Geoms"):
+        for i in range(6):
+          cb = self.server.gui.add_checkbox(
+            f"G{i}",
+            initial_value=self.geom_groups_visible[i],
+            hint=f"Show/hide geometry in group {i}",
+          )
 
-        @cb.on_update
-        def _(event, group_idx=i) -> None:
-          self.geom_groups_visible[group_idx] = event.target.value
-          self._sync_visibilities()
-          self._request_update()
+          @cb.on_update
+          def _(event, group_idx=i) -> None:
+            self.geom_groups_visible[group_idx] = event.target.value
+            self._sync_visibilities()
+            self._request_update()
 
-  def create_site_groups_gui(self, tabs) -> None:
-    """Add site groups tab to the given tab group.
+      # Sites folder
+      with self.server.gui.add_folder("Sites"):
+        for i in range(6):
+          cb = self.server.gui.add_checkbox(
+            f"S{i}",
+            initial_value=self.site_groups_visible[i],
+            hint=f"Show/hide sites in group {i}",
+          )
 
-    Args:
-      tabs: The viser tab group to add the site groups tab to.
-    """
-    with tabs.add_tab("Sites", icon=viser.Icon.MAP_PIN):
-      for i in range(6):
-        cb = self.server.gui.add_checkbox(
-          f"S{i}",
-          initial_value=self.site_groups_visible[i],
-          hint=f"Show/hide sites in group {i}",
-        )
-
-        @cb.on_update
-        def _(event, group_idx=i) -> None:
-          self.site_groups_visible[group_idx] = event.target.value
-          self._sync_visibilities()
-          self._request_update()
+          @cb.on_update
+          def _(event, group_idx=i) -> None:
+            self.site_groups_visible[group_idx] = event.target.value
+            self._sync_visibilities()
+            self._request_update()
 
   def update(self, wp_data, env_idx: int | None = None) -> None:
     """Update scene from batched simulation data.
