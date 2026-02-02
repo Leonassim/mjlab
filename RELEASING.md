@@ -4,7 +4,8 @@
 
 1. Bump `version` in `pyproject.toml`.
 2. Update `version` and `date-released` in `CITATION.cff`.
-3. Commit the version bump, then create an annotated tag:
+3. Update the `mujoco-warp` git rev in `docs/source/installation.rst` if it changed.
+4. Commit the version bump, then create an annotated tag:
 
 ```sh
 git tag -a vX.Y.Z -m "Release vX.Y.Z"
@@ -13,7 +14,10 @@ git push origin vX.Y.Z
 
 ## Build and verify
 
+Clean previous build artifacts, then build:
+
 ```sh
+rm -rf dist/
 make build
 ```
 
@@ -25,32 +29,42 @@ both artifacts in isolated environments.
 Upload to TestPyPI first to catch packaging issues before the real release:
 
 ```sh
-make publish-test
+UV_PUBLISH_TOKEN=<your-testpypi-token> make publish-test
 ```
 
-Then verify the upload:
+Then verify the upload works end-to-end. Use `--index-strategy unsafe-best-match`
+because TestPyPI won't have all dependencies and uv needs to fall back to real
+PyPI for them. Pin `mujoco-warp` to the git rev used by this release (found in
+`[tool.uv.sources]` in `pyproject.toml`):
 
 ```sh
-uv pip install --index-url https://test.pypi.org/simple/ mjlab
+uvx --extra-index-url https://test.pypi.org/simple/ \
+    --index-strategy unsafe-best-match \
+    --from mjlab \
+    --with "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp@<REV>" \
+    demo
 ```
 
-Note: TestPyPI requires a separate account and API token from the real PyPI.
-Set the token via `UV_PUBLISH_TOKEN` or pass `--token`.
+Note: TestPyPI requires a separate account and token from real PyPI.
+Generate one at https://test.pypi.org/manage/account/token/.
 
 ## Publish to PyPI
 
 ```sh
-make publish
+UV_PUBLISH_TOKEN=<your-pypi-token> make publish
 ```
 
-Set the token via `UV_PUBLISH_TOKEN` or pass `--token`.
+Generate a token at https://pypi.org/manage/account/token/.
 
 ## Post-release
 
-Verify the release installs correctly:
+Verify the release installs and runs correctly. Use `--refresh` to bypass
+the `uvx` cache (which may still hold the TestPyPI version):
 
 ```sh
-uv pip install mjlab==X.Y.Z
+uvx --refresh --from mjlab \
+    --with "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp@<REV>" \
+    demo
 ```
 
 ## Releasing from a past tag
