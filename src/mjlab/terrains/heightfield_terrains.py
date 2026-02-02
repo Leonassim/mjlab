@@ -564,6 +564,12 @@ class HfDiscreteObstaclesTerrainCfg(SubTerrainCfg):
   base_thickness_ratio: float = 1.0
   border_width: float = 0.0
   square_obstacles: bool = False
+  origin_z_offset: float = 0.0
+  """Vertical offset added to spawn origin height (meters).
+
+  Useful to prevent robot feet from clipping through terrain when spawning at
+  the origin.
+  """
 
   def function(
     self, difficulty: float, spec: mujoco.MjSpec, rng: np.random.Generator
@@ -688,7 +694,8 @@ class HfDiscreteObstaclesTerrainCfg(SubTerrainCfg):
       material=material_name,
     )
 
-    spawn_height = max_physical_height + hfield_z_offset
+    # The cleared platform (noise=0) is at z=0 due to the offset logic.
+    spawn_height = self.origin_z_offset
     origin = np.array([self.size[0] / 2, self.size[1] / 2, spawn_height])
 
     flat_patches = _compute_flat_patches(
