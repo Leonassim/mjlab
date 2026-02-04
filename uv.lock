@@ -1297,7 +1297,7 @@ requires-dist = [
     { name = "autodocsumm", marker = "extra == 'docs'" },
     { name = "moviepy" },
     { name = "mujoco", specifier = ">=3.4.0", index = "https://py.mujoco.org/" },
-    { name = "mujoco-warp", git = "https://github.com/google-deepmind/mujoco_warp?rev=1dc288cf1fa819fc3346ec5c9546e2cc2b7be667" },
+    { name = "mujoco-warp", git = "https://github.com/google-deepmind/mujoco_warp?rev=7f89cacecbf0baff92a631671d4a7a45c2b07e20" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=4.0.1" },
     { name = "onnxscript", specifier = ">=0.5.4" },
     { name = "prettytable" },
@@ -1505,7 +1505,7 @@ wheels = [
 [[package]]
 name = "mujoco-warp"
 version = "0.0.2"
-source = { git = "https://github.com/google-deepmind/mujoco_warp?rev=1dc288cf1fa819fc3346ec5c9546e2cc2b7be667#1dc288cf1fa819fc3346ec5c9546e2cc2b7be667" }
+source = { git = "https://github.com/google-deepmind/mujoco_warp?rev=7f89cacecbf0baff92a631671d4a7a45c2b07e20#7f89cacecbf0baff92a631671d4a7a45c2b07e20" }
 dependencies = [
     { name = "absl-py" },
     { name = "etils", extra = ["epath"] },
