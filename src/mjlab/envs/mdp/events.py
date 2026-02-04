@@ -688,7 +688,7 @@ def randomize_pd_gains(
   ]
 
   for actuator in actuators:
-    ctrl_ids = actuator.ctrl_ids
+    ctrl_ids = actuator.global_ctrl_ids
 
     kp_samples = _sample_distribution(
       distribution,
@@ -788,7 +788,7 @@ def randomize_effort_limits(
     actuators = [actuators]
 
   for actuator in actuators:
-    ctrl_ids = actuator.ctrl_ids
+    ctrl_ids = actuator.global_ctrl_ids
     num_actuators = len(ctrl_ids)
 
     effort_samples = _sample_distribution(

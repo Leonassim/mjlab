@@ -129,12 +129,15 @@ def test_randomize_pd_gains(device):
 
   builtin_actuator = Mock(spec=actuator.BuiltinPositionActuator)
   builtin_actuator.ctrl_ids = torch.tensor([0, 1], device=device)
+  builtin_actuator.global_ctrl_ids = torch.tensor([0, 1], device=device)
 
   xml_actuator = Mock(spec=actuator.XmlPositionActuator)
   xml_actuator.ctrl_ids = torch.tensor([2, 3], device=device)
+  xml_actuator.global_ctrl_ids = torch.tensor([2, 3], device=device)
 
   ideal_actuator = Mock(spec=actuator.IdealPdActuator)
   ideal_actuator.ctrl_ids = torch.tensor([4, 5], device=device)
+  ideal_actuator.global_ctrl_ids = torch.tensor([4, 5], device=device)
   ideal_actuator.stiffness = torch.tensor(
     [[100.0, 100.0], [100.0, 100.0]], device=device
   )
@@ -272,12 +275,15 @@ def test_randomize_effort_limits(device):
 
   builtin_actuator = Mock(spec=actuator.BuiltinPositionActuator)
   builtin_actuator.ctrl_ids = torch.tensor([0, 1], device=device)
+  builtin_actuator.global_ctrl_ids = torch.tensor([0, 1], device=device)
 
   xml_actuator = Mock(spec=actuator.XmlPositionActuator)
   xml_actuator.ctrl_ids = torch.tensor([2, 3], device=device)
+  xml_actuator.global_ctrl_ids = torch.tensor([2, 3], device=device)
 
   ideal_actuator = Mock(spec=actuator.IdealPdActuator)
   ideal_actuator.ctrl_ids = torch.tensor([4, 5], device=device)
+  ideal_actuator.global_ctrl_ids = torch.tensor([4, 5], device=device)
   ideal_actuator.force_limit = torch.tensor([[50.0, 50.0], [50.0, 50.0]], device=device)
 
   ideal_actuator.set_effort_limit = actuator.IdealPdActuator.set_effort_limit.__get__(
@@ -368,6 +374,7 @@ def test_randomize_pd_gains_multi_env(device):
 
   mock_actuator = Mock(spec=actuator.BuiltinPositionActuator)
   mock_actuator.ctrl_ids = torch.tensor([0, 1], device=device)
+  mock_actuator.global_ctrl_ids = torch.tensor([0, 1], device=device)
 
   mock_entity = Mock()
   mock_entity.actuators = [mock_actuator]
@@ -413,6 +420,7 @@ def test_randomize_effort_limits_multi_env(device):
 
   mock_actuator = Mock(spec=actuator.BuiltinPositionActuator)
   mock_actuator.ctrl_ids = torch.tensor([0, 1], device=device)
+  mock_actuator.global_ctrl_ids = torch.tensor([0, 1], device=device)
 
   mock_entity = Mock()
   mock_entity.actuators = [mock_actuator]
