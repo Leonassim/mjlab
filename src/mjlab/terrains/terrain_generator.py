@@ -91,9 +91,12 @@ class TerrainGeneratorCfg:
   border_height: float = 1.0
   """Height of the border wall around the terrain grid, in meters."""
   num_rows: int = 1
-  """Number of sub-terrain rows in the grid."""
+  """Number of sub-terrain rows in the grid. Represents difficulty levels in
+  curriculum mode. Note: Environments are randomly assigned to rows, so multiple
+  envs can share the same patch."""
   num_cols: int = 1
-  """Number of sub-terrain columns in the grid."""
+  """Number of sub-terrain columns in the grid. Represents terrain type variants.
+  Note: Environments are evenly distributed across columns (not random)."""
   color_scheme: Literal["height", "random", "none"] = "height"
   """Coloring strategy for terrain geometry. "height" colors by elevation,
   "random" assigns random colors, "none" uses uniform gray."""
