@@ -846,7 +846,7 @@ def randomize_encoder_bias(
 ) -> None:
   """Randomize encoder bias to simulate joint encoder calibration errors.
 
-  See docs/api/domain_randomization.md for details on how encoder bias works.
+  See docs/source/randomization.rst for details on how encoder bias works.
   """
   asset: Entity = env.scene[asset_cfg.name]
 
