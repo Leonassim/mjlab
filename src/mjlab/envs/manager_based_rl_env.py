@@ -318,6 +318,27 @@ class ManagerBasedRlEnv:
     return self.obs_buf, self.extras
 
   def step(self, action: torch.Tensor) -> types.VecEnvStepReturn:
+    """Run one environment step: apply actions, simulate, compute RL signals.
+
+    After ``mj_step``, derived quantities (``xpos``, ``xquat``, ``site_xpos``,
+    ``cvel``, ``sensordata``) are stale. They reflect the pre-integration
+    state while ``qpos``/``qvel`` have been integrated forward. This method
+    calls ``sim.forward()`` at two points to keep them in sync:
+
+    1. After the decimation loop, before termination/reward computation.
+    2. After the reset block, before observation computation. This second
+       call is needed because ``_reset_idx`` and reset events write new
+       ``qpos``/``qvel`` for terminated envs, making derived quantities
+       stale again.
+
+    .. note::
+
+       Event and command authors do not need to call ``sim.forward()``
+       themselves. This method handles it. The only constraint is: do not
+       read derived quantities (``root_link_pose_w``, ``body_link_vel_w``,
+       etc.) in the same function that writes state (``write_root_state_to_sim``,
+       ``write_joint_state_to_sim``, etc.). See :ref:`faq` for details.
+    """
     self.action_manager.process_action(action.to(self.device))
 
     for _ in range(self.cfg.decimation):
