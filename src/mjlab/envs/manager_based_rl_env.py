@@ -327,6 +327,11 @@ class ManagerBasedRlEnv:
       self.sim.step()
       self.scene.update(dt=self.physics_dt)
 
+    # Recompute derived quantities (xpos, xquat, site_xpos, etc.) from the
+    # post-integration qpos/qvel. Without this, these are stale from the
+    # pre-integration forward pass inside mj_step.
+    self.sim.forward()
+
     # Update env counters.
     self.episode_length_buf += 1
     self.common_step_counter += 1
