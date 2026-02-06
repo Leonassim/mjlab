@@ -70,7 +70,7 @@ class ObservationGroupCfg:
   """Configuration for an observation group.
 
   An observation group bundles multiple observation terms together. Groups are
-  typically used to separate observations for different purposes (e.g., "policy"
+  typically used to separate observations for different purposes (e.g., "actor"
   for the actor, "critic" for the value function).
   """
 
@@ -264,7 +264,7 @@ class ObservationManager(ManagerBase):
 
     Args:
       tensor: Observation tensor to check.
-      context: Context string for error/warning messages (e.g., "policy/base_lin_vel").
+      context: Context string for error/warning messages (e.g., "actor/base_lin_vel").
       policy: NaN handling policy ("disabled", "warn", "sanitize", "error").
 
     Returns:

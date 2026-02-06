@@ -7,7 +7,10 @@
 #   - 2025-10-27: Added dynamo=False parameter to torch.onnx.export() calls for PyTorch 2.9
 #     compatibility (lines 187, 200, 216). PyTorch 2.9 changed the default behavior and
 #     requires explicit dynamo=False to use the legacy ONNX exporter.
-
+#   - 2025-02-06: Updated exporter to support rsl-rl-lib v4.0.0. Refactored policy
+#     parameter extraction to use the new MLPModel structure (mapping 'actor' to 'mlp'
+#     and 'memory_a' to 'rnn') and ensured compatibility with the internal observation
+#     normalization in new RSL-RL models.
 import copy
 import os
 import torch
@@ -56,10 +59,10 @@ class _TorchPolicyExporter(torch.nn.Module):
         super().__init__()
         self.is_recurrent = policy.is_recurrent
         # copy policy parameters
-        if hasattr(policy, "actor"):
-            self.actor = copy.deepcopy(policy.actor)
+        if hasattr(policy, "mlp"):
+            self.actor = copy.deepcopy(policy.mlp)
             if self.is_recurrent:
-                self.rnn = copy.deepcopy(policy.memory_a.rnn)
+                self.rnn = copy.deepcopy(policy.rnn.rnn)
         elif hasattr(policy, "student"):
             self.actor = copy.deepcopy(policy.student)
             if self.is_recurrent:
@@ -129,10 +132,10 @@ class _OnnxPolicyExporter(torch.nn.Module):
         self.verbose = verbose
         self.is_recurrent = policy.is_recurrent
         # copy policy parameters
-        if hasattr(policy, "actor"):
-            self.actor = copy.deepcopy(policy.actor)
+        if hasattr(policy, "mlp"):
+            self.actor = copy.deepcopy(policy.mlp)
             if self.is_recurrent:
-                self.rnn = copy.deepcopy(policy.memory_a.rnn)
+                self.rnn = copy.deepcopy(policy.rnn.rnn)
         elif hasattr(policy, "student"):
             self.actor = copy.deepcopy(policy.student)
             if self.is_recurrent:
