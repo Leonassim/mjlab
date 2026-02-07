@@ -1,10 +1,4 @@
-"""Shared sensing resources for cameras and raycasts.
-
-SensorContext manages the RenderContext used by both camera sensors
-(for rendering) and raycast sensors (for BVH-accelerated ray
-intersection). The actual graph capture and execution is handled by
-Simulation.
-"""
+"""Shared render context for camera and raycast sensors."""
 
 from __future__ import annotations
 
@@ -39,9 +33,9 @@ def _unpack_rgb_kernel(
 class SensorContext:
   """Container for shared sensing resources.
 
-  Manages the RenderContext used by both camera sensors (for rendering)
-  and raycast sensors (for BVH-accelerated ray intersection). The
-  actual graph capture and execution is handled by Simulation.
+  Manages the RenderContext used by both camera sensors (for rendering) and raycast
+  sensors (for BVH-accelerated ray intersection). The actual graph capture and
+  execution is handled by Simulation.
   """
 
   def __init__(
@@ -61,9 +55,6 @@ class SensorContext:
     # Sort camera sensors by camera index for consistent ordering.
     self.camera_sensors = sorted(camera_sensors, key=lambda s: s.camera_idx)
     self.raycast_sensors = raycast_sensors
-
-    self._render_rgb = ["rgb" in s.cfg.data_types for s in self.camera_sensors]
-    self._render_depth = ["depth" in s.cfg.data_types for s in self.camera_sensors]
 
     # MuJoCo camera ID -> sorted list index.
     self._cam_idx_to_list_idx = {
@@ -95,24 +86,23 @@ class SensorContext:
     return len(self.raycast_sensors) > 0
 
   @property
-  def render_context(self) -> mjwarp._src.types.RenderContext:  # type: ignore[name-defined]
+  def render_context(self) -> mjwarp.RenderContext:
     return self._ctx
 
   def recreate(self, mj_model: mujoco.MjModel) -> None:
     """Recreate the render context after model fields are expanded.
 
-    Called by Simulation.expand_model_fields() for domain
-    randomization.
+    Called by Simulation.expand_model_fields() for domain randomization.
     """
     self._create_context(mj_model)
 
   def prepare(self) -> None:
-    """Pre-graph: transform rays to world frame (PyTorch ops)."""
+    """Pre-graph: transform rays to world frame."""
     for sensor in self.raycast_sensors:
       sensor.prepare_rays()
 
   def finalize(self) -> None:
-    """Post-graph: compute raycast hit positions (PyTorch ops)."""
+    """Post-graph: compute raycast hit positions."""
     for sensor in self.raycast_sensors:
       sensor.postprocess_rays()
 
@@ -127,8 +117,8 @@ class SensorContext:
     """
     if self._rgb_unpacked is None:
       raise RuntimeError(
-        "RGB rendering is not enabled. Ensure at least one "
-        "camera sensor has 'rgb' in its data_types."
+        "RGB rendering is not enabled. Ensure at least one camera sensor has 'rgb' in"
+        " its data_types."
       )
 
     if cam_idx not in self._cam_idx_to_list_idx:
@@ -139,15 +129,15 @@ class SensorContext:
       )
 
     list_idx = self._cam_idx_to_list_idx[cam_idx]
-    if not self._render_rgb[list_idx]:
-      raise RuntimeError(f"Camera ID {cam_idx} does not have RGB rendering enabled.")
-
-    sensor = self.camera_sensors[list_idx]
-    w, h = sensor.cfg.width, sensor.cfg.height
 
     assert self._rgb_adr_np is not None
     assert self._rgb_torch is not None
     rgb_adr = self._rgb_adr_np[list_idx]
+    if rgb_adr < 0:
+      raise RuntimeError(f"Camera ID {cam_idx} does not have RGB rendering enabled.")
+
+    sensor = self.camera_sensors[list_idx]
+    w, h = sensor.cfg.width, sensor.cfg.height
     num_pixels = w * h
     nworld = self._data.nworld
 
@@ -171,15 +161,15 @@ class SensorContext:
       )
 
     list_idx = self._cam_idx_to_list_idx[cam_idx]
-    if not self._render_depth[list_idx]:
-      raise RuntimeError(f"Camera ID {cam_idx} does not have depth rendering enabled.")
-
-    sensor = self.camera_sensors[list_idx]
-    w, h = sensor.cfg.width, sensor.cfg.height
 
     assert self._depth_adr_np is not None
     assert self._depth_torch is not None
     depth_adr = self._depth_adr_np[list_idx]
+    if depth_adr < 0:
+      raise RuntimeError(f"Camera ID {cam_idx} does not have depth rendering enabled.")
+
+    sensor = self.camera_sensors[list_idx]
+    w, h = sensor.cfg.width, sensor.cfg.height
     num_pixels = w * h
     nworld = self._data.nworld
 
@@ -212,6 +202,15 @@ class SensorContext:
           f"'{ref.name}'."
         )
 
+  def _raycast_geom_groups(self) -> set[int]:
+    """Compute the union of geom groups across all raycast sensors."""
+    groups: set[int] = set()
+    for s in self.raycast_sensors:
+      if s.cfg.include_geom_groups is None:
+        return {0, 1, 2, 3, 4, 5}
+      groups.update(s.cfg.include_geom_groups)
+    return groups
+
   def _create_context(self, mj_model: mujoco.MjModel) -> None:
     """Create the mujoco_warp RenderContext."""
     ncam = mj_model.ncam
@@ -219,16 +218,33 @@ class SensorContext:
     render_rgb: list[bool] | None = None
     render_depth: list[bool] | None = None
 
+    raycast_geom_groups = self._raycast_geom_groups()
+
     if self.camera_sensors:
       ref_cfg = self.camera_sensors[0].cfg
       use_textures = ref_cfg.use_textures
       use_shadows = ref_cfg.use_shadows
-      enabled_geom_groups = list(ref_cfg.enabled_geom_groups)
+      cam_geom_groups = set(ref_cfg.enabled_geom_groups)
+
+      if self.raycast_sensors and raycast_geom_groups != cam_geom_groups:
+        import warnings
+
+        merged = sorted(cam_geom_groups | raycast_geom_groups)
+        warnings.warn(
+          "Camera enabled_geom_groups "
+          f"{sorted(cam_geom_groups)} and raycast "
+          f"include_geom_groups {sorted(raycast_geom_groups)}"
+          f" differ. Using union {merged}.",
+          stacklevel=2,
+        )
+        enabled_geom_groups = merged
+      else:
+        enabled_geom_groups = sorted(cam_geom_groups)
 
       # Build cam_active mask: only activate cameras that are sensors.
-      # cam_res, render_rgb, render_depth follow sorted sensor order
-      # (by camera_idx). This must match the order used by
-      # create_render_context for rgb_adr/depth_adr indexing.
+      # cam_res, render_rgb, render_depth follow sorted sensor order (by camera_idx).
+      # This must match the order used by create_render_context for rgb_adr/depth_adr
+      # indexing.
       cam_active = [False] * ncam
       cam_res = []
       render_rgb = []
@@ -243,7 +259,7 @@ class SensorContext:
       # Raycasts-only: need BVH but no camera rendering.
       use_textures = False
       use_shadows = False
-      enabled_geom_groups = [0, 1, 2, 3, 4, 5]
+      enabled_geom_groups = sorted(raycast_geom_groups)
       cam_active = [False] * ncam
 
     with wp.ScopedDevice(self.wp_device):
@@ -260,15 +276,19 @@ class SensorContext:
         cam_active=cam_active,
       )
 
-    # Cache address arrays (constant after context creation).
+    # Cache address arrays from the render context. An adr value of -1 means that data
+    # type is not enabled for that camera.
     if self.camera_sensors:
-      if any(self._render_rgb):
-        self._rgb_adr_np = self._ctx.rgb_adr.numpy().tolist()
-      if any(self._render_depth):
-        self._depth_adr_np = self._ctx.depth_adr.numpy().tolist()
+      self._rgb_adr_np = self._ctx.rgb_adr.numpy().tolist()
+      self._depth_adr_np = self._ctx.depth_adr.numpy().tolist()
+
+    has_any_rgb = self._rgb_adr_np is not None and any(a >= 0 for a in self._rgb_adr_np)
+    has_any_depth = self._depth_adr_np is not None and any(
+      a >= 0 for a in self._depth_adr_np
+    )
 
     # Allocate RGB unpack buffer if any camera wants RGB.
-    if self.camera_sensors and any(self._render_rgb):
+    if has_any_rgb:
       total_rgb_pixels = self._ctx.rgb_data.shape[1]
       nworld = self._data.nworld
       self._rgb_unpacked = wp.zeros(
@@ -282,7 +302,7 @@ class SensorContext:
       self._rgb_torch = None
 
     # Cache depth torch view (zero-copy).
-    if self.camera_sensors and any(self._render_depth):
+    if has_any_depth:
       self._depth_torch = wp.to_torch(self._ctx.depth_data)
     else:
       self._depth_torch = None

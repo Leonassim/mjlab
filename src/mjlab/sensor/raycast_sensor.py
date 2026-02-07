@@ -432,8 +432,11 @@ class RayCastSensorCfg(SensorCfg):
   exclude_parent_body: bool = True
   """Exclude parent body from ray intersection tests."""
 
-  include_geom_groups: tuple[int, ...] | None = None
-  """Geom groups (0-5) to include in raycasting. None means all groups."""
+  include_geom_groups: tuple[int, ...] | None = (0, 1, 2)
+  """Geom groups (0-5) to include in raycasting.
+
+  Defaults to (0, 1, 2). Set to None to include all groups.
+  """
 
   debug_vis: bool = False
   """Enable debug visualization."""
@@ -447,6 +450,8 @@ class RayCastSensorCfg(SensorCfg):
 
 class RayCastSensor(Sensor[RayCastData]):
   """Raycast sensor for terrain and obstacle detection."""
+
+  requires_sensor_context = True
 
   def __init__(self, cfg: RayCastSensorCfg) -> None:
     super().__init__()
@@ -740,7 +745,7 @@ class RayCastSensor(Sensor[RayCastData]):
     self._distances[self._distances > self.cfg.max_distance] = -1.0
 
     hit_mask = self._distances >= 0
-    hit_pos_w = torch.zeros_like(self._cached_world_origins)
+    hit_pos_w = self._cached_world_origins.clone()
     hit_pos_w[hit_mask] = self._cached_world_origins[
       hit_mask
     ] + self._cached_world_rays[hit_mask] * self._distances[hit_mask].unsqueeze(-1)

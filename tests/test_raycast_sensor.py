@@ -906,7 +906,7 @@ def test_height_scan_hits(robot_with_floor_xml, device):
 
 
 def test_height_scan_misses(device):
-  """height_scan reports -inf for rays that miss."""
+  """height_scan reports ~0 for rays that miss (no ground)."""
 
   no_floor_xml = """
     <mujoco>
@@ -939,4 +939,5 @@ def test_height_scan_misses(device):
   env = _FakeEnv(scene)
   heights = height_scan(env, "terrain_scan")  # type: ignore[invalid-argument-type]
 
-  assert torch.all(heights == float("-inf"))
+  # Misses: hit_pos_w == ray origin, so height ≈ 0.
+  assert torch.allclose(heights, torch.zeros_like(heights), atol=1e-5)

@@ -144,12 +144,11 @@ class Scene:
     for sensor in self._sensors.values():
       sensor.initialize(mj_model, model, data, self._device)
 
-    # Create SensorContext if any camera or raycast sensors exist.
-    camera_sensors = [s for s in self._sensors.values() if isinstance(s, CameraSensor)]
-    raycast_sensors = [
-      s for s in self._sensors.values() if isinstance(s, RayCastSensor)
-    ]
-    if camera_sensors or raycast_sensors:
+    # Create SensorContext if any sensors require it.
+    ctx_sensors = [s for s in self._sensors.values() if s.requires_sensor_context]
+    if ctx_sensors:
+      camera_sensors = [s for s in ctx_sensors if isinstance(s, CameraSensor)]
+      raycast_sensors = [s for s in ctx_sensors if isinstance(s, RayCastSensor)]
       self._sensor_context = SensorContext(
         mj_model=mj_model,
         model=model,
@@ -202,7 +201,11 @@ class Scene:
     if key_qpos:
       combined_qpos = np.concatenate(key_qpos)
       combined_ctrl = np.concatenate(key_ctrl)
-      self._spec.add_key(name="init_state", qpos=combined_qpos, ctrl=combined_ctrl)
+      self._spec.add_key(
+        name="init_state",
+        qpos=combined_qpos.tolist(),
+        ctrl=combined_ctrl.tolist(),
+      )
 
   def _add_terrain(self) -> None:
     if self._cfg.terrain is None:

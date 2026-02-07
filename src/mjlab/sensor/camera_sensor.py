@@ -83,6 +83,9 @@ class CameraSensorCfg(SensorCfg):
   enabled_geom_groups: tuple[int, ...] = (0, 1, 2)
   """Geom groups (0-5) visible to the camera."""
 
+  orthographic: bool = False
+  """Use orthographic projection instead of perspective."""
+
   clone_data: bool = False
   """If True, clone tensors on each access.
 
@@ -122,6 +125,8 @@ class CameraSensorData:
 class CameraSensor(Sensor[CameraSensorData]):
   """Camera sensor for RGB and depth rendering."""
 
+  requires_sensor_context = True
+
   def __init__(self, cfg: CameraSensorCfg) -> None:
     super().__init__()
     self.cfg = cfg
@@ -146,8 +151,12 @@ class CameraSensor(Sensor[CameraSensorData]):
     del entities
 
     if self._is_wrapping_existing:
+      cam = scene_spec.camera(self._camera_name)
+      assert isinstance(cam, mujoco.MjsCamera)
       if self.cfg.fovy is not None:
-        scene_spec.camera(self._camera_name).fovy = self.cfg.fovy
+        cam.fovy = self.cfg.fovy
+      if self.cfg.orthographic:
+        cam.proj = mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
       return
 
     if self.cfg.parent_body is not None:
@@ -155,11 +164,18 @@ class CameraSensor(Sensor[CameraSensorData]):
     else:
       parent = scene_spec.worldbody
 
+    proj = (
+      mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
+      if self.cfg.orthographic
+      else mujoco.mjtProjection.mjPROJ_PERSPECTIVE
+    )
     parent.add_camera(
       name=self.cfg.name,
       pos=self.cfg.pos,
       quat=self.cfg.quat,
       fovy=self.cfg.fovy or _DEFAULT_CAM_FOVY,
+      resolution=[self.cfg.width, self.cfg.height],
+      proj=proj,
     )
 
   def initialize(

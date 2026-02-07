@@ -112,7 +112,6 @@ def height_scan(
   """Height scan from a raycast sensor.
 
   Returns the height of the sensor frame above each hit point.
-  Misses (no hit) are reported as ``-inf``.
 
   Args:
     env: The environment.
@@ -122,10 +121,5 @@ def height_scan(
   Returns:
     Tensor of shape [B, N] where B is num_envs and N is num_rays.
   """
-
   sensor: RayCastSensor = env.scene[sensor_name]
-  heights = (
-    sensor.data.pos_w[:, 2].unsqueeze(1) - sensor.data.hit_pos_w[..., 2] - offset
-  )
-  heights[sensor.data.distances < 0] = float("-inf")
-  return heights
+  return sensor.data.pos_w[:, 2].unsqueeze(1) - sensor.data.hit_pos_w[..., 2] - offset
