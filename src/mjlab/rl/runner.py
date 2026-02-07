@@ -1,3 +1,5 @@
+import os
+
 import torch
 from rsl_rl.runners import OnPolicyRunner
 
@@ -8,6 +10,26 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
   """Base runner that persists environment state across checkpoints."""
 
   env: RslRlVecEnvWrapper
+
+  def export_policy_to_onnx(
+    self, path: str, filename: str = "policy.onnx", verbose: bool = False
+  ) -> None:
+    onnx_model = self.alg.get_policy().as_onnx(verbose=verbose)
+    onnx_model.to("cpu")
+    onnx_model.eval()
+    os.makedirs(path, exist_ok=True)
+    torch.onnx.export(
+      onnx_model,
+      onnx_model.get_dummy_inputs(),  # type: ignore[operator]
+      os.path.join(path, filename),
+      export_params=True,
+      opset_version=18,
+      verbose=verbose,
+      input_names=onnx_model.input_names,  # type: ignore[arg-type]
+      output_names=onnx_model.output_names,  # type: ignore[arg-type]
+      dynamic_axes={},
+      dynamo=False,
+    )
 
   def save(self, path: str, infos=None) -> None:
     env_state = {"common_step_counter": self.env.unwrapped.common_step_counter}
