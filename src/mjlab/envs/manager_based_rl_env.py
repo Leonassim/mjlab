@@ -320,24 +320,31 @@ class ManagerBasedRlEnv:
   def step(self, action: torch.Tensor) -> types.VecEnvStepReturn:
     """Run one environment step: apply actions, simulate, compute RL signals.
 
-    After ``mj_step``, derived quantities (``xpos``, ``xquat``, ``site_xpos``,
-    ``cvel``, ``sensordata``) are stale. They reflect the pre-integration
-    state while ``qpos``/``qvel`` have been integrated forward. This method
-    calls ``sim.forward()`` at two points to keep them in sync:
+    **Forward-call placement.** MuJoCo's ``mj_step`` runs forward kinematics
+    *before* integration, so after stepping, derived quantities (``xpos``,
+    ``xquat``, ``site_xpos``, ``cvel``, ``sensordata``) lag ``qpos``/``qvel``
+    by one physics substep. Rather than calling ``sim.forward()`` twice (once
+    after the decimation loop and once after the reset block), this method
+    calls it **once**, right before observation computation. This single call
+    refreshes derived quantities for *all* envs: non-reset envs pick up
+    post-decimation kinematics, reset envs pick up post-reset kinematics.
 
-    1. After the decimation loop, before termination/reward computation.
-    2. After the reset block, before observation computation. This second
-       call is needed because ``_reset_idx`` and reset events write new
-       ``qpos``/``qvel`` for terminated envs, making derived quantities
-       stale again.
+    The tradeoff is that termination and reward managers see derived
+    quantities that are stale by one physics substep (the last ``mj_step``
+    ran ``mj_forward`` from *pre*-integration ``qpos``). In practice, the
+    staleness is negligible for reward shaping and termination
+    checks. Critically, the staleness is *consistent*: every env,
+    every step, always sees the same lag, so the MDP is well-defined
+    and the value function can learn the correct mapping.
 
     .. note::
 
-       Event and command authors do not need to call ``sim.forward()``
-       themselves. This method handles it. The only constraint is: do not
-       read derived quantities (``root_link_pose_w``, ``body_link_vel_w``,
-       etc.) in the same function that writes state (``write_root_state_to_sim``,
-       ``write_joint_state_to_sim``, etc.). See :ref:`faq` for details.
+      Event and command authors do not need to call ``sim.forward()``
+      themselves. This method handles it. The only constraint is: do not
+      read derived quantities (``root_link_pose_w``, ``body_link_vel_w``,
+      etc.) in the same function that writes state
+      (``write_root_state_to_sim``, ``write_joint_state_to_sim``, etc.).
+      See :ref:`faq` for details.
     """
     self.action_manager.process_action(action.to(self.device))
 
@@ -348,16 +355,13 @@ class ManagerBasedRlEnv:
       self.sim.step()
       self.scene.update(dt=self.physics_dt)
 
-    # Recompute derived quantities (xpos, xquat, site_xpos, etc.) from the
-    # post-integration qpos/qvel. Without this, these are stale from the
-    # pre-integration forward pass inside mj_step.
-    self.sim.forward()
-
     # Update env counters.
     self.episode_length_buf += 1
     self.common_step_counter += 1
 
-    # Check terminations.
+    # Check terminations and compute rewards.
+    # NOTE: Derived quantities (xpos, xquat, ...) are stale by one physics
+    # substep here. See the docstring above for why this is acceptable.
     self.reset_buf = self.termination_manager.compute()
     self.reset_terminated = self.termination_manager.terminated
     self.reset_time_outs = self.termination_manager.time_outs
@@ -369,7 +373,12 @@ class ManagerBasedRlEnv:
     if len(reset_env_ids) > 0:
       self._reset_idx(reset_env_ids)
       self.scene.write_data_to_sim()
-      self.sim.forward()
+
+    # Single forward() call: recompute derived quantities from current
+    # qpos/qvel for every env. For non-reset envs this resolves the
+    # one-substep staleness left by mj_step; for reset envs it picks up
+    # the freshly written reset state.
+    self.sim.forward()
 
     self.command_manager.compute(dt=self.step_dt)
 
