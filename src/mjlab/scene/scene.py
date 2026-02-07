@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +12,9 @@ import torch
 
 from mjlab.entity import Entity, EntityCfg
 from mjlab.sensor import BuiltinSensor, Sensor, SensorCfg
+from mjlab.sensor.camera_sensor import CameraSensor
+from mjlab.sensor.raycast_sensor import RayCastSensor
+from mjlab.sensor.sensor_context import SensorContext
 from mjlab.terrains.terrain_importer import TerrainImporter, TerrainImporterCfg
 
 _SCENE_XML = Path(__file__).parent / "scene.xml"
@@ -34,6 +39,7 @@ class Scene:
     self._sensors: dict[str, Sensor] = {}
     self._terrain: TerrainImporter | None = None
     self._default_env_origins: torch.Tensor | None = None
+    self._sensor_context: SensorContext | None = None
 
     self._spec = mujoco.MjSpec.from_file(str(_SCENE_XML))
     if self._cfg.extent is not None:
@@ -119,6 +125,11 @@ class Scene:
 
   # Methods.
 
+  @property
+  def sensor_context(self) -> SensorContext | None:
+    """Shared sensing resources, or None if no cameras/raycasts."""
+    return self._sensor_context
+
   def initialize(
     self,
     mj_model: mujoco.MjModel,
@@ -132,6 +143,21 @@ class Scene:
       ent.initialize(mj_model, model, data, self._device)
     for sensor in self._sensors.values():
       sensor.initialize(mj_model, model, data, self._device)
+
+    # Create SensorContext if any camera or raycast sensors exist.
+    camera_sensors = [s for s in self._sensors.values() if isinstance(s, CameraSensor)]
+    raycast_sensors = [
+      s for s in self._sensors.values() if isinstance(s, RayCastSensor)
+    ]
+    if camera_sensors or raycast_sensors:
+      self._sensor_context = SensorContext(
+        mj_model=mj_model,
+        model=model,
+        data=data,
+        camera_sensors=camera_sensors,
+        raycast_sensors=raycast_sensors,
+        device=self._device,
+      )
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
     for ent in self._entities.values():

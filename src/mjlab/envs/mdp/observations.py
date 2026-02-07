@@ -8,7 +8,7 @@ import torch
 
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import BuiltinSensor
+from mjlab.sensor import BuiltinSensor, RayCastSensor
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -104,3 +104,28 @@ def builtin_sensor(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
   sensor = env.scene[sensor_name]
   assert isinstance(sensor, BuiltinSensor)
   return sensor.data
+
+
+def height_scan(
+  env: ManagerBasedRlEnv, sensor_name: str, offset: float = 0.0
+) -> torch.Tensor:
+  """Height scan from a raycast sensor.
+
+  Returns the height of the sensor frame above each hit point.
+  Misses (no hit) are reported as ``-inf``.
+
+  Args:
+    env: The environment.
+    sensor_name: Name of a RayCastSensor in the scene.
+    offset: Constant offset subtracted from heights.
+
+  Returns:
+    Tensor of shape [B, N] where B is num_envs and N is num_rays.
+  """
+
+  sensor: RayCastSensor = env.scene[sensor_name]
+  heights = (
+    sensor.data.pos_w[:, 2].unsqueeze(1) - sensor.data.hit_pos_w[..., 2] - offset
+  )
+  heights[sensor.data.distances < 0] = float("-inf")
+  return heights

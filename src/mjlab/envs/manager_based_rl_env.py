@@ -174,6 +174,10 @@ class ManagerBasedRlEnv:
       data=self.sim.data,
     )
 
+    # Wire sensor context to simulation for sense_graph.
+    if self.scene.sensor_context is not None:
+      self.sim.set_sensor_context(self.scene.sensor_context)
+
     # Print environment info.
     print_info("")
     table = PrettyTable()
@@ -314,6 +318,7 @@ class ManagerBasedRlEnv:
     self._reset_idx(env_ids)
     self.scene.write_data_to_sim()
     self.sim.forward()
+    self.sim.sense()
     self.obs_buf = self.observation_manager.compute(update_history=True)
     return self.obs_buf, self.extras
 
@@ -385,6 +390,7 @@ class ManagerBasedRlEnv:
     if "interval" in self.event_manager.available_modes:
       self.event_manager.apply(mode="interval", dt=self.step_dt)
 
+    self.sim.sense()
     self.obs_buf = self.observation_manager.compute(update_history=True)
 
     return (
