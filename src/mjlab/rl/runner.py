@@ -14,6 +14,12 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
   def export_policy_to_onnx(
     self, path: str, filename: str = "policy.onnx", verbose: bool = False
   ) -> None:
+    """Export policy to ONNX format using legacy export path.
+
+    Overrides the base implementation to set dynamo=False, avoiding warnings about
+    dynamic_axes being deprecated with the new TorchDynamo export path
+    (torch>=2.9 default).
+    """
     onnx_model = self.alg.get_policy().as_onnx(verbose=verbose)
     onnx_model.to("cpu")
     onnx_model.eval()
@@ -32,6 +38,10 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
     )
 
   def save(self, path: str, infos=None) -> None:
+    """Save checkpoint.
+
+    Extends the base implementation to persist the environment's common_step_counter.
+    """
     env_state = {"common_step_counter": self.env.unwrapped.common_step_counter}
     infos = {**(infos or {}), "env_state": env_state}
     super().save(path, infos)
@@ -43,6 +53,13 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
     strict: bool = True,
     map_location: str | None = None,
   ) -> dict:
+    """Load checkpoint.
+
+    Extends the base implementation to:
+    1. Restore common_step_counter to preserve curricula state.
+    2. Migrate legacy checkpoints (actor.* -> mlp.*, actor_obs_normalizer.*
+      -> obs_normalizer.*) to the current format (rsl-rl>=4.0).
+    """
     loaded_dict = torch.load(path, map_location=map_location, weights_only=False)
 
     if "model_state_dict" in loaded_dict:
