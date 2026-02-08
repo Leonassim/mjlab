@@ -69,62 +69,24 @@ DM_4310 = ElectricActuator(
 NATURAL_FREQ = 2 * 2.0 * 3.1415926535  # 2Hz
 DAMPING_RATIO = 2.0
 
-# Calculate per-joint gains using effective inertia.
-STIFFNESS_JOINT1 = EFFECTIVE_INERTIAS["joint1"] * NATURAL_FREQ**2
-STIFFNESS_JOINT2 = EFFECTIVE_INERTIAS["joint2"] * NATURAL_FREQ**2
-STIFFNESS_JOINT3 = EFFECTIVE_INERTIAS["joint3"] * NATURAL_FREQ**2
-STIFFNESS_JOINT4 = EFFECTIVE_INERTIAS["joint4"] * NATURAL_FREQ**2
-STIFFNESS_JOINT5 = EFFECTIVE_INERTIAS["joint5"] * NATURAL_FREQ**2
-STIFFNESS_JOINT6 = EFFECTIVE_INERTIAS["joint6"] * NATURAL_FREQ**2
-
-DAMPING_JOINT1 = 2.0 * DAMPING_RATIO * EFFECTIVE_INERTIAS["joint1"] * NATURAL_FREQ
-DAMPING_JOINT2 = 2.0 * DAMPING_RATIO * EFFECTIVE_INERTIAS["joint2"] * NATURAL_FREQ
-DAMPING_JOINT3 = 2.0 * DAMPING_RATIO * EFFECTIVE_INERTIAS["joint3"] * NATURAL_FREQ
-DAMPING_JOINT4 = 2.0 * DAMPING_RATIO * EFFECTIVE_INERTIAS["joint4"] * NATURAL_FREQ
-DAMPING_JOINT5 = 2.0 * DAMPING_RATIO * EFFECTIVE_INERTIAS["joint5"] * NATURAL_FREQ
-DAMPING_JOINT6 = 2.0 * DAMPING_RATIO * EFFECTIVE_INERTIAS["joint6"] * NATURAL_FREQ
-
-ACTUATOR_JOINT1 = BuiltinPositionActuatorCfg(
-  target_names_expr=("joint1",),
-  stiffness=STIFFNESS_JOINT1,
-  damping=DAMPING_JOINT1,
-  effort_limit=DM_4340.effort_limit,
-  armature=DM_4340.reflected_inertia,
-)
-ACTUATOR_JOINT2 = BuiltinPositionActuatorCfg(
-  target_names_expr=("joint2",),
-  stiffness=STIFFNESS_JOINT2,
-  damping=DAMPING_JOINT2,
-  effort_limit=DM_4340.effort_limit,
-  armature=DM_4340.reflected_inertia,
-)
-ACTUATOR_JOINT3 = BuiltinPositionActuatorCfg(
-  target_names_expr=("joint3",),
-  stiffness=STIFFNESS_JOINT3,
-  damping=DAMPING_JOINT3,
-  effort_limit=DM_4340.effort_limit,
-  armature=DM_4340.reflected_inertia,
-)
-ACTUATOR_JOINT4 = BuiltinPositionActuatorCfg(
-  target_names_expr=("joint4",),
-  stiffness=STIFFNESS_JOINT4,
-  damping=DAMPING_JOINT4,
-  effort_limit=DM_4310.effort_limit,
-  armature=DM_4310.reflected_inertia,
-)
-ACTUATOR_JOINT5 = BuiltinPositionActuatorCfg(
-  target_names_expr=("joint5",),
-  stiffness=STIFFNESS_JOINT5,
-  damping=DAMPING_JOINT5,
-  effort_limit=DM_4310.effort_limit,
-  armature=DM_4310.reflected_inertia,
-)
-ACTUATOR_JOINT6 = BuiltinPositionActuatorCfg(
-  target_names_expr=("joint6",),
-  stiffness=STIFFNESS_JOINT6,
-  damping=DAMPING_JOINT6,
-  effort_limit=DM_4310.effort_limit,
-  armature=DM_4310.reflected_inertia,
+# Per-joint PD gains using effective inertia, and actuator configs.
+_ARM_JOINTS: dict[str, ElectricActuator] = {
+  "joint1": DM_4340,
+  "joint2": DM_4340,
+  "joint3": DM_4340,
+  "joint4": DM_4310,
+  "joint5": DM_4310,
+  "joint6": DM_4310,
+}
+ARM_ACTUATORS = tuple(
+  BuiltinPositionActuatorCfg(
+    target_names_expr=(name,),
+    stiffness=EFFECTIVE_INERTIAS[name] * NATURAL_FREQ**2,
+    damping=2.0 * DAMPING_RATIO * EFFECTIVE_INERTIAS[name] * NATURAL_FREQ,
+    effort_limit=motor.effort_limit,
+    armature=motor.reflected_inertia,
+  )
+  for name, motor in _ARM_JOINTS.items()
 )
 
 ##
@@ -244,15 +206,7 @@ GRIPPER_ONLY_COLLISION = CollisionCfg(
 ##
 
 ARTICULATION = EntityArticulationInfoCfg(
-  actuators=(
-    ACTUATOR_JOINT1,
-    ACTUATOR_JOINT2,
-    ACTUATOR_JOINT3,
-    ACTUATOR_JOINT4,
-    ACTUATOR_JOINT5,
-    ACTUATOR_JOINT6,
-    ACTUATOR_DM_4310_LINEAR_CRANK,
-  ),
+  actuators=(*ARM_ACTUATORS, ACTUATOR_DM_4310_LINEAR_CRANK),
   soft_joint_pos_limit_factor=0.9,
 )
 

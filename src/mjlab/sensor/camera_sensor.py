@@ -173,7 +173,7 @@ class CameraSensor(Sensor[CameraSensorData]):
       name=self.cfg.name,
       pos=self.cfg.pos,
       quat=self.cfg.quat,
-      fovy=self.cfg.fovy or _DEFAULT_CAM_FOVY,
+      fovy=self.cfg.fovy if self.cfg.fovy is not None else _DEFAULT_CAM_FOVY,
       resolution=[self.cfg.width, self.cfg.height],
       proj=proj,
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 import mujoco
@@ -50,7 +51,6 @@ class SensorContext:
     self._model = model
     self._data = data
     self.wp_device = wp.get_device(device)
-    self._device = device
 
     # Sort camera sensors by camera index for consistent ordering.
     self.camera_sensors = sorted(camera_sensors, key=lambda s: s.camera_idx)
@@ -227,8 +227,6 @@ class SensorContext:
       cam_geom_groups = set(ref_cfg.enabled_geom_groups)
 
       if self.raycast_sensors and raycast_geom_groups != cam_geom_groups:
-        import warnings
-
         merged = sorted(cam_geom_groups | raycast_geom_groups)
         warnings.warn(
           "Camera enabled_geom_groups "

@@ -109,7 +109,7 @@ class ViserPlayViewer(BaseViewer):
       if camera_sensors:
         with self._server.gui.add_folder("Camera Feeds"):
           self._camera_viewers = [
-            ViserCameraViewer(self._server, sensor, sim.mj_model, self._scene.mj_data)
+            ViserCameraViewer(self._server, sensor, sim.mj_model)
             for sensor in camera_sensors
           ]
       else:

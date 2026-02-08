@@ -21,13 +21,11 @@ class ViserCameraViewer:
     server: viser.ViserServer,
     camera_sensor: CameraSensor,
     mj_model: mujoco.MjModel,
-    mj_data: mujoco.MjData,
     min_display_size: int = 128,
   ):
     self._server = server
     self._camera_sensor = camera_sensor
     self._mj_model = mj_model
-    self._mj_data = mj_data
 
     self._rgb_handle: viser.GuiImageHandle | None = None
     self._depth_handle: viser.GuiImageHandle | None = None

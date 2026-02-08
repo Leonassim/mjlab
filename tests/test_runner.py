@@ -297,12 +297,12 @@ def test_cnn_onnx_export_to_file():
     onnx_path = Path(tmpdir) / "cnn_policy.onnx"
     torch.onnx.export(
       onnx_model,
-      onnx_model.get_dummy_inputs(),
+      onnx_model.get_dummy_inputs(),  # pyright: ignore[reportCallIssue]
       str(onnx_path),
       export_params=True,
       opset_version=18,
-      input_names=onnx_model.input_names,
-      output_names=onnx_model.output_names,
+      input_names=onnx_model.input_names,  # pyright: ignore[reportArgumentType]
+      output_names=onnx_model.output_names,  # pyright: ignore[reportArgumentType]
       dynamic_axes={},
       dynamo=False,
     )

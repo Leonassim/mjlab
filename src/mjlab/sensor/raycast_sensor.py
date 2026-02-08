@@ -368,7 +368,7 @@ class RayCastData:
   """[B, N, 3] Surface normal at hit point (world frame). Zero if no hit."""
 
   hit_pos_w: torch.Tensor
-  """[B, N, 3] Hit position in world frame. Zero if no hit."""
+  """[B, N, 3] Hit position in world frame. Ray origin if no hit."""
 
   pos_w: torch.Tensor
   """[B, 3] Frame position in world coordinates."""
@@ -714,7 +714,7 @@ class RayCastSensor(Sensor[RayCastData]):
     self._cached_frame_pos = frame_pos
     self._cached_frame_mat = frame_mat
 
-  def raycast_kernel(self, rc) -> None:
+  def raycast_kernel(self, rc: mjwarp.RenderContext) -> None:
     """IN-GRAPH: Execute BVH-accelerated raycast kernel."""
     rays(
       m=self._model.struct,  # type: ignore[attr-defined]
