@@ -571,6 +571,14 @@ class RayCastSensor(Sensor[RayCastData]):
     else:
       self._geomgroup = vec6(-1, -1, -1, -1, -1, -1)  # All groups
 
+    # Pre-allocate output tensors so shape inference works before
+    # the first sense() call.
+    self._distances = torch.zeros(num_envs, self._num_rays, device=device)
+    self._normals_w = torch.zeros(num_envs, self._num_rays, 3, device=device)
+    self._hit_pos_w = torch.zeros(num_envs, self._num_rays, 3, device=device)
+    self._pos_w = torch.zeros(num_envs, 3, device=device)
+    self._quat_w = torch.zeros(num_envs, 4, device=device)
+
     assert self._wp_device is not None
 
   def set_context(self, ctx: SensorContext) -> None:
