@@ -83,6 +83,20 @@ uv run play Mjlab-Your-Task-Id --agent random  # Sends uniform random actions
 
 When running motion-tracking tasks, add `--registry-name your-org/motions/motion-name` to the command.
 
+
+## Community Projects
+
+Projects built with mjlab by the community. Share yours in [Show and Tell](https://github.com/mujocolab/mjlab/discussions/categories/show-and-tell)!
+
+| Project | Description | Links |
+|---------|-------------|-------|
+| **HUSKY** | Humanoid skateboarding with dynamic balance control | [Website](http://husky-humanoid.github.io/) · [Paper](https://arxiv.org/abs/2602.03205) · [#572](https://github.com/mujocolab/mjlab/discussions/572) |
+| **mjlab-homierl** | Multi-task H1 locomotion (walk/squat/stand) with upper-body disturbance robustness | [Repo](https://github.com/Nagi-ovo/mjlab-homierl) · [#550](https://github.com/mujocolab/mjlab/discussions/550) |
+| **mjlab_upkie** | Velocity control for the Upkie wheeled biped | [Repo](https://github.com/MarcDcls/mjlab_upkie) · [#487](https://github.com/mujocolab/mjlab/discussions/487) |
+| **unitree_rl_mjlab** | Official Unitree RL environments for Go2, G1, and H1_2 | [Repo](https://github.com/unitreerobotics/unitree_rl_mjlab) |
+| **asimov-mjlab** | Locomotion fork for the Asimov bipedal robot | [Repo](https://github.com/menloresearch/asimov-mjlab) |
+| **mjlab_myosuite** | Musculoskeletal simulation integration with MyoSuite | [Repo](https://github.com/MyoHub/mjlab_myosuite) |
+
 ## Documentation
 
 Full documentation is available at **[mujocolab.github.io/mjlab](https://mujocolab.github.io/mjlab/)**.
