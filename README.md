@@ -86,16 +86,86 @@ When running motion-tracking tasks, add `--registry-name your-org/motions/motion
 
 ## Community Projects
 
-Projects built with mjlab by the community. Share yours in [Show and Tell](https://github.com/mujocolab/mjlab/discussions/categories/show-and-tell)!
+mjlab is used for research and robotics applications around the world. Examples:
 
-| Project | Description | Links |
-|---------|-------------|-------|
-| **HUSKY** | Humanoid skateboarding with dynamic balance control | [Website](http://husky-humanoid.github.io/) · [Paper](https://arxiv.org/abs/2602.03205) · [#572](https://github.com/mujocolab/mjlab/discussions/572) |
-| **mjlab-homierl** | Multi-task H1 locomotion (walk/squat/stand) with upper-body disturbance robustness | [Repo](https://github.com/Nagi-ovo/mjlab-homierl) · [#550](https://github.com/mujocolab/mjlab/discussions/550) |
-| **mjlab_upkie** | Velocity control for the Upkie wheeled biped | [Repo](https://github.com/MarcDcls/mjlab_upkie) · [#487](https://github.com/mujocolab/mjlab/discussions/487) |
-| **unitree_rl_mjlab** | Official Unitree RL environments for Go2, G1, and H1_2 | [Repo](https://github.com/unitreerobotics/unitree_rl_mjlab) |
-| **asimov-mjlab** | Locomotion fork for the Asimov bipedal robot | [Repo](https://github.com/menloresearch/asimov-mjlab) |
-| **mjlab_myosuite** | Musculoskeletal simulation integration with MyoSuite | [Repo](https://github.com/MyoHub/mjlab_myosuite) |
+<table>
+  <tr>
+    <td>
+      <a href="https://github.com/menloresearch/asimov-mjlab">
+        menloresearch/asimov-mjlab
+        <br /><img
+          alt="GitHub stars"
+          src="https://img.shields.io/github/stars/menloresearch/asimov-mjlab?style=social"
+        />
+      </a>
+    </td>
+    <td>Locomotion fork for the Asimov bipedal robot.</td>
+  </tr>
+  <tr>
+    <td>
+      <a href="http://husky-humanoid.github.io/">
+        HUSKY
+      </a>
+      <br />
+      <a href="https://github.com/mujocolab/mjlab/discussions/572">#572</a>
+      ·
+      <a href="https://arxiv.org/abs/2602.03205">Paper</a>
+    </td>
+    <td>
+      Humanoid skateboarding with dynamic balance control.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <a href="https://github.com/Nagi-ovo/mjlab-homierl">
+        Nagi-ovo/mjlab-homierl
+        <br /><img
+          alt="GitHub stars"
+          src="https://img.shields.io/github/stars/Nagi-ovo/mjlab-homierl?style=social"
+        />
+      </a>
+    </td>
+    <td>Multi-task H1 locomotion (walk/squat/stand) with upper-body disturbance robustness.</td>
+  </tr>
+  <tr>
+    <td>
+      <a href="https://github.com/MyoHub/mjlab_myosuite">
+        MyoHub/mjlab_myosuite
+        <br /><img
+          alt="GitHub stars"
+          src="https://img.shields.io/github/stars/MyoHub/mjlab_myosuite?style=social"
+        />
+      </a>
+    </td>
+    <td>Musculoskeletal simulation integration with MyoSuite.</td>
+  </tr>
+  <tr>
+    <td>
+      <a href="https://github.com/MarcDcls/mjlab_upkie">
+        MarcDcls/mjlab_upkie
+        <br /><img
+          alt="GitHub stars"
+          src="https://img.shields.io/github/stars/MarcDcls/mjlab_upkie?style=social"
+        />
+      </a>
+    </td>
+    <td>Velocity control for the Upkie wheeled biped.</td>
+  </tr>
+  <tr>
+    <td>
+      <a href="https://github.com/unitreerobotics/unitree_rl_mjlab">
+        unitreerobotics/unitree_rl_mjlab
+        <br /><img
+          alt="GitHub stars"
+          src="https://img.shields.io/github/stars/unitreerobotics/unitree_rl_mjlab?style=social"
+        />
+      </a>
+    </td>
+    <td>Official Unitree RL environments for Go2, G1, and H1_2.</td>
+  </tr>
+</table>
+
+Want to share your project? Post in [Show and Tell](https://github.com/mujocolab/mjlab/discussions/categories/show-and-tell)!
 
 ## Documentation
 
