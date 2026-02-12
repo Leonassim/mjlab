@@ -121,7 +121,7 @@ explicit = true
 warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
 mujoco = { index = "mujoco" }
 torch = { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform != 'darwin'" }
-mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp", rev = "b75f85b4dbc60f2d6e9277d345953aa1f1dd1611" }
+mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp", rev = "0828fb0b57d7baf734dd71fa164d092cb17e635b" }
 
 [tool.ruff]
 src = ["src"]  # Helpful for recognizing first-party imports.
