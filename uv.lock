@@ -1298,7 +1298,7 @@ docs = [
 requires-dist = [
     { name = "moviepy" },
     { name = "mujoco", specifier = ">=3.4.0", index = "https://py.mujoco.org/" },
-    { name = "mujoco-warp", git = "https://github.com/google-deepmind/mujoco_warp?rev=b75f85b4dbc60f2d6e9277d345953aa1f1dd1611" },
+    { name = "mujoco-warp", git = "https://github.com/google-deepmind/mujoco_warp?rev=0828fb0b57d7baf734dd71fa164d092cb17e635b" },
     { name = "onnxscript", specifier = ">=0.5.4" },
     { name = "prettytable" },
     { name = "rsl-rl-lib", specifier = "==4.0.1" },
@@ -1510,7 +1510,7 @@ wheels = [
 [[package]]
 name = "mujoco-warp"
 version = "0.0.2"
-source = { git = "https://github.com/google-deepmind/mujoco_warp?rev=b75f85b4dbc60f2d6e9277d345953aa1f1dd1611#b75f85b4dbc60f2d6e9277d345953aa1f1dd1611" }
+source = { git = "https://github.com/google-deepmind/mujoco_warp?rev=0828fb0b57d7baf734dd71fa164d092cb17e635b#0828fb0b57d7baf734dd71fa164d092cb17e635b" }
 dependencies = [
     { name = "absl-py" },
     { name = "etils", extra = ["epath"] },
