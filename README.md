@@ -20,9 +20,7 @@ mjlab requires an NVIDIA GPU for training. macOS is supported for evaluation onl
 Run the demo (no installation needed):
 
 ```bash
-uvx --from mjlab --refresh \
-  --with "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp@7c20a44bfed722e6415235792a1b247ea6b6a6d3" \
-  demo
+uvx --from mjlab --refresh demo
 ```
 
 Or try in [Google Colab](https://colab.research.google.com/github/mujocolab/mjlab/blob/main/notebooks/demo.ipynb) (no local setup required).
