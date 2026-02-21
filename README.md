@@ -162,6 +162,18 @@ mjlab is used for research and robotics applications around the world. Examples:
     </td>
     <td>Official Unitree RL environments for Go2, G1, and H1_2.</td>
   </tr>
+  <tr>
+    <td>
+      <a href="https://github.com/Msornerrrr/in-hand-rotation-mjlab">
+        Msornerrrr/in-hand-rotation-mjlab
+        <br /><img
+          alt="GitHub stars"
+          src="https://img.shields.io/github/stars/Msornerrrr/in-hand-rotation-mjlab?style=social"
+        />
+      </a>
+    </td>
+    <td>Sim-to-real RL for in-hand cube rotation with the LEAP Hand.</td>
+  </tr>
 </table>
 
 Want to share your project? Post in [Show and Tell](https://github.com/mujocolab/mjlab/discussions/categories/show-and-tell)!
