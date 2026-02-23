@@ -397,7 +397,7 @@ The 10 parameters of :math:`U` control different physical effects:
 Safety of Runtime Model Changes
 -------------------------------
 
-In C MuJoCo, modifying ``mjModel`` fields at runtime can be unsafe — some
+In C MuJoCo, modifying ``mjModel`` fields at runtime can be unsafe: some
 changes invalidate internal acceleration structures (BVH) or leave derived
 quantities stale. MuJoCo Warp has a different collision pipeline, so many of
 these concerns do not apply.
@@ -407,7 +407,7 @@ Two architectural differences matter most:
 1. **No collision BVH.** C MuJoCo builds a static bounding-volume hierarchy
    (BVH) for midphase collision pruning. Changing ``body_pos``/``body_quat``
    of a static body invalidates that tree. MuJoCo Warp uses NxN or
-   sweep-and-prune broadphase instead — there is no static tree to
+   sweep-and-prune broadphase instead, so there is no static tree to
    invalidate.
 
 2. **Local bounding boxes.** ``geom_aabb`` in MuJoCo Warp is a *local*
@@ -515,7 +515,7 @@ that compares to C MuJoCo.
 
    In practice this affects only bare ``<geom>`` elements placed directly on
    the ``<worldbody>`` in XML (e.g. a ground plane) that are not part of any
-   mjlab entity.  All mjlab entities — including fixed-base ones — are
+   mjlab entity.  All mjlab entities (including fixed-base ones) are
    auto-wrapped in a mocap body by ``auto_wrap_fixed_base_mocap``, which
    makes them exempt from the FK skip.  The built-in ``dr`` functions target
    named bodies/geoms on entities, so they are always safe.
@@ -528,8 +528,8 @@ How ``geom_size`` recomputation works
 Changing ``geom_size`` at runtime requires updating two derived fields that
 the broadphase reads every step:
 
-- ``geom_rbound`` — bounding sphere radius (used for sphere-filter pruning)
-- ``geom_aabb`` — local axis-aligned bounding box (used for AABB/OBB pruning)
+- ``geom_rbound``: bounding sphere radius (used for sphere-filter pruning)
+- ``geom_aabb``: local axis-aligned bounding box (used for AABB/OBB pruning)
 
 Both are copied from ``MjModel`` during model loading and never recomputed
 by MuJoCo Warp. ``dr.geom_size`` handles this by recomputing both fields
@@ -560,7 +560,7 @@ The formulas are type-dependent:
      - ``sqrt(s[0]² + s[1]² + s[2]²)``
      - ``(s[0], s[1], s[2])``
 
-Plane, heightfield, mesh, and SDF geoms are not supported — their bounds
+Plane, heightfield, mesh, and SDF geoms are not supported because their bounds
 come from vertex data or are infinite, not derivable from ``geom_size``.
 
 
@@ -1168,11 +1168,32 @@ toggles then work correctly against the randomized model:
 - Geom appearance (``geom_rgba``, ``geom_size``, ``geom_pos``, ``geom_quat``)
 - Body and site poses (``body_pos``, ``body_quat``, ``body_ipos``,
   ``site_pos``, ``site_quat``)
-- Inertia (``body_inertia``, ``body_iquat``, ``body_mass``) — press ``I``
+- Inertia (``body_inertia``, ``body_iquat``, ``body_mass``): press ``I``
   to toggle inertia boxes
 - Camera parameters (``cam_pos``, ``cam_quat``, ``cam_fovy``,
-  ``cam_intrinsic``) — press ``Q`` to toggle camera frustums
+  ``cam_intrinsic``): press ``Q`` to toggle camera frustums
 - Lights (``light_pos``, ``light_dir``)
+
+.. grid:: 2
+
+   .. grid-item-card::
+
+      .. image:: _static/dr_combined_rand.gif
+         :alt: Cube color, size, and link orientations randomized each reset
+
+      Cube color (``dr.geom_rgba``), cube size (``dr.geom_size``), and
+      link 2/3 orientations (``dr.body_quat``) randomized each episode
+      reset. Broadphase bounds are recomputed automatically after size
+      changes.
+
+   .. grid-item-card::
+
+      .. image:: _static/dr_pseudo_inertia.gif
+         :alt: Inertia ellipsoids resizing each episode reset
+
+      ``dr.pseudo_inertia`` with ``alpha_range=(-0.5, 0.5)`` on links 2
+      and 3. The inertia ellipsoids resize each episode reset while other
+      links remain unchanged.
 
 .. note::
 
@@ -1186,6 +1207,7 @@ toggles then work correctly against the randomized model:
 Camera frustums and body poses are always current because viser reads
 world-space positions directly from GPU simulation data (``cam_xpos``,
 ``body_xpos``) every frame.
+
 
 .. note::
 
