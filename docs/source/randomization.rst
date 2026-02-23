@@ -616,8 +616,9 @@ don't have one yet. We will add them as demand arises.
      - ``pd_gains`` and ``effort_limits`` cover common cases.
    * - Material
      - ``mat_texrepeat``
-     - Continuous per-world field. Requires material-level entity
-       indexing (selecting by material name).
+     - Continuous per-world field. Material-level entity indexing
+       is now supported (see ``dr.mat_rgba``), but ``dr.mat_texrepeat``
+       is not yet implemented.
 
 Better as custom code
 """""""""""""""""""""
