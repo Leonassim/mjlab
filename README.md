@@ -33,7 +33,7 @@ git clone https://github.com/mujocolab/mjlab.git && cd mjlab
 uv run demo
 ```
 
-For alternative installation methods (PyPI, Docker), see the [Installation Guide](https://mujocolab.github.io/mjlab/source/installation.html).
+For alternative installation methods (PyPI, Docker), see the [Installation Guide](https://mujocolab.github.io/mjlab/main/source/installation.html).
 
 ## Training Examples
 
@@ -53,7 +53,7 @@ uv run train Mjlab-Velocity-Flat-Unitree-G1 \
   --env.scene.num-envs 4096
 ```
 
-See the [Distributed Training guide](https://mujocolab.github.io/mjlab/source/distributed_training.html) for details.
+See the [Distributed Training guide](https://mujocolab.github.io/mjlab/main/source/training/distributed_training.html) for details.
 
 Evaluate a policy while training (fetches latest checkpoint from Weights & Biases):
 
