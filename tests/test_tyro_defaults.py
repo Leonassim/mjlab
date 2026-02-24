@@ -8,8 +8,8 @@ from mjlab.terrains import TerrainEntityCfg
 
 
 def test_tyro_defaults():
-  """
-  Test for regression of https://github.com/mujocolab/mjlab/issues/677 due to incompatibilities between the declared types and default values of the env configs.
+  """Regression test for #677 due to incompatibilities between declared types and
+  default values of the env configs.
   """
   tyro.cli(
     TrainConfig,
