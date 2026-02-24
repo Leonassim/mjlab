@@ -58,15 +58,15 @@ eliminating CPU-side dispatch overhead.
 The simulation layer provides four core components, each with its own
 documentation page:
 
-- :ref:`entity`: a robot, a manipulated object, or a static fixture in
-  the scene, defined by an MJCF description plus optional Python
-  configuration for actuators, collision rules, and initial state.
+- :ref:`entity`: a robot, a manipulated object, or a static object such
+  as :ref:`terrain <terrain>`, defined by an MJCF description plus
+  optional Python configuration for actuators, collision rules, and
+  initial state.
 - :ref:`actuators`: how entities are controlled. Users can wrap actuators
   already defined in MJCF or create new ones from Python configuration.
 - :ref:`sensors`: how the world is observed. Includes MuJoCo-native
   sensors as well as custom sensors like RGB-D cameras and raycasters.
 - :ref:`scene`: scene composition and environment placement.
-- :ref:`terrain`: procedural terrain generation and curriculum learning.
 
 
 The manager layer
