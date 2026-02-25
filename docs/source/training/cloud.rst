@@ -88,7 +88,7 @@ What happens behind the scenes:
 2. It provisions the instance and uploads your local code via rsync.
 3. The ``setup`` step runs (Docker build or uv install).
 4. The ``run`` step runs (training).
-5. After 10 minutes of idle time the instance is terminated automatically.
+5. After 5 minutes of idle time the instance is terminated automatically.
 
 .. warning::
 
