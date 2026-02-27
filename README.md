@@ -83,12 +83,6 @@ uv run play Mjlab-Your-Task-Id --agent random  # Sends uniform random actions
 When running motion-tracking tasks, add `--registry-name your-org/motions/motion-name` to the command.
 
 
-## Research
-
-mjlab is used in published research and open-source robotics projects around the world. See the [Research](https://mujocolab.github.io/mjlab/main/source/research.html) page for publications and projects.
-
-Want to share your work? Post in [Show and Tell](https://github.com/mujocolab/mjlab/discussions/categories/show-and-tell)!
-
 ## Documentation
 
 Full documentation is available at **[mujocolab.github.io/mjlab](https://mujocolab.github.io/mjlab/)**.
@@ -106,7 +100,9 @@ For development setup: `uvx pre-commit install`
 
 ## Citation
 
-If you use mjlab in your research, please cite:
+mjlab is used in published research and open-source robotics projects. See the [Research](https://mujocolab.github.io/mjlab/main/source/research.html) page for publications and projects, or share your own in [Show and Tell](https://github.com/mujocolab/mjlab/discussions/categories/show-and-tell).
+
+If you use mjlab in your research, please consider citing:
 
 ```bibtex
 @misc{zakka2026mjlablightweightframeworkgpuaccelerated,
