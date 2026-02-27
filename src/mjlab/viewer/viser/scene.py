@@ -80,6 +80,10 @@ class ViserMujocoScene(DebugVisualizer):
 
   Also implements DebugVisualizer protocol for environment-specific annotations
   like arrows, ghost meshes, and coordinate frames.
+
+  Design boundary:
+  - This class owns render-handle lifecycle and geometry update internals.
+  - Viewer/overlay managers orchestrate *when* to request updates.
   """
 
   # Core.
@@ -116,6 +120,7 @@ class ViserMujocoScene(DebugVisualizer):
   contact_force_color: tuple[int, int, int] = _DEFAULT_CONTACT_FORCE_COLOR
   meansize_override: float | None = None
   needs_update: bool = False
+  paused: bool = False
   _tracked_body_id: int | None = field(init=False, default=None)
 
   # Cached visualization state for re-rendering when settings change.
@@ -654,7 +659,7 @@ class ViserMujocoScene(DebugVisualizer):
     """Re-render the scene using cached visualization data.
 
     This is useful when visualization settings change (e.g., toggling contacts)
-    but the underlying simulation data hasn't changed. Clears the needs_update flag.
+    but the underlying simulation data hasn't changed.
     """
     if (
       self._last_body_xpos is None
@@ -690,7 +695,24 @@ class ViserMujocoScene(DebugVisualizer):
       scene_offset,
       contacts,
     )
-    self.needs_update = False
+    # Keep one live refresh pending when overlays depend on live sim state.
+    # This covers contact toggles and paused debug-viz toggles (e.g. ghosts),
+    # which otherwise can require stepping/unpausing to appear.
+    self.needs_update = self._requires_live_refresh(
+      show_contact_points=self.show_contact_points,
+      show_contact_forces=self.show_contact_forces,
+      debug_visualization_enabled=self.debug_visualization_enabled,
+    )
+
+  @staticmethod
+  def _requires_live_refresh(
+    *,
+    show_contact_points: bool,
+    show_contact_forces: bool,
+    debug_visualization_enabled: bool,
+  ) -> bool:
+    """Whether scene should request one live recompute after cached refresh."""
+    return show_contact_points or show_contact_forces or debug_visualization_enabled
 
   def _add_fixed_geometry(self) -> None:
     """Add fixed world geometry to the scene."""
@@ -731,16 +753,10 @@ class ViserMujocoScene(DebugVisualizer):
             geom_name = mj_id2name(self.mj_model, mjtObj.mjOBJ_GEOM, geom_id)
             self.server.scene.add_grid(
               f"/fixed_bodies/{body_name}/{geom_name}",
-              # For infinite grids in viser 1.0.10, the width and height
-              # parameters determined the region of the grid that can
-              # receive shadows. We'll just make this really big for now.
-              # In a future release of Viser these two args should ideally be
-              # unnecessary.
-              width=2000.0,
-              height=2000.0,
               infinite_grid=True,
               fade_distance=50.0,
               shadow_opacity=0.2,
+              plane_opacity=0.4,
               position=self.mj_model.geom_pos[geom_id],
               wxyz=self.mj_model.geom_quat[geom_id],
             )
@@ -1317,10 +1333,9 @@ class ViserMujocoScene(DebugVisualizer):
       self._ellipsoid_handle.remove()
       self._ellipsoid_handle = None
 
-    # Remove ghost meshes
+    # Hide ghost meshes (retain handles to avoid recreate hitch on re-enable)
     for handle in self._ghost_handles_batched.values():
-      handle.remove()
-    self._ghost_handles_batched.clear()
+      handle.visible = False
 
   def _create_geom_mesh_from_model(
     self, mj_model: mujoco.MjModel, geom_id: int
@@ -1689,13 +1704,16 @@ class ViserMujocoScene(DebugVisualizer):
     combination, significantly reducing scene node count for multi-env rendering.
     """
     if not self.debug_visualization_enabled:
+      for handle in self._ghost_handles_batched.values():
+        handle.visible = False
       return
 
     if not self._queued_ghosts:
-      # Remove all ghost meshes if no ghosts to render
+      # While paused, keep last ghost snapshot visible so toggling debug does not
+      # require stepping to repopulate queues. While running, empty queue means
+      # ghosts should disappear this frame.
       for handle in self._ghost_handles_batched.values():
-        handle.remove()
-      self._ghost_handles_batched.clear()
+        handle.visible = self.paused
       return
 
     # Group ghosts by (model_hash, body_id) -> list of (qpos, model, alpha, label)
@@ -1795,17 +1813,8 @@ class ViserMujocoScene(DebugVisualizer):
 
       key = (model_hash, body_id)
 
-      # Check if we need to recreate handle (number of instances changed)
-      needs_recreation = key not in self._ghost_handles_batched or len(
-        positions
-      ) != len(self._ghost_handles_batched[key].batched_positions)
-
-      if needs_recreation:
-        # Remove old handle if exists
-        if key in self._ghost_handles_batched:
-          self._ghost_handles_batched[key].remove()
-
-        # Create new batched mesh
+      # Create handle if missing; otherwise update in place.
+      if key not in self._ghost_handles_batched:
         self._ghost_handles_batched[key] = self.server.scene.add_batched_meshes_simple(
           f"/debug/ghosts/body_{body_id}_{model_hash}",
           combined_mesh.vertices,
@@ -1818,11 +1827,29 @@ class ViserMujocoScene(DebugVisualizer):
           receive_shadow=False,
         )
       else:
-        # Update existing handle
+        # Update existing handle. Some viser versions allow dynamic batch sizes;
+        # if not, fallback to recreate for this key only.
         handle = self._ghost_handles_batched[key]
-        handle.batched_positions = positions
-        handle.batched_wxyzs = wxyzs
-        handle.batched_colors = colors
+        try:
+          handle.batched_positions = positions
+          handle.batched_wxyzs = wxyzs
+          handle.batched_colors = colors
+          handle.visible = True
+        except Exception:
+          handle.remove()
+          self._ghost_handles_batched[key] = (
+            self.server.scene.add_batched_meshes_simple(
+              f"/debug/ghosts/body_{body_id}_{model_hash}",
+              combined_mesh.vertices,
+              combined_mesh.faces,
+              batched_wxyzs=wxyzs,
+              batched_positions=positions,
+              batched_colors=colors,
+              opacity=alpha,
+              cast_shadow=False,
+              receive_shadow=False,
+            )
+          )
 
   @staticmethod
   def _mat_to_quat(mat: np.ndarray) -> np.ndarray:
