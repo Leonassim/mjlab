@@ -2,8 +2,8 @@
 Changelog
 =========
 
-Upcoming version (not yet released)
------------------------------------
+Version 1.2.0 (March 6, 2026)
+-----------------------------
 
 .. admonition:: Breaking API changes
    :class: attention
