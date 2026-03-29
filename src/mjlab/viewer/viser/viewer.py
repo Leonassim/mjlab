@@ -6,9 +6,12 @@ Adapted from an MJX visualizer by Chung Min Kim: https://github.com/chungmin99/
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from enum import Enum, auto
-from threading import Lock
+from threading import Event, Lock
+from typing import Any, Optional
 
 import viser
 from typing_extensions import override
@@ -20,6 +23,7 @@ from mjlab.viewer.base import (
   EnvProtocol,
   PolicyProtocol,
   VerbosityLevel,
+  ViewerAction,
 )
 from mjlab.viewer.viser.overlays import (
   ViserCameraOverlays,
@@ -28,6 +32,26 @@ from mjlab.viewer.viser.overlays import (
   ViserTermOverlays,
 )
 from mjlab.viewer.viser.scene import MjlabViserScene
+
+
+@dataclass
+class CheckpointManager:
+  """Holds checkpoint discovery and loading callbacks for the viewer."""
+
+  current_name: str
+  fetch_available: Callable[[], list[tuple[str, str]]]
+  load_checkpoint: Callable[[str], PolicyProtocol]
+  run_name: str | None = None
+  run_url: str | None = None
+  run_status: str | None = None
+
+
+def format_time_ago(seconds: int) -> str:
+  """Format a duration in seconds as a human-readable time-ago string."""
+  for div, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+    if seconds >= div:
+      return f"{seconds // div}{unit} ago"
+  return f"{seconds}s ago"
 
 
 class UpdateReason(Enum):
@@ -46,8 +70,10 @@ class ViserPlayViewer(BaseViewer):
     frame_rate: float = 60.0,
     verbosity: VerbosityLevel = VerbosityLevel.SILENT,
     viser_server: viser.ViserServer | None = None,
+    checkpoint_manager: CheckpointManager | None = None,
   ) -> None:
     super().__init__(env, policy, frame_rate, verbosity)
+    self._ckpt_mgr = checkpoint_manager
     self._term_overlays: ViserTermOverlays | None = None
     self._camera_overlays: ViserCameraOverlays | None = None
     self._debug_overlays: ViserDebugOverlays | None = None
@@ -179,6 +205,106 @@ class ViserPlayViewer(BaseViewer):
     # Groups tab (geom/site/joint/tendon/actuator visibility).
     with tabs.add_tab("Groups", icon=viser.Icon.LAYERS_INTERSECT):
       self._scene.create_groups_gui()
+
+    # Checkpoints tab (optional, when checkpoint_manager is provided).
+    if self._ckpt_mgr is not None:
+      is_wandb = self._ckpt_mgr.run_url is not None
+      with tabs.add_tab("Checkpoints", icon=viser.Icon.DATABASE):
+        if is_wandb:
+          url = self._ckpt_mgr.run_url
+          self._server.gui.add_html(
+            '<div style="font-size:0.85em;line-height:1.25;'
+            'padding:0 1em 0.5em 1em;">'
+            "<strong>Source:</strong> W&B<br/>"
+            f"<strong>Run:</strong>"
+            f" {self._ckpt_mgr.run_name}<br/>"
+            f"<strong>Status:</strong>"
+            f" {self._ckpt_mgr.run_status}<br/>"
+            f'<a href="{url}" target="_blank"'
+            f' style="color:#3b82f6;">'
+            f"Open in W&B</a>"
+            "</div>"
+          )
+        else:
+          self._server.gui.add_html(
+            '<div style="font-size:0.85em;line-height:1.25;'
+            'padding:0 1em 0.5em 1em;">'
+            "<strong>Source:</strong> Local"
+            "</div>"
+          )
+
+        self._ckpt_dropdown = self._server.gui.add_dropdown(
+          "Checkpoint",
+          options=[self._ckpt_mgr.current_name],
+          initial_value=self._ckpt_mgr.current_name,
+        )
+        self._ckpt_user_event = Event()
+        self._ckpt_user_event.set()
+
+        @self._ckpt_dropdown.on_update
+        def _(_) -> None:
+          if self._ckpt_user_event.is_set():
+            self._actions.append((ViewerAction.FETCH_CHECKPOINT, "selected"))
+
+        ckpt_buttons = self._server.gui.add_button_group(
+          "",
+          options=["Sync", "Use Latest"],
+        )
+
+        @ckpt_buttons.on_click
+        def _(event) -> None:
+          if event.target.value == "Sync":
+            self._actions.append((ViewerAction.FETCH_CHECKPOINT, "refresh"))
+          else:
+            self._actions.append((ViewerAction.FETCH_CHECKPOINT, "latest"))
+
+      # Populate the dropdown on startup.
+      self._actions.append((ViewerAction.FETCH_CHECKPOINT, "refresh"))
+
+  @override
+  def _handle_custom_action(
+    self,
+    action: ViewerAction,
+    payload: Optional[Any],
+  ) -> bool:
+    if action != ViewerAction.FETCH_CHECKPOINT:
+      return False
+    if self._ckpt_mgr is None:
+      return True
+
+    if payload in ("refresh", "latest"):
+      entries = self._ckpt_mgr.fetch_available()
+      labels = [f"{n}  ({t})" if t else n for n, t in entries]
+      self._ckpt_user_event.clear()
+      self._ckpt_dropdown.options = labels
+      cur = next(
+        (lbl for lbl in labels if lbl.startswith(self._ckpt_mgr.current_name)),
+        self._ckpt_mgr.current_name,
+      )
+      self._ckpt_dropdown.value = cur
+      self._ckpt_user_event.set()
+      if payload == "refresh" or not entries:
+        return True
+      # "latest" -- select the last entry.
+      name = entries[-1][0]
+    else:
+      # "selected" -- extract name from dropdown label.
+      name = self._ckpt_dropdown.value.split("  (")[0]
+
+    if name != self._ckpt_mgr.current_name:
+      print(f"[INFO]: Loading {name}...")
+      self.policy = self._ckpt_mgr.load_checkpoint(name)
+      self._ckpt_mgr.current_name = name
+      self._ckpt_updating = True
+      cur = next(
+        (lbl for lbl in self._ckpt_dropdown.options if lbl.startswith(name)),
+        name,
+      )
+      self._ckpt_dropdown.value = cur
+      self._ckpt_user_event.set()
+      self.reset_environment()
+      print(f"[INFO]: Loaded {name}")
+    return True
 
   @override
   def _process_actions(self) -> None:
