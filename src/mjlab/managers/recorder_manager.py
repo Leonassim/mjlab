@@ -19,49 +19,47 @@ if TYPE_CHECKING:
 class RecorderTermCfg(ManagerTermBaseCfg):
   """Configuration for a recorder term.
 
-  ``func`` must be a :class:`RecorderTerm` subclass. Function-based terms are
-  not supported because recorder terms are stateful (file handles, buffers,
-  etc.).
+  ``func`` must be a :class:`RecorderTerm` subclass. Function-based terms are not
+  supported because recorder terms are stateful (file handles, buffers, etc.).
   """
 
 
 class RecorderTerm(ManagerTermBase):
   """Base class for recorder terms.
 
-  Override only the lifecycle methods you need. Each method is a no-op by
-  default so subclasses are not required to implement all of them.
+  Override only the lifecycle methods you need. Each method is a no-op by default so
+  subclasses are not required to implement all of them.
 
-  The environment is available as ``self._env``, giving access to
-  ``self._env.obs_buf``, ``self._env.action_manager.action``, and all
-  other environment state.
+  The environment is available as ``self._env``, giving access to ``self._env.obs_buf``,
+  ``self._env.action_manager.action``, and all other environment state.
 
   Example::
 
     class CsvRecorder(RecorderTerm):
-        def __init__(self, cfg, env):
-            super().__init__(cfg, env)
-            self._file = open(cfg.params["path"], "w", newline="")
-            self._writer = csv.writer(self._file)
+      def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        self._file = open(cfg.params["path"], "w", newline="")
+        self._writer = csv.writer(self._file)
 
-        def record_pre_reset(self, env_ids):
-            # Terminal transition: action is still intact here.
-            # It will be zeroed by _reset_idx immediately after this returns.
-            obs = self._env.obs_buf["actor"][env_ids].cpu().numpy()
-            act = self._env.action_manager.action[env_ids].cpu().numpy()
-            for o, a in zip(obs, act):
-                self._writer.writerow(o.tolist() + a.tolist())
+      def record_pre_reset(self, env_ids):
+        # Terminal transition: action is still intact here.
+        # It will be zeroed by _reset_idx immediately after this returns.
+        obs = self._env.obs_buf["actor"][env_ids].cpu().numpy()
+        act = self._env.action_manager.action[env_ids].cpu().numpy()
+        for o, a in zip(obs, act):
+          self._writer.writerow(o.tolist() + a.tolist())
 
-        def record_post_step(self):
-            # Skip envs that just reset: their terminal pair was written
-            # in record_pre_reset and their action is now zeroed.
-            mask = ~self._env.reset_buf
-            obs = self._env.obs_buf["actor"][mask].cpu().numpy()
-            act = self._env.action_manager.action[mask].cpu().numpy()
-            for o, a in zip(obs, act):
-                self._writer.writerow(o.tolist() + a.tolist())
+      def record_post_step(self):
+        # Skip envs that just reset: their terminal pair was written in record_pre_reset
+        # and their action is now zeroed.
+        mask = ~self._env.reset_buf
+        obs = self._env.obs_buf["actor"][mask].cpu().numpy()
+        act = self._env.action_manager.action[mask].cpu().numpy()
+        for o, a in zip(obs, act):
+          self._writer.writerow(o.tolist() + a.tolist())
 
-        def close(self):
-            self._file.close()
+      def close(self):
+        self._file.close()
   """
 
   def __init__(self, cfg: RecorderTermCfg, env: ManagerBasedRlEnv):
@@ -73,22 +71,20 @@ class RecorderTerm(ManagerTermBase):
 
     **What is available:**
 
-    - ``obs_buf`` contains the observation from the *end of the previous
-      step* (the input the agent used to choose the terminal action). It
-      does **not** contain the post-action terminal observation (the state
-      reached after applying the action), which is never computed for
-      resetting environments.
-    - ``action_manager.action`` contains the action applied during this
-      step. This is the correct terminal action. It will be zeroed for
-      these environments by ``_reset_idx`` immediately after this hook
-      returns, so capture it here if you need it later.
+    - ``obs_buf`` contains the observation from the *end of the previous step* (the
+      input the agent used to choose the terminal action). It does **not** contain the
+      post-action terminal observation (the state reached after applying the action),
+      which is never computed for resetting environments.
+    - ``action_manager.action`` contains the action applied during this step. This is
+      the correct terminal action. It will be zeroed for these environments by
+      ``_reset_idx`` immediately after this hook returns, so capture it here if you
+      need it later.
     - ``reward_buf`` contains the reward for this terminal step.
-    - ``reset_terminated`` and ``reset_time_outs`` reflect why each
-      environment is resetting.
+    - ``reset_terminated`` and ``reset_time_outs`` reflect why each environment is
+      resetting.
 
     This is the right hook to record the terminal transition
-    ``(obs_t, action_t, reward_t, done=True)`` for each resetting
-    environment.
+    ``(obs_t, action_t, reward_t, done=True)`` for each resetting environment.
 
     Args:
       env_ids: Indices of environments that are about to be reset.
@@ -98,17 +94,16 @@ class RecorderTerm(ManagerTermBase):
   def record_post_reset(self, env_ids: torch.Tensor) -> None:
     """Called after a reset completes with fresh observations computed.
 
-    Fires at the end of ``env.reset()`` (covering all environments on
-    the initial call) and within ``env.step()`` for each batch of
-    environments that terminates, after state has been overwritten and
-    new observations computed.
+    Fires at the end of ``env.reset()`` (covering all environments on the initial call)
+    and within ``env.step()`` for each batch of environments that terminates, after
+    state has been overwritten and new observations computed.
 
-    At this point ``obs_buf[env_ids]`` holds the initial observation of
-    the new episode and ``action_manager.action[env_ids]`` is zero (no
-    action has been taken in the new episode yet).
+    At this point ``obs_buf[env_ids]`` holds the initial observation of the new episode
+    and ``action_manager.action[env_ids]`` is zero (no action has been taken in the new
+    episode yet).
 
-    Use this hook to initialize per-episode state or record the first
-    observation of a new episode.
+    Use this hook to initialize per-episode state or record the first observation of a
+    new episode.
 
     Args:
       env_ids: Indices of environments that were reset.
@@ -118,14 +113,13 @@ class RecorderTerm(ManagerTermBase):
   def record_post_step(self) -> None:
     """Called at the end of every ``env.step()`` with fresh observations.
 
-    At this point ``obs_buf`` holds the new observation for every
-    environment and ``action_manager.action`` holds the action that was
-    applied during this step. **Exception:** for environments that reset
-    during this step, ``action_manager.action`` has been zeroed by
-    ``_reset_idx`` and ``obs_buf`` holds the initial observation of the
-    new episode rather than the post-action terminal observation. Use
-    ``record_pre_reset`` to capture the terminal ``(obs, action)`` pair
-    for those environments. Resetting environments are identified by
+    At this point ``obs_buf`` holds the new observation for every environment and
+    ``action_manager.action`` holds the action that was applied during this step.
+    **Exception:** for environments that reset during this step,
+    ``action_manager.action`` has been zeroed by ``_reset_idx`` and ``obs_buf`` holds
+    the initial observation of the new episode rather than the post-action terminal
+    observation. Use ``record_pre_reset`` to capture the terminal ``(obs, action)``
+    pair for those environments. Resetting environments are identified by
     ``self._env.reset_buf``.
     """
 
@@ -145,14 +139,13 @@ class RecorderTerm(ManagerTermBase):
 class RecorderManager(ManagerBase):
   """Orchestrates recorder terms during environment rollouts.
 
-  Holds a collection of :class:`RecorderTerm` instances and calls their
-  lifecycle methods at the appropriate points in the environment loop. The
-  manager has no opinion on how data is stored; each term handles its own
-  I/O entirely.
+  Holds a collection of :class:`RecorderTerm` instances and calls their lifecycle
+  methods at the appropriate points in the environment loop. The manager has no opinion
+  on how data is stored; each term handles its own I/O entirely.
 
   Register terms by adding them to the ``recorders`` dict on
-  :class:`~mjlab.envs.ManagerBasedRlEnvCfg`. If the dict is empty, the
-  environment substitutes a :class:`NullRecorderManager` with zero overhead.
+  :class:`~mjlab.envs.ManagerBasedRlEnvCfg`. If the dict is empty, the environment
+  substitutes a :class:`NullRecorderManager` with zero overhead.
   """
 
   def __init__(self, cfg: dict[str, RecorderTermCfg], env: ManagerBasedRlEnv):

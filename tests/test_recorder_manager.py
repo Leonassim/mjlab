@@ -120,14 +120,13 @@ def test_terminal_action_available_at_record_pre_reset(mock_env: Mock) -> None:
 
 
 def test_record_pre_reset_obs_buf_is_previous_step(mock_env: Mock) -> None:
-  """obs_buf at record_pre_reset is the previous step's observation, not the
-  post-action terminal state. It is the input obs the agent used to pick the
-  terminal action.
+  """obs_buf at record_pre_reset is the previous step's observation, not the post-action
+  terminal state. It is the input obs the agent used to pick the terminal action.
   """
   seen: dict[str, torch.Tensor] = {}
 
-  # Use a plain tensor for obs_buf to avoid dict-subscript complexity in the
-  # type checker. The point of this test is lifecycle timing, not data structure.
+  # Use a plain tensor for obs_buf to avoid dict-subscript complexity in the type
+  # checker. The point of this test is lifecycle timing, not data structure.
   class ObsCapture(RecorderTerm):
     def record_pre_reset(self, env_ids: torch.Tensor) -> None:
       obs: torch.Tensor = self._env.obs_buf  # type: ignore[assignment]
@@ -157,8 +156,8 @@ def test_record_pre_reset_obs_buf_is_previous_step(mock_env: Mock) -> None:
 
 
 def test_record_post_reset_fires_after_obs_are_fresh(mock_env: Mock) -> None:
-  """record_post_reset is called after obs are computed, so obs_buf already
-  holds the new-episode initial observation for the reset environments.
+  """record_post_reset is called after obs are computed, so obs_buf already holds the
+  new-episode initial observation for the reset environments.
   """
   seen: dict[str, torch.Tensor] = {}
 
@@ -322,9 +321,9 @@ def test_cfg_params_accessible_on_term(mock_env: Mock) -> None:
 def test_deepcopy_protects_original_cfg(mock_env: Mock) -> None:
   """Creating a manager must not mutate the caller's cfg dict.
 
-  _resolve_common_term_cfg replaces cfg.func with the instantiated object
-  in-place on the internal copy. Without deepcopy the caller's cfg would
-  be silently corrupted, breaking any second use.
+  _resolve_common_term_cfg replaces cfg.func with the instantiated object in-place on
+  the internal copy. Without deepcopy the caller's cfg would be silently corrupted,
+  breaking any second use.
   """
   original_cfg = {"t": RecorderTermCfg(func=_CountingRecorder, params={})}
   RecorderManager(original_cfg, mock_env)
@@ -423,8 +422,8 @@ def device() -> str:
 
 def test_integration_terminal_action_available_at_record_pre_reset(device: str) -> None:
   """In a real env.step(), record_pre_reset fires before _reset_idx zeroes
-  action_manager.action for reset envs. This verifies the hook ordering
-  described in the docstring is enforced by the actual step() implementation.
+  action_manager.action for reset envs. This verifies the hook ordering described in
+  the docstring is enforced by the actual step() implementation.
   """
   seen: dict[str, torch.Tensor] = {}
 
