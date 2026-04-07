@@ -427,8 +427,17 @@ class MotionCommand(CommandTerm):
 
     if self.cfg.viz.mode == "ghost":
       if self._ghost_model is None:
+        # Build a ghost model with only visual geoms visible. Collision geoms (nonzero
+        # contype/conaffinity) get alpha=0 so the viewer's alpha filter excludes them.
         self._ghost_model = copy.deepcopy(self._env.sim.mj_model)
-        self._ghost_model.geom_rgba[:] = self._ghost_color
+        for gi in range(self._ghost_model.ngeom):
+          if (
+            self._ghost_model.geom_contype[gi] != 0
+            or self._ghost_model.geom_conaffinity[gi] != 0
+          ):
+            self._ghost_model.geom_rgba[gi, 3] = 0
+          else:
+            self._ghost_model.geom_rgba[gi] = self._ghost_color
 
       entity: Entity = self._env.scene[self.cfg.entity_name]
       indexing = entity.indexing
