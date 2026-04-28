@@ -194,12 +194,21 @@ class ManagerBasedRlEnv:
 
     # Initialize scene and simulation.
     self.scene = Scene(self.cfg.scene, device=device)
-    self.sim = Simulation(
-      num_envs=self.scene.num_envs,
-      cfg=self.cfg.sim,
-      model=self.scene.compile(),
-      device=device,
-    )
+    if self.scene.has_mesh_variants:
+      self.sim = Simulation(
+        num_envs=self.scene.num_envs,
+        cfg=self.cfg.sim,
+        spec=self.scene.spec,
+        variant_info=self.scene.collect_variant_info(),
+        device=device,
+      )
+    else:
+      self.sim = Simulation(
+        num_envs=self.scene.num_envs,
+        cfg=self.cfg.sim,
+        model=self.scene.compile(),
+        device=device,
+      )
 
     self.scene.initialize(
       mj_model=self.sim.mj_model,
@@ -235,7 +244,11 @@ class ManagerBasedRlEnv:
     self._offline_renderer: OffscreenRenderer | None = None
     if self.render_mode == "rgb_array":
       renderer = OffscreenRenderer(
-        model=self.sim.mj_model, cfg=self.cfg.viewer, scene=self.scene
+        model=self.sim.mj_model,
+        cfg=self.cfg.viewer,
+        scene=self.scene,
+        sim_model=self.sim.model,
+        expanded_fields=self.sim.expanded_fields,
       )
       renderer.initialize()
       self._offline_renderer = renderer
