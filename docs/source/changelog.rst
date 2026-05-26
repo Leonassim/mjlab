@@ -2,8 +2,8 @@
 Changelog
 =========
 
-Upcoming version (not yet released)
------------------------------------
+Version 1.4.0 (May 26, 2026)
+----------------------------
 
 Added
 ^^^^^
@@ -119,6 +119,12 @@ Changed
 Fixed
 ^^^^^
 
+- Removed use of deprecated ``warp-lang`` symbols (``wp.context.runtime``
+  and ``wp.context.Device``) that were dropped in newer ``warp-lang``
+  releases, causing ``AttributeError: module 'warp' has no attribute
+  'context'`` at import/runtime. mjlab now uses
+  ``wp.get_cuda_driver_version()`` and ``wp.Device`` instead
+  (:issue:`967`). Contribution by @rdeits.
 - Fixed the tracking ``evaluate`` script scoring each metric against the
   next motion frame; the reference is now snapshotted before each step to
   match the reward.
