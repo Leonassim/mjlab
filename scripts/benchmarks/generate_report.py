@@ -822,7 +822,11 @@ def main(
       if run_id in eval_results_by_id:
         print(f"Using cached result for {run_id}")
       else:
-        result = evaluate_run(run_path, num_envs)
+        try:
+          result = evaluate_run(run_path, num_envs)
+        except RuntimeError as e:
+          print(f"Skipping {run_path}: {e}")
+          continue
         eval_results_by_id[run_id] = result
         new_evals += 1
   else:
@@ -841,7 +845,11 @@ def main(
           print(f"Reached eval limit ({eval_limit}), skipping remaining new runs")
           break
         run_path = f"{entity}/{project}/{run.id}"
-        result = evaluate_run(run_path, num_envs)
+        try:
+          result = evaluate_run(run_path, num_envs)
+        except RuntimeError as e:
+          print(f"Skipping {run.name} ({run.id}): {e}")
+          continue
         eval_results_by_id[run.id] = result
         new_evals += 1
 
