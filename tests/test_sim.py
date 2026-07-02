@@ -1,6 +1,7 @@
 """Tests for sim.py."""
 
 import mujoco
+import mujoco_warp as mjwarp
 import numpy as np
 import pytest
 import torch
@@ -47,6 +48,8 @@ def test_simulation_config_is_piped(robot_xml, device):
 
   cfg = SimulationCfg(
     contact_sensor_maxmatch=128,
+    broadphase="sap_tile",
+    broadphase_filter=("plane", "aabb"),
     mujoco=MujocoCfg(
       timestep=0.02,
       integrator="euler",
@@ -83,8 +86,23 @@ def test_simulation_config_is_piped(robot_xml, device):
   assert sim.model.opt.iterations == cfg.mujoco.iterations
   assert sim.model.opt.enableflags & mujoco.mjtEnableBit.mjENBL_ENERGY
 
-  # SimulationCfg should be applied to wp_model.
+  # SimulationCfg's warp-only settings should be applied to wp_model.opt.
   assert sim.wp_model.opt.contact_sensor_maxmatch == cfg.contact_sensor_maxmatch
+  assert sim.wp_model.opt.broadphase == mjwarp.BroadphaseType.SAP_TILE
+  assert sim.wp_model.opt.broadphase_filter == (
+    mjwarp.BroadphaseFilter.PLANE | mjwarp.BroadphaseFilter.AABB
+  )
+
+
+def test_default_broadphase_keeps_put_model_heuristic(robot_xml, device):
+  """Unset broadphase settings should not override put_model's own heuristic."""
+  model = mujoco.MjModel.from_xml_string(robot_xml)
+  heuristic_opt = mjwarp.put_model(model).opt
+
+  sim = Simulation(num_envs=1, cfg=SimulationCfg(), model=model, device=device)
+
+  assert sim.wp_model.opt.broadphase == heuristic_opt.broadphase
+  assert sim.wp_model.opt.broadphase_filter == heuristic_opt.broadphase_filter
 
 
 def test_ls_parallel_is_deprecated():
