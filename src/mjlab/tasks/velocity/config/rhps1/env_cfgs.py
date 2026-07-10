@@ -228,6 +228,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       terms.pop("phase", None)
       terms.pop("base_height", None)
       terms.pop("joint_acc", None)
+      terms.pop("foot_height", None)  # RHPS1 uses left/right_foot_scan, not foot_height_scan.
 
   cfg.viewer.body_name = "CHEST_P_LINK"
 
