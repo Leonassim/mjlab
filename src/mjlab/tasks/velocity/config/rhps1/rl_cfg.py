@@ -11,17 +11,18 @@ def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for RHPS1 velocity task."""
   return RslRlOnPolicyRunnerCfg(
     actor=RslRlModelCfg(
-      init_noise_std=1.0,
       obs_normalization=True,
       hidden_dims=(512, 256, 128),
-      stochastic=True,
       activation="elu",
+      distribution_cfg={
+        "class_name": "GaussianDistribution",
+        "init_std": 1.0,
+        "std_type": "scalar",
+      },
     ),
     critic=RslRlModelCfg(
-      init_noise_std=1.0,
       obs_normalization=True,
       hidden_dims=(512, 256, 128),
-      stochastic=False,
       activation="elu",
     ),
     algorithm=RslRlPpoAlgorithmCfg(
