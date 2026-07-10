@@ -477,6 +477,17 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "actuator_pattern": r"^[LR]_ANKLE_R$",
     },
   )
+  # Light pitch-effort penalty: sustained plantarflexion torque is the
+  # signature of tiptoeing. Kept well below the roll weight since ankle pitch
+  # legitimately works during push-off.
+  cfg.rewards["ankle_pitch_torque"] = RewardTermCfg(
+    func=mdp.joint_effort_l2,
+    weight=-2e-4,
+    params={
+      "asset_cfg": SceneEntityCfg("robot"),
+      "actuator_pattern": r"^[LR]_ANKLE_P$",
+    },
+  )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
   cfg.rewards["air_time"].weight = 2.0
 
