@@ -447,7 +447,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
-  cfg.rewards["air_time"].weight = 5.0
+  cfg.rewards["air_time"].weight = 2.0
 
   cfg.rewards["foot_clearance"].func = mdp.feet_clearance_velocity_weighted
   cfg.rewards["foot_clearance"].params.pop("height_sensor_name", None)
@@ -492,6 +492,10 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["air_time"].params["overflow_threshold"] = 2.0
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
+  # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
+  # time; steps shorter than threshold_max*sqrt(0.15) are net negative.
+  cfg.rewards["air_time"].params["power"] = 2.0
+  cfg.rewards["air_time"].params["touchdown_cost"] = 0.15
   cfg.rewards["foot_clearance"].params["target_height"] = 0.15
   cfg.rewards["foot_clearance"].params["command_name"] = "twist"
   cfg.rewards["foot_clearance"].params["command_threshold"] = 0.05
@@ -538,13 +542,16 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
 
+  # Weights calibrated for the fixed landing bonus (last_air_time, power=2,
+  # touchdown_cost): a full-length stride now pays ~0.85 per landing where the
+  # old current_air_time bug paid a constant ~0.02.
   cfg.curriculum["air_time_weight"] = CurriculumTermCfg(
     func=mdp.reward_weight,
     params={
       "reward_name": "air_time",
       "weight_stages": [
-        {"step": 0, "weight": 5.0},
-        {"step": 500 * 48, "weight": 15.0},
+        {"step": 0, "weight": 2.0},
+        {"step": 500 * 48, "weight": 5.0},
       ],
     },
   )

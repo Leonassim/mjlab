@@ -457,8 +457,20 @@ def split_feet_air_time(
   overflow_threshold: float | None = None,
   command_name: str | None = None,
   command_threshold: float = 0.5,
+  power: float = 1.0,
+  touchdown_cost: float = 0.0,
 ) -> torch.Tensor:
   """Reward per-foot air time aggregated from 4 split contacts per foot.
+
+  At each touchdown, pays ``(min(last_air_time, threshold_max) /
+  threshold_max) ** power - touchdown_cost``. Landings whose air time is below
+  ``threshold_min`` earn nothing (contact-noise floor). With ``power=1`` the
+  per-second reward rate only depends on the fraction of time spent in flight
+  (a bonus proportional to air time is exactly cancelled by the lower landing
+  frequency); ``power=2`` makes the rate grow with absolute air time, and
+  ``touchdown_cost`` charges a flat fee per landing so short shuffling steps
+  are net negative (break-even air time = threshold_max *
+  touchdown_cost**(1/power)).
 
   ``overflow_threshold`` sets the per-foot air-time limit beyond which a
   penalty fires each step (to deter hover exploits). Defaults to
@@ -468,7 +480,8 @@ def split_feet_air_time(
   """
   sensor: ContactSensor = env.scene[sensor_name]
   current_air_time = sensor.data.current_air_time
-  if current_air_time is None:
+  last_air_time = sensor.data.last_air_time
+  if current_air_time is None or last_air_time is None:
     raise RuntimeError("Contact sensor must have track_air_time=True.")
   if current_air_time.shape[1] < 8:
     raise RuntimeError("Split-foot air-time reward expects 8 contact slots.")
@@ -478,11 +491,17 @@ def split_feet_air_time(
   foot_in_air = 1.0 - foot_in_contact
   foot_air_time = torch.max(split_air, dim=2).values * foot_in_air
 
+  # Air time of the stride that just ended. current_air_time is zeroed at the
+  # contact step, so read last_air_time from the slots that landed within the
+  # last step: heel-first touchdowns carry the full flight time, micro-taps
+  # during stance carry ~zero and fall under the threshold_min floor.
   first_contact = sensor.compute_first_contact(dt=env.step_dt)
-  split_first = first_contact[:, :8].view(first_contact.shape[0], 2, 4)
-  foot_landed = (torch.sum(split_first.float(), dim=2) > 0).float()
-  clamped = torch.clamp(foot_air_time, min=threshold_min, max=threshold_max)
-  landing_reward = torch.sum((clamped / threshold_max) * foot_landed, dim=1)
+  split_first = first_contact[:, :8].view(first_contact.shape[0], 2, 4).float()
+  split_last_air = last_air_time[:, :8].view(last_air_time.shape[0], 2, 4)
+  foot_last_air = torch.max(split_last_air * split_first, dim=2).values
+  foot_landed = (foot_last_air > threshold_min).float()
+  value = (torch.clamp(foot_last_air, max=threshold_max) / threshold_max) ** power
+  landing_reward = torch.sum((value - touchdown_cost) * foot_landed, dim=1)
   ot = overflow_threshold if overflow_threshold is not None else 2.0 * threshold_max
   overflow = torch.clamp(foot_air_time - ot, min=0.0) * foot_in_air
   overflow_penalty = torch.sum(overflow, dim=1)
