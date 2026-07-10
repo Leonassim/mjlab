@@ -574,6 +574,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.curriculum.pop("standing_envs", None)
     # Disable debug visualizers to recover viewer FPS.
     twist_cmd.debug_vis = False
+    for sensor in cfg.scene.sensors:
+      if isinstance(sensor, RayCastSensorCfg):
+        sensor.debug_vis = False
 
     if cfg.scene.terrain is not None:
       if cfg.scene.terrain.terrain_generator is not None:
