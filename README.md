@@ -1,17 +1,38 @@
 ![Project banner](https://raw.githubusercontent.com/mujocolab/mjlab/main/docs/source/_static/mjlab-banner.jpg)
 
-# mjlab
+# mjlab — RHPS1 fork
 
-[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/mujocolab/mjlab/ci.yml?branch=main)](https://github.com/mujocolab/mjlab/actions/workflows/ci.yml?query=branch%3Amain)
-[![Documentation](https://github.com/mujocolab/mjlab/actions/workflows/docs.yml/badge.svg)](https://mujocolab.github.io/mjlab/)
+> **Fork by [Léo Moussafir](https://github.com/Leonassim) (AIST)**
+> Adds support for the **RHPS1 humanoid robot** on top of the official [mujocolab/mjlab](https://github.com/mujocolab/mjlab).
+
 [![License](https://img.shields.io/github/license/mujocolab/mjlab)](https://github.com/mujocolab/mjlab/blob/main/LICENSE)
-[![Nightly Benchmarks](https://img.shields.io/badge/Nightly-Benchmarks-blue)](https://mujocolab.github.io/mjlab/nightly/)
-[![PyPI](https://img.shields.io/pypi/v/mjlab)](https://pypi.org/project/mjlab/)
-[![PyPI downloads](https://img.shields.io/pypi/dm/mjlab?color=blue)](https://pypistats.org/packages/mjlab)
 
 mjlab combines [Isaac Lab](https://github.com/isaac-sim/IsaacLab)'s manager-based API with [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp), a GPU-accelerated version of [MuJoCo](https://github.com/google-deepmind/mujoco).
-The framework provides composable building blocks for environment design,
-with minimal dependencies and direct access to native MuJoCo data structures.
+
+## What's added in this fork
+
+### RHPS1 robot support
+
+- **`src/mjlab/asset_zoo/robots/RHPS1/`** — RHPS1 MuJoCo XML model, mesh assets, robot constants and action scales
+- **`src/mjlab/tasks/velocity/config/rhps1/`** — Velocity training config (`env_cfgs.py`, `rl_cfg.py`) with:
+  - Split-foot contact rewards (8-slot foot sensor)
+  - Foot height curriculum (min 8 cm, target 15 cm)
+  - Air-time curriculum (5 → 50 weight over training)
+  - Velocity curriculum up to 0.3 m/s
+  - Impact velocity penalty, flat foot landing reward
+- **`src/mjlab/actuator/finite_difference_pd_actuator.py`** — `FiniteDifferencePdActuator`: PD actuator with finite-difference velocity estimation and joint velocity damper, matching mc-rtc QP deployment constraints
+
+### New MDP functions
+
+- **`tasks/velocity/mdp/rewards.py`** — `split_feet_air_time`, `swing_foot_height`, `feet_distance_penalty`, `no_double_flight_penalty`, `standing_single_support_penalty`, `flat_touchdown_penalty`, `flat_support_penalty`, `stance_action_acc_l2`, `impact_velocity`, `split_feet_swing_height`
+- **`tasks/velocity/mdp/curriculums.py`** — `air_time_curriculum`, `standing_envs_curriculum`, `reward_weight`, `velocity_damper_progress`
+- **`tasks/velocity/mdp/constraints.py`** — Constraint terms for CaT-style training: `cstr_joint_torque`, `cstr_joint_position`, `cstr_impact_vel`
+- **`envs/mdp/rewards.py`** — `joint_effort_l2`, `joint_torque_rate_l2`, `joint_torque_limit_margin_penalty`, `joints_action_acc_l2`
+
+### Utilities
+
+- **`src/mjlab/utils/torque_recorder.py`** — Record actuator torques during play for deployment analysis
+- **`src/mjlab/scripts/plot_torques.py`** — Plot recorded torque data
 
 ## Getting Started
 
@@ -27,7 +48,14 @@ uvx --from mjlab --refresh demo
 
 Or try in [Google Colab](https://colab.research.google.com/github/mujocolab/mjlab/blob/main/notebooks/demo.ipynb) (no local setup required).
 
-**Install from source:**
+**Install this fork from source:**
+
+```bash
+git clone git@github.com:Leonassim/mjlab.git && cd mjlab
+uv sync
+```
+
+**Install upstream from source:**
 
 ```bash
 git clone https://github.com/mujocolab/mjlab.git && cd mjlab
@@ -39,6 +67,12 @@ For alternative installation methods (PyPI, Docker), see the [Installation Guide
 ## Training Examples
 
 ### 1. Velocity Tracking
+
+Train the **RHPS1** humanoid:
+
+```bash
+uv run train Mjlab-Velocity-Flat-RHPS1 --env.scene.num-envs 4096
+```
 
 Train a Unitree G1 humanoid to follow velocity commands on flat terrain:
 
