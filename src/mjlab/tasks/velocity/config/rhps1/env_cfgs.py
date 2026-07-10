@@ -292,7 +292,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   site_names = ("left_foot", "right_foot")
   for reward_name in ["foot_clearance", "foot_swing_height", "foot_slip"]:
-    cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
+    if reward_name in cfg.rewards and "asset_cfg" in cfg.rewards[reward_name].params:
+      cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
   cfg.rewards["track_linear_velocity"].weight = 3.5
   cfg.rewards["track_linear_velocity"].params["std"] = 0.20
