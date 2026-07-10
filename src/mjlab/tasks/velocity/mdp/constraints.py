@@ -8,7 +8,6 @@ from mjlab.entity import Entity
 from mjlab.managers.command_manager import CommandTerm
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import BuiltinSensor, ContactSensor
-from mjlab.tasks.velocity.mdp import PhaseCommand
 from mjlab.utils.lab_api.math import quat_apply_inverse
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
@@ -79,6 +78,7 @@ def cstr_gait(
   assert contact_sensor.data.found is not None
   in_contact = contact_sensor.data.found > 0  # [B, N]
 
+  from mjlab.tasks.velocity.mdp.velocity_command import PhaseCommand  # noqa: PLC0415
   phase_term: CommandTerm | None = env.command_manager.get_term("phase")
   assert type(phase_term) is PhaseCommand
   phase_episode = phase_term.phase_episode
