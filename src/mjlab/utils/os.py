@@ -1,8 +1,24 @@
 import re
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import yaml
+
+
+def update_assets(
+  assets: Dict[str, Any],
+  path: str | Path,
+  meshdir: str | None = None,
+  glob: str = "*",
+  recursive: bool = False,
+) -> None:
+  """Update assets dictionary with files from a directory."""
+  for f in Path(path).glob(glob):
+    if f.is_file():
+      asset_key = f"{meshdir}/{f.name}" if meshdir else f.name
+      assets[asset_key] = f.read_bytes()
+    elif f.is_dir() and recursive:
+      update_assets(assets, f, meshdir, glob, recursive)
 
 
 def dump_yaml(filename: Path, data: Dict, sort_keys: bool = False) -> None:
