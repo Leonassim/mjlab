@@ -470,6 +470,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
   cfg.rewards["air_time"].weight = 5.0
+  cfg.rewards["foot_clearance"].func = mdp.feet_clearance_velocity_weighted
+  cfg.rewards["foot_clearance"].params.pop("height_sensor_name", None)
+  cfg.rewards["foot_clearance"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", site_names=site_names
+  )
   cfg.rewards["foot_clearance"].weight = -4.0
   cfg.rewards["foot_swing_height"].func = mdp.split_feet_swing_height
   cfg.rewards["foot_swing_height"].weight = -5.0

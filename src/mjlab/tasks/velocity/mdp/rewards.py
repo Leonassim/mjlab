@@ -621,14 +621,14 @@ def standing_action_rate_l2(
   return torch.sum(torch.square(action_delta), dim=1) * standing
 
 
-def feet_clearance(
+def feet_clearance_velocity_weighted(
   env: ManagerBasedRlEnv,
   target_height: float,
   command_name: str | None = None,
   command_threshold: float = 0.01,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-  """Penalize deviation from target clearance height, weighted by foot velocity."""
+  """Penalize deviation from target clearance height (absolute z), weighted by foot velocity."""
   asset: Entity = env.scene[asset_cfg.name]
   foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
   foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
