@@ -54,6 +54,12 @@ class UniformVelocityCommand(CommandTerm):
     self._joystick_sliders: list[viser.GuiSliderHandle] = []
     self._joystick_get_env_idx: Callable[[], int] | None = None
 
+    self.use_gamepad = cfg.use_gamepad
+    if self.use_gamepad:
+      from mjlab.utils.gamepad_client import GamepadClient
+
+      self.gp = GamepadClient()
+
   @property
   def command(self) -> torch.Tensor:
     return self.vel_command_b
@@ -136,6 +142,27 @@ class UniformVelocityCommand(CommandTerm):
     standing_env_ids = self.is_standing_env.nonzero(as_tuple=False).flatten()
     self.vel_command_b[standing_env_ids, :] = 0.0
     self.vel_command_w[standing_env_ids, :] = 0.0
+
+    if self.use_gamepad:
+      self.vel_command_b[0] = self.get_gamepad_command()
+
+  def get_gamepad_command(self) -> torch.Tensor:
+    """Map gamepad joystick positions to a velocity command for env 0."""
+    command = torch.zeros(3, device=self.device)
+    x = 1.0 - self.gp.leftJoystickY.value
+    y = 1.0 - self.gp.leftJoystickX.value
+    yaw = 1.0 - self.gp.rightJoystickX.value
+    command[0] = self._offset_and_scale(x, self.cfg.ranges.lin_vel_x)
+    command[1] = self._offset_and_scale(y, self.cfg.ranges.lin_vel_y)
+    command[2] = self._offset_and_scale(yaw, self.cfg.ranges.ang_vel_z)
+    return command
+
+  @staticmethod
+  def _offset_and_scale(x: float, range: tuple[float, float]) -> float:
+    """Scale and offset x in [0, 1] to the desired range."""
+    offset = (range[1] + range[0]) * 0.5
+    scale = (range[1] - range[0]) * 0.5
+    return offset + (2.0 * x - 1.0) * scale
 
   # GUI.
 
@@ -293,6 +320,9 @@ class UniformVelocityCommandCfg(CommandTermCfg):
   lin_vel_x, zero lin_vel_y and ang_vel_z). Increases training coverage for
   straight-line walking, which is important for stair climbing."""
   init_velocity_prob: float = 0.0
+  use_gamepad: bool = False
+  """Drive env 0's command from a physical gamepad (left stick: lin vel,
+  right stick X: yaw). Requires the `inputs` package and a connected pad."""
 
   @dataclass
   class Ranges:

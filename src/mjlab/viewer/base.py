@@ -291,6 +291,7 @@ class BaseViewer(ABC):
         self.env.step(actions)
         self._step_count += 1
         self._stats_steps += 1
+        self._maybe_log_impact_velocities()
         return True
     except Exception:
       self._last_error = traceback.format_exc()
@@ -300,6 +301,65 @@ class BaseViewer(ABC):
       )
       self.pause()
       return False
+
+  def _maybe_log_impact_velocities(self) -> None:
+    """Print foot impact velocity and peak swing height at each touchdown.
+
+    Enabled by setting on ``env.unwrapped``:
+      _debug_impact_force_sensors: list[str] — force sensors for touchdown
+      _debug_impact_vel_sensors: list[str] — velocimeters (same order)
+      _debug_impact_force_threshold: float — |F| threshold in N (default 50)
+    Peak height is tracked by integrating vz between liftoff and touchdown.
+    """
+    env = self.env.unwrapped
+    force_sensor_names: list[str] = getattr(env, "_debug_impact_force_sensors", [])
+    if not force_sensor_names:
+      return
+    vel_sensor_names: list[str] = getattr(
+      env, "_debug_impact_vel_sensors", force_sensor_names
+    )
+    threshold = float(getattr(env, "_debug_impact_force_threshold", 50.0))
+    dt = float(getattr(env, "step_dt", 0.004))
+    n = len(force_sensor_names)
+    prev_active: list[bool] = getattr(self, "_impact_prev_active", [False] * n)
+    peak_heights: list[float] = getattr(self, "_impact_peak_heights", [0.0] * n)
+    swing_z: list[float] = getattr(self, "_impact_swing_z", [0.0] * n)
+
+    for i, fsensor_name in enumerate(force_sensor_names):
+      try:
+        force = env.scene[fsensor_name].data
+        active = bool(force[0].norm().item() > threshold)
+        vel = env.scene[vel_sensor_names[i]].data[0]
+
+        if not active:
+          if prev_active[i]:
+            # Liftoff: reset the height integrator.
+            swing_z[i] = 0.0
+            peak_heights[i] = 0.0
+          else:
+            # Airborne: integrate vz to track height above liftoff.
+            swing_z[i] += vel[2].item() * dt
+            peak_heights[i] = max(peak_heights[i], swing_z[i])
+        elif not prev_active[i]:
+          # Touchdown: print impact velocity and peak swing height.
+          label = fsensor_name.split("/")[-1].replace("_fsensor", "")
+          vz = vel[2].item()
+          speed = vel.norm().item()
+          print(
+            f"[IMPACT] {label}: vz={vz:+.3f} m/s  |v|={speed:.3f} m/s"
+            f"  peak_h={peak_heights[i] * 100:.1f}cm  (step {self._step_count})",
+            flush=True,
+          )
+          peak_heights[i] = 0.0
+          swing_z[i] = 0.0
+
+        prev_active[i] = active
+      except Exception as exc:
+        print(f"[IMPACT] sensor error ({fsensor_name}): {exc}", flush=True)
+
+    self._impact_prev_active = prev_active
+    self._impact_peak_heights = peak_heights
+    self._impact_swing_z = swing_z
 
   def _step_physics(self, dt: float) -> None:
     """Run physics steps for this frame's sim-time budget."""

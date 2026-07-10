@@ -49,6 +49,10 @@ class PlayConfig:
   viewer: Literal["auto", "native", "viser"] = "auto"
   no_terminations: bool = False
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
+  gamepad: bool = False
+  """Drive env 0's velocity command with a physical gamepad."""
+  print_impact_vel: bool = False
+  """Print foot impact velocities and peak swing height at each touchdown (env 0)."""
   log_root: str = "logs/rsl_rl"
   """Root directory under which experiment logs are written."""
 
@@ -161,6 +165,12 @@ def run_play(task_id: str, cfg: PlayConfig):
     env_cfg.viewer.height = cfg.video_height
   if cfg.video_width is not None:
     env_cfg.viewer.width = cfg.video_width
+  if cfg.gamepad:
+    assert env_cfg.commands is not None
+    for command in env_cfg.commands.values():
+      if hasattr(command, "use_gamepad"):
+        command.use_gamepad = True  # type: ignore[attr-defined]
+        print("[INFO]: Gamepad control enabled for env 0.")
 
   render_mode = "rgb_array" if (TRAINED_MODE and cfg.video) else None
   if cfg.video and DUMMY_MODE:
@@ -168,6 +178,20 @@ def run_play(task_id: str, cfg: PlayConfig):
       "[WARN] Video recording with dummy agents is disabled (no checkpoint/log_dir)."
     )
   env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=render_mode)
+
+  if cfg.print_impact_vel:
+    # Read via getattr in BaseViewer._maybe_log_impact_velocities.
+    setattr(  # noqa: B010
+      env,
+      "_debug_impact_force_sensors",
+      ["robot/LeftFootForceSensor_fsensor", "robot/RightFootForceSensor_fsensor"],
+    )
+    setattr(  # noqa: B010
+      env,
+      "_debug_impact_vel_sensors",
+      ["robot/left_foot_lin_vel", "robot/right_foot_lin_vel"],
+    )
+    print("[INFO]: Printing foot impact velocities and peak swing height at touchdown.")
 
   if TRAINED_MODE and cfg.video:
     print("[INFO] Recording videos during play")
