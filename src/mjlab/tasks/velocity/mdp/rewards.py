@@ -323,36 +323,6 @@ class feet_swing_height:
     return cost
 
 
-def feet_slip(
-  env: ManagerBasedRlEnv,
-  sensor_name: str,
-  command_name: str,
-  command_threshold: float = 0.01,
-  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-  """Penalize foot sliding (xy velocity while in contact)."""
-  asset: Entity = env.scene[asset_cfg.name]
-  contact_sensor: ContactSensor = env.scene[sensor_name]
-  command = env.command_manager.get_command(command_name)
-  assert command is not None
-  linear_norm = torch.norm(command[:, :2], dim=1)
-  angular_norm = torch.abs(command[:, 2])
-  total_command = linear_norm + angular_norm
-  active = (total_command > command_threshold).float()
-  assert contact_sensor.data.found is not None
-  in_contact = (contact_sensor.data.found > 0).float()  # [B, N]
-  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
-  vel_xy_norm = torch.norm(foot_vel_xy, dim=-1)  # [B, N]
-  vel_xy_norm_sq = torch.square(vel_xy_norm)  # [B, N]
-  cost = torch.sum(vel_xy_norm_sq * in_contact, dim=1) * active
-  num_in_contact = torch.sum(in_contact)
-  mean_slip_vel = torch.sum(vel_xy_norm * in_contact) / torch.clamp(
-    num_in_contact, min=1
-  )
-  env.extras["log"]["Metrics/slip_velocity_mean"] = mean_slip_vel
-  return cost
-
-
 def soft_landing(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -581,46 +551,6 @@ def standing_single_support_penalty(
   return cost
 
 
-def standing_both_feet_grounded(
-  env: ManagerBasedRlEnv,
-  sensor_name: str,
-  command_name: str,
-  command_threshold: float = 0.1,
-) -> torch.Tensor:
-  """Reward having both feet on the ground when command is near zero."""
-  sensor: ContactSensor = env.scene[sensor_name]
-  _, foot_in_contact = _split_foot_contact_tensors(sensor)
-  both_down = (torch.sum(foot_in_contact, dim=1) == 2).float()
-  command = env.command_manager.get_command(command_name)
-  assert command is not None
-  linear_norm = torch.norm(command[:, :2], dim=1)
-  angular_norm = torch.abs(command[:, 2])
-  total_command = linear_norm + angular_norm
-  standing = (total_command <= command_threshold).float()
-  return both_down * standing
-
-
-def standing_action_rate_l2(
-  env: ManagerBasedRlEnv,
-  command_name: str,
-  command_threshold: float = 0.1,
-) -> torch.Tensor:
-  """Penalize action changes when commanded motion is near zero.
-
-  This encourages the policy to hold a nearly constant joint target in the
-  standing regime, which is the natural behavior for a high-stiffness robot.
-  """
-  command = env.command_manager.get_command(command_name)
-  assert command is not None
-  linear_norm = torch.norm(command[:, :2], dim=1)
-  angular_norm = torch.abs(command[:, 2])
-  total_command = linear_norm + angular_norm
-  standing = (total_command <= command_threshold).float()
-
-  action_delta = env.action_manager.action - env.action_manager.prev_action
-  return torch.sum(torch.square(action_delta), dim=1) * standing
-
-
 def feet_clearance_velocity_weighted(
   env: ManagerBasedRlEnv,
   target_height: float,
@@ -841,80 +771,6 @@ def split_feet_slip(
   return cost
 
 
-def foot_edge_contact_penalty(
-  env: ManagerBasedRlEnv,
-  sensor_name: str,
-  min_contacts_per_foot: int = 2,
-  single_support_min_contacts: int = 4,
-  double_support_min_contacts: int = 3,
-  single_support_scale: float = 2.0,
-) -> torch.Tensor:
-  """Penalize non-flat foot support, especially during single support.
-
-  In single support, the stance foot is encouraged to reach flat contact
-  (all split foot contact zones touching). In double support, the penalty is
-  softer to avoid over-constraining heel-strike / toe-off transitions.
-  """
-  sensor: ContactSensor = env.scene[sensor_name]
-  found = sensor.data.found
-  if found is None:
-    raise RuntimeError("Contact sensor must provide 'found' for edge contact penalty.")
-  if found.shape[1] < 8:
-    raise RuntimeError("foot_edge_contact_penalty expects 8 split foot contacts.")
-
-  contacts = (found[:, :8] > 0).float()
-  left_contacts = torch.sum(contacts[:, :4], dim=1)
-  right_contacts = torch.sum(contacts[:, 4:8], dim=1)
-
-  left_in_stance = (left_contacts > 0).float()
-  right_in_stance = (right_contacts > 0).float()
-
-  single_support_left = left_in_stance * (1.0 - right_in_stance)
-  single_support_right = right_in_stance * (1.0 - left_in_stance)
-  double_support_left = left_in_stance * right_in_stance
-  double_support_right = right_in_stance * left_in_stance
-
-  base_min_contacts = float(min_contacts_per_foot)
-  single_min_contacts = float(single_support_min_contacts)
-  double_min_contacts = float(double_support_min_contacts)
-
-  left_base_deficit = torch.clamp(base_min_contacts - left_contacts, min=0.0) / max(
-    base_min_contacts, 1.0
-  )
-  right_base_deficit = torch.clamp(base_min_contacts - right_contacts, min=0.0) / max(
-    base_min_contacts, 1.0
-  )
-  left_single_deficit = torch.clamp(single_min_contacts - left_contacts, min=0.0) / max(
-    single_min_contacts, 1.0
-  )
-  right_single_deficit = torch.clamp(
-    single_min_contacts - right_contacts, min=0.0
-  ) / max(single_min_contacts, 1.0)
-  left_double_deficit = torch.clamp(double_min_contacts - left_contacts, min=0.0) / max(
-    double_min_contacts, 1.0
-  )
-  right_double_deficit = torch.clamp(
-    double_min_contacts - right_contacts, min=0.0
-  ) / max(double_min_contacts, 1.0)
-
-  left_cost = (
-    torch.square(left_base_deficit) * left_in_stance
-    + single_support_scale * torch.square(left_single_deficit) * single_support_left
-    + torch.square(left_double_deficit) * double_support_left
-  )
-  right_cost = (
-    torch.square(right_base_deficit) * right_in_stance
-    + single_support_scale * torch.square(right_single_deficit) * single_support_right
-    + torch.square(right_double_deficit) * double_support_right
-  )
-  both_in_stance = left_in_stance + right_in_stance
-  avg_contacts = (left_contacts + right_contacts) / torch.clamp(both_in_stance, min=1.0)
-  env.extras["log"]["Metrics/stance_contacts_mean"] = torch.mean(avg_contacts)
-  env.extras["log"]["Metrics/single_support_flat_contacts_mean"] = torch.sum(
-    left_contacts * single_support_left + right_contacts * single_support_right
-  ) / torch.clamp(torch.sum(single_support_left + single_support_right), min=1.0)
-  return left_cost + right_cost
-
 def flat_touchdown_penalty(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -1040,49 +896,6 @@ def flat_support_penalty(
   env.extras["log"]["Metrics/stance_contacts_mean"] = torch.sum(
     contact_count * in_contact
   ) / torch.clamp(torch.sum(in_contact), min=1.0)
-  return cost
-
-
-def standing_flat_foot_penalty(
-  env: ManagerBasedRlEnv,
-  sensor_name: str,
-  command_name: str,
-  command_threshold: float = 0.05,
-  target_contacts_per_foot: int = 4,
-) -> torch.Tensor:
-  """Penalize non-flat feet when the commanded velocity is near zero."""
-  sensor: ContactSensor = env.scene[sensor_name]
-  found = sensor.data.found
-  if found is None:
-    raise RuntimeError(
-      "Contact sensor must provide 'found' for standing flat-foot penalty."
-    )
-  if found.shape[1] < 8:
-    raise RuntimeError("standing_flat_foot_penalty expects 8 split foot contacts.")
-
-  command = env.command_manager.get_command(command_name)
-  assert command is not None
-  linear_norm = torch.norm(command[:, :2], dim=1)
-  angular_norm = torch.abs(command[:, 2])
-  total_command = linear_norm + angular_norm
-  standing = (total_command <= command_threshold).float()
-
-  contacts = (found[:, :8] > 0).float()
-  left_contacts = torch.sum(contacts[:, :4], dim=1)
-  right_contacts = torch.sum(contacts[:, 4:8], dim=1)
-  target_contacts = float(target_contacts_per_foot)
-
-  left_deficit = torch.clamp(target_contacts - left_contacts, min=0.0) / max(
-    target_contacts, 1.0
-  )
-  right_deficit = torch.clamp(target_contacts - right_contacts, min=0.0) / max(
-    target_contacts, 1.0
-  )
-  cost = standing * (torch.square(left_deficit) + torch.square(right_deficit))
-
-  env.extras["log"]["Metrics/standing_flat_contacts_mean"] = torch.sum(
-    (left_contacts + right_contacts) * standing
-  ) / torch.clamp(2.0 * torch.sum(standing), min=1.0)
   return cost
 
 

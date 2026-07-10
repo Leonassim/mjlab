@@ -23,6 +23,11 @@ class VelocityStage(TypedDict):
   ang_vel_z: tuple[float, float] | None
 
 
+class RewardWeightStage(TypedDict):
+  step: int
+  weight: float
+
+
 def terrain_levels_vel(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,
@@ -122,21 +127,6 @@ def reward_weight(
     if env.common_step_counter > stage["step"]:
       reward_term_cfg.weight = stage["weight"]
   return torch.tensor([reward_term_cfg.weight])
-
-
-def cstr_max_p(
-  env: ManagerBasedRlEnv,
-  env_ids: torch.Tensor,
-  cstr_name: str,
-  max_p_stages: list[CstrMaxPStage],
-) -> torch.Tensor:
-  """Update a cstr term's max termination proba based on training step stages."""
-  del env_ids  # Unused.
-  cstr_term_cfg = env.constraint_manager.get_term_cfg(cstr_name)
-  for stage in max_p_stages:
-    if env.common_step_counter > stage["step"]:
-      cstr_term_cfg.max_p = stage["max_p"]
-  return torch.tensor([cstr_term_cfg.max_p])
 
 
 def velocity_damper_progress(

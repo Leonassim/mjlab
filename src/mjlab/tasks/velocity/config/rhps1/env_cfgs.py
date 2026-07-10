@@ -25,22 +25,16 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create RHPS1 rough terrain velocity configuration."""
   cfg = make_velocity_env_cfg()
 
-  # 0.0025 s (400 Hz) is coarser than the original 0.002 s but remains stable with
-  # RHPS1 high-PD gains (Kp·dt² ≤ 0.28 < 1).  Solver iterations reduced slightly
-  # because larger steps leave less per-step contact work.
-  # step_dt = 0.0025 × 2 = 0.005 s → 200 Hz training control (deployment runs at 250 Hz).
-  cfg.sim.mujoco.timestep = 0.0025  # 400 Hz physics
-  cfg.decimation = 2  # 200 Hz control  (step_dt = 5 ms)
+  cfg.sim.mujoco.timestep = 0.0025  # 400 Hz physics; step_dt = 5 ms (deployment: 250 Hz)
+  cfg.decimation = 2
   cfg.sim.mujoco.iterations = 15
   cfg.sim.mujoco.ls_iterations = 30
 
-  # RHPS1 with self-collisions needs a larger contact budget.
   cfg.sim.mujoco.ccd_iterations = 500
   cfg.sim.contact_sensor_maxmatch = 500
   cfg.sim.nconmax = 64
 
   cfg.scene.entities = {"robot": get_rhps1_robot_cfg()}
-  # Keep default contact capacities now that collisions are filtered.
 
   feet_ground_cfg = ContactSensorCfg(
     name="feet_ground_contact",
@@ -158,18 +152,15 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   joint_pos_action = cfg.actions["joint_pos"]
   assert isinstance(joint_pos_action, JointPositionActionCfg)
-  # RHPS1_ACTION_SCALE is already derived from actuator effort/stiffness limits.
-  # Use the base scale directly so the policy has enough authority to step.
   joint_pos_action.scale = RHPS1_ACTION_SCALE
 
   actor_group_name = "policy" if "policy" in cfg.observations else "actor"
   history_len = 5
 
-  # Rebuild actor terms with base_lin_vel first and updated history.
   old_terms = cfg.observations[actor_group_name].terms
   old_terms.pop("phase", None)
   old_terms.pop("height_scan", None)
-  old_terms.pop("base_lin_vel", None)  # Will be re-added as first term below.
+  old_terms.pop("base_lin_vel", None)
   base_ang_vel_term = old_terms.get("base_ang_vel")
   if base_ang_vel_term is not None:
     base_ang_vel_term.func = mdp.base_ang_vel
@@ -228,11 +219,10 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       terms.pop("phase", None)
       terms.pop("base_height", None)
       terms.pop("joint_acc", None)
-      terms.pop("foot_height", None)  # RHPS1 uses left/right_foot_scan, not foot_height_scan.
+      terms.pop("foot_height", None)
 
   cfg.viewer.body_name = "CHEST_P_LINK"
 
-  # RHPS1 stands at 0.838 m. Use 0.55 m so RHPS1 gets ~49° of tilt before fell_down.
   if "fell_down" in cfg.terminations:
     cfg.terminations["fell_down"].params["minimum_height"] = 0.55
   else:
@@ -241,8 +231,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       params={"minimum_height": 0.55},
     )
 
-  # base_com body_names defaults to () in the base config ("Set per-robot").
-  # Set it explicitly so only the chest CoM is perturbed, matching H1's approach.
   if "base_com" in cfg.events:
     cfg.events["base_com"].params["asset_cfg"].body_names = ("CHEST_P_LINK",)
 
@@ -255,8 +243,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   twist_cmd.rel_heading_envs = 0.0
   twist_cmd.rel_standing_envs = 0.4
   twist_cmd.viz.z_offset = 1.0
-  # Start with low speeds so the policy first learns smooth slow movements,
-  # then builds up to the target velocity.
   twist_cmd.ranges.lin_vel_x = (-0.1, 0.1)
   twist_cmd.ranges.lin_vel_y = (-0.15, 0.15)
   twist_cmd.ranges.ang_vel_z = (-0.3, 0.3)
@@ -375,8 +361,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "required_contacts_per_foot": 4,
     },
   )
-  cfg.rewards.pop("foot_edge_contact", None)
-  cfg.rewards.pop("standing_flat_foot", None)
   cfg.rewards["standing_single_support"] = RewardTermCfg(
     func=mdp.standing_single_support_penalty,
     weight=-4.0,
@@ -386,10 +370,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "command_threshold": 0.1,
     },
   )
-  cfg.rewards.pop("standing_both_feet", None)
-  cfg.rewards.pop("standing_action_rate", None)
-  cfg.rewards.pop("step_regularizer", None)
-
   cfg.rewards["joint_torque_rate_l2"] = RewardTermCfg(
     func=mdp.joint_torque_rate_l2,
     weight=-4e-5,
@@ -406,8 +386,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       )
     },
   )
-
-  cfg.rewards.pop("upper_body_pose", None)
 
   cfg.rewards["pose"].params["std_standing"] = {
     r".*CROTCH_P.*": 0.025,
@@ -470,6 +448,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
   cfg.rewards["air_time"].weight = 5.0
+
   cfg.rewards["foot_clearance"].func = mdp.feet_clearance_velocity_weighted
   cfg.rewards["foot_clearance"].params.pop("height_sensor_name", None)
   cfg.rewards["foot_clearance"].params["asset_cfg"] = SceneEntityCfg(
@@ -478,8 +457,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["foot_clearance"].weight = -4.0
   cfg.rewards["foot_swing_height"].func = mdp.split_feet_swing_height
   cfg.rewards["foot_swing_height"].weight = -5.0
-  # Continuous per-step penalty: fires every step a foot is below min_height.
-  # Dense gradient signal even when the robot shuffles without proper liftoff.
   cfg.rewards["min_foot_height"] = RewardTermCfg(
     func=mdp.swing_foot_height,
     weight=-5.0,
@@ -494,20 +471,16 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["foot_slip"].func = mdp.split_feet_slip
   cfg.rewards["foot_slip"].weight = -0.3
   cfg.rewards["action_rate_l2"].weight = -0.02
-  # Global acc penalty disabled: replaced by two targeted terms below.
   cfg.rewards["action_acc_l2"].weight = 0.0
-  # Stance leg: penalize oscillations only while the foot is in contact.
   cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
     func=mdp.stance_action_acc_l2,
     weight=-0.05,
     params={
       "sensor_name": feet_ground_split_cfg.name,
-      "left_joint_indices": list(range(6)),  # L_CROTCH_Y..L_ANKLE_P
-      "right_joint_indices": list(range(8, 14)),  # R_CROTCH_Y..R_ANKLE_P
+      "left_joint_indices": list(range(6)),
+      "right_joint_indices": list(range(8, 14)),
     },
   )
-  # Upper body (chest, head, arms): always penalize acc — no contact conditioning needed.
-  # Indices 6-7: CHEST_Y/P, 14-15: HEAD_Y/P, 16-29: L/R arm joints.
   cfg.rewards["upper_body_action_acc_l2"] = RewardTermCfg(
     func=mdp.joints_action_acc_l2,
     weight=-0.10,
@@ -516,8 +489,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["air_time"].params["sensor_name"] = feet_ground_split_cfg.name
   cfg.rewards["air_time"].params["threshold_min"] = 0.01
   cfg.rewards["air_time"].params["threshold_max"] = 0.2
-  # Long alternating strides must not be penalised by the overflow guard.
-  # no_double_flight handles the both-feet-airborne exploit separately.
   cfg.rewards["air_time"].params["overflow_threshold"] = 2.0
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
@@ -536,20 +507,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["foot_slip"].params["command_name"] = "twist"
   cfg.rewards["foot_slip"].params["command_threshold"] = 0.1
   cfg.rewards["foot_slip"].params["standing_scale"] = 4.0
-  if "soft_landing" in cfg.rewards:
-    cfg.rewards["soft_landing"].params["window_s"] = 0.06
 
-  # Large negative reward when the episode ends by falling (not timeout).
-  # Without this, a random policy can exploit "die early" to avoid standing penalties.
-  # Effective per-death penalty = weight × step_dt = -2000 × 0.004 = -8.0, which
-  # clearly dominates any accumulated negative per episode.
-  cfg.rewards["termination_penalty"] = RewardTermCfg(
-    func=mdp.is_terminated,
-    weight=-2000.0,
-  )
-
-  # RHPS1 training uses reward-only shaping (no constraint-based terminations).
-  cfg.constraints = {}
+  cfg.rewards["termination_penalty"] = RewardTermCfg(func=mdp.is_terminated, weight=-2000.0)
 
   if "foot_friction" in cfg.events:
     cfg.events["foot_friction"].params["asset_cfg"].geom_names = (
@@ -562,7 +521,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "right_foot3_collision",
       "right_foot4_collision",
     )
-    # Keep friction variation moderate to avoid overly sticky contacts.
     cfg.events["foot_friction"].params["ranges"] = (0.5, 0.9)
   cfg.events.pop("push_robot", None)
   assert cfg.curriculum is not None
@@ -573,12 +531,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "reward_name": "air_time",
       "param_name": "threshold_max",
       "stages": [
-        {"step": 0, "value": 0.10},  # basic stepping
-        {
-          "step": 500 * 48,
-          "value": 0.30,
-        },  # sync with ×10 boost: gradient toward 300 ms
-        {"step": 2000 * 48, "value": 0.50},  # full target by iter 2000
+        {"step": 0, "value": 0.10},
+        {"step": 500 * 48, "value": 0.30},
+        {"step": 2000 * 48, "value": 0.50},
       ],
     },
   )
@@ -589,7 +544,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "reward_name": "air_time",
       "weight_stages": [
         {"step": 0, "weight": 5.0},
-        {"step": 500 * 48, "weight": 50.0},  # 10× boost after basic stability
+        {"step": 500 * 48, "weight": 50.0},
       ],
     },
   )
@@ -605,7 +560,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
 
-  # Apply play mode overrides.
   if play:
     cfg.episode_length_s = int(1e9)
     cfg.observations[actor_group_name].enable_corruption = False
