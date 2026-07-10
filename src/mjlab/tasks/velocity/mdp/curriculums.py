@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 import torch
 
+from mjlab.actuator.finite_difference_pd_actuator import FiniteDifferencePdActuator
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
@@ -106,3 +107,166 @@ def commands_vel(
     "ang_vel_z_min": torch.tensor(cfg.ranges.ang_vel_z[0]),
     "ang_vel_z_max": torch.tensor(cfg.ranges.ang_vel_z[1]),
   }
+
+
+def reward_weight(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  reward_name: str,
+  weight_stages: list[RewardWeightStage],
+) -> torch.Tensor:
+  """Update a reward term's weight based on training step stages."""
+  del env_ids  # Unused.
+  reward_term_cfg = env.reward_manager.get_term_cfg(reward_name)
+  for stage in weight_stages:
+    if env.common_step_counter > stage["step"]:
+      reward_term_cfg.weight = stage["weight"]
+  return torch.tensor([reward_term_cfg.weight])
+
+
+def cstr_max_p(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  cstr_name: str,
+  max_p_stages: list[CstrMaxPStage],
+) -> torch.Tensor:
+  """Update a cstr term's max termination proba based on training step stages."""
+  del env_ids  # Unused.
+  cstr_term_cfg = env.constraint_manager.get_term_cfg(cstr_name)
+  for stage in max_p_stages:
+    if env.common_step_counter > stage["step"]:
+      cstr_term_cfg.max_p = stage["max_p"]
+  return torch.tensor([cstr_term_cfg.max_p])
+
+
+def velocity_damper_progress(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  start_step: int,
+  end_step: int,
+  asset_cfg: SceneEntityCfg = _DEFAULT_SCENE_CFG,
+) -> torch.Tensor:
+  """Linearly ramp the velocity damper from 0 → 1 between ``start_step`` and ``end_step``.
+
+  Sets ``velocity_damper_progress`` on every ``FiniteDifferencePdActuator`` of
+  the robot entity so the safety projection gradually tightens to match the
+  mc_rtc QP KinematicsConstraint (``di=0.4``, ``ds=0.01``, ``vel=0.9``).
+  At ``start_step`` the damper is inactive; at ``end_step`` it is fully active.
+  """
+  del env_ids  # Unused — progress is global, not per-env.
+  step = env.common_step_counter
+  progress = float(
+    min(1.0, max(0.0, (step - start_step) / max(end_step - start_step, 1)))
+  )
+  robot: Entity = env.scene[asset_cfg.name]
+  for act in robot.actuators:
+    if isinstance(act, FiniteDifferencePdActuator):
+      act.velocity_damper_progress = progress
+  return torch.tensor([progress])
+
+
+class PushStage(TypedDict):
+  step: int
+  scale: float
+
+
+def push_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  event_name: str,
+  max_velocity_range: dict[str, tuple[float, float]],
+  stages: list[PushStage],
+) -> torch.Tensor:
+  """Scale push perturbation velocity range based on training progress."""
+  del env_ids
+  scale = 0.0
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      scale = stage["scale"]
+  event_cfg = env.event_manager.get_term_cfg(event_name)
+  event_cfg.params["velocity_range"] = {
+    k: (v[0] * scale, v[1] * scale) for k, v in max_velocity_range.items()
+  }
+  return torch.tensor([scale])
+
+
+class StandingEnvsStage(TypedDict):
+  step: int
+  value: float
+
+
+def standing_envs_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  command_name: str,
+  stages: list[StandingEnvsStage],
+) -> torch.Tensor:
+  """Decrease the proportion of standing (zero-command) envs over training."""
+  del env_ids
+  value = stages[0]["value"]
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      value = stage["value"]
+  command_term = env.command_manager.get_term(command_name)
+  command_term.cfg.rel_standing_envs = value
+  return torch.tensor([value])
+
+
+class ActionScaleStage(TypedDict):
+  step: int
+  multiplier: float
+
+
+def action_scale_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  action_name: str,
+  base_scale: torch.Tensor | None,
+  stages: list[ActionScaleStage],
+) -> torch.Tensor:
+  """Scale action magnitude over training with linear interpolation between stages."""
+  del env_ids
+  step = env.common_step_counter
+  # Find surrounding stages and linearly interpolate multiplier.
+  multiplier = stages[0]["multiplier"]
+  for i in range(len(stages) - 1):
+    s0, s1 = stages[i], stages[i + 1]
+    if s0["step"] <= step < s1["step"]:
+      t = (step - s0["step"]) / max(s1["step"] - s0["step"], 1)
+      multiplier = s0["multiplier"] + t * (s1["multiplier"] - s0["multiplier"])
+      break
+  else:
+    if step >= stages[-1]["step"]:
+      multiplier = stages[-1]["multiplier"]
+  action_term = env.action_manager.get_term(action_name)
+  if base_scale is None:
+    base_scale = action_term._scale.clone()
+    for term_cfg in env.curriculum_manager._term_cfgs:
+      if term_cfg.func == action_scale_curriculum:
+        term_cfg.params["base_scale"] = base_scale
+        break
+  action_term._scale = base_scale * multiplier
+  return torch.tensor([multiplier])
+
+
+class AirTimeStage(TypedDict):
+  step: int
+  value: float
+
+
+def air_time_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  reward_name: str,
+  param_name: str,
+  stages: list[AirTimeStage],
+) -> torch.Tensor:
+  """Update an air_time reward parameter over training."""
+  del env_ids
+  current = stages[0]["value"]
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      current = stage["value"]
+  reward_cfg = env.reward_manager.get_term_cfg(reward_name)
+  reward_cfg.params[param_name] = current
+  return torch.tensor([current])

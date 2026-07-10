@@ -8,7 +8,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import BuiltinSensor, ContactSensor
+from mjlab.sensor import BuiltinSensor, ContactSensor, RayCastSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 from mjlab.tasks.velocity.mdp.terrain_utils import terrain_normal_from_sensors
 from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse
@@ -464,3 +464,807 @@ class variable_posture:
     error_squared = torch.square(current_joint_pos - desired_joint_pos)
 
     return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
+
+def _split_foot_contact_tensors(
+  sensor: ContactSensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+  found = sensor.data.found
+  if found is None:
+    raise RuntimeError("Contact sensor must provide 'found'.")
+  if found.shape[1] < 8:
+    raise RuntimeError("Split-foot contact rewards expect 8 contact slots.")
+  split_found = found[:, :8].view(found.shape[0], 2, 4)
+  contact_count = torch.sum((split_found > 0).float(), dim=2)
+  foot_in_contact = (contact_count > 0).float()
+  return contact_count, foot_in_contact
+
+
+def split_feet_air_time(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  threshold_min: float = 0.05,
+  threshold_max: float = 0.5,
+  overflow_threshold: float | None = None,
+  command_name: str | None = None,
+  command_threshold: float = 0.5,
+) -> torch.Tensor:
+  """Reward per-foot air time aggregated from 4 split contacts per foot.
+
+  ``overflow_threshold`` sets the per-foot air-time limit beyond which a
+  penalty fires each step (to deter hover exploits). Defaults to
+  ``2 * threshold_max``. Set it larger than the longest desired step to avoid
+  penalising long alternating strides — ``no_double_flight`` handles the
+  both-feet-airborne exploit independently.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  current_air_time = sensor.data.current_air_time
+  if current_air_time is None:
+    raise RuntimeError("Contact sensor must have track_air_time=True.")
+  if current_air_time.shape[1] < 8:
+    raise RuntimeError("Split-foot air-time reward expects 8 contact slots.")
+
+  split_air = current_air_time[:, :8].view(current_air_time.shape[0], 2, 4)
+  _, foot_in_contact = _split_foot_contact_tensors(sensor)
+  foot_in_air = 1.0 - foot_in_contact
+  foot_air_time = torch.max(split_air, dim=2).values * foot_in_air
+
+  first_contact = sensor.compute_first_contact(dt=env.step_dt)
+  split_first = first_contact[:, :8].view(first_contact.shape[0], 2, 4)
+  foot_landed = (torch.sum(split_first.float(), dim=2) > 0).float()
+  clamped = torch.clamp(foot_air_time, min=threshold_min, max=threshold_max)
+  landing_reward = torch.sum((clamped / threshold_max) * foot_landed, dim=1)
+  ot = overflow_threshold if overflow_threshold is not None else 2.0 * threshold_max
+  overflow = torch.clamp(foot_air_time - ot, min=0.0) * foot_in_air
+  overflow_penalty = torch.sum(overflow, dim=1)
+  reward = landing_reward - overflow_penalty
+  num_in_air = torch.sum(foot_in_air)
+  mean_air_time = torch.sum(foot_air_time) / torch.clamp(num_in_air, min=1.0)
+  env.extras["log"]["Metrics/air_time_mean"] = mean_air_time
+
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      reward = reward * (total_command > command_threshold).float()
+  return reward
+
+
+def no_double_flight_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str | None = None,
+  command_threshold: float = 0.05,
+) -> torch.Tensor:
+  """Penalize phases where both feet are simultaneously off the ground."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  _, foot_in_contact = _split_foot_contact_tensors(sensor)  # [B, 2]
+  no_contact = (torch.sum(foot_in_contact, dim=1) == 0).float()
+
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      no_contact = no_contact * (total_command > command_threshold).float()
+
+  env.extras["log"]["Metrics/double_flight_rate"] = torch.mean(no_contact)
+  return no_contact
+
+
+def standing_single_support_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  command_threshold: float = 0.1,
+) -> torch.Tensor:
+  """Penalize standing on a single foot when the commanded motion is near zero."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  _, foot_in_contact = _split_foot_contact_tensors(sensor)  # [B, 2]
+  num_feet_in_contact = torch.sum(foot_in_contact, dim=1)
+
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  linear_norm = torch.norm(command[:, :2], dim=1)
+  angular_norm = torch.abs(command[:, 2])
+  total_command = linear_norm + angular_norm
+  standing = (total_command <= command_threshold).float()
+
+  one_foot = (num_feet_in_contact == 1).float()
+  no_feet = (num_feet_in_contact == 0).float()
+  cost = (one_foot + 4.0 * no_feet) * standing
+  env.extras["log"]["Metrics/standing_single_support_rate"] = torch.mean(
+    (one_foot + no_feet) * standing
+  )
+  return cost
+
+
+def standing_both_feet_grounded(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  command_threshold: float = 0.1,
+) -> torch.Tensor:
+  """Reward having both feet on the ground when command is near zero."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  _, foot_in_contact = _split_foot_contact_tensors(sensor)
+  both_down = (torch.sum(foot_in_contact, dim=1) == 2).float()
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  linear_norm = torch.norm(command[:, :2], dim=1)
+  angular_norm = torch.abs(command[:, 2])
+  total_command = linear_norm + angular_norm
+  standing = (total_command <= command_threshold).float()
+  return both_down * standing
+
+
+def standing_action_rate_l2(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+) -> torch.Tensor:
+  """Penalize action changes when commanded motion is near zero.
+
+  This encourages the policy to hold a nearly constant joint target in the
+  standing regime, which is the natural behavior for a high-stiffness robot.
+  """
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  linear_norm = torch.norm(command[:, :2], dim=1)
+  angular_norm = torch.abs(command[:, 2])
+  total_command = linear_norm + angular_norm
+  standing = (total_command <= command_threshold).float()
+
+  action_delta = env.action_manager.action - env.action_manager.prev_action
+  return torch.sum(torch.square(action_delta), dim=1) * standing
+
+
+def feet_clearance(
+  env: ManagerBasedRlEnv,
+  target_height: float,
+  command_name: str | None = None,
+  command_threshold: float = 0.01,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize deviation from target clearance height, weighted by foot velocity."""
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
+  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
+  vel_norm = torch.norm(foot_vel_xy, dim=-1)  # [B, N]
+  delta = torch.abs(foot_z - target_height)  # [B, N]
+  cost = torch.sum(delta * vel_norm, dim=1)  # [B]
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      active = (total_command > command_threshold).float()
+      cost = cost * active
+  return cost
+
+
+def swing_foot_height(
+  env: ManagerBasedRlEnv,
+  min_height: float,
+  sensor_name: str | None = None,
+  command_name: str | None = None,
+  command_threshold: float = 0.05,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize swing feet below min_height every step.
+
+  When sensor_name is provided, only penalizes feet that are NOT in contact
+  (i.e. in the swing phase), leaving the stance foot untouched.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
+  deficit = torch.clamp(min_height - foot_z, min=0.0)  # [B, N]
+  if sensor_name is not None:
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    in_air = (contact_sensor.data.found == 0).float()  # [B, N]
+    deficit = deficit * in_air
+  cost = torch.sum(deficit, dim=1)  # [B]
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      active = (total_command > command_threshold).float()
+      cost = cost * active
+  return cost
+
+
+def feet_distance_penalty(
+  env: ManagerBasedRlEnv,
+  target_distance: float,
+  max_distance: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize feet being too far apart in the horizontal plane."""
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_pos_xy = asset.data.site_pos_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
+  # Expect exactly two sites: left_foot and right_foot.
+  feet_distance = torch.norm(foot_pos_xy[:, 0] - foot_pos_xy[:, 1], dim=-1)  # [B]
+  too_wide = torch.relu(feet_distance - max_distance)
+  # Keep a tiny preference around target_distance without dominating gait.
+  around_target = 0.1 * torch.square(feet_distance - target_distance)
+  env.extras["log"]["Metrics/feet_distance_mean"] = torch.mean(feet_distance)
+  return torch.square(too_wide) + around_target
+
+
+class split_feet_swing_height:
+  """Split-contact version of swing-height reward aggregated per foot."""
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    self.sensor_name = cfg.params["sensor_name"]
+    self.site_names = cfg.params["asset_cfg"].site_names
+    self.peak_heights = torch.zeros(
+      (env.num_envs, len(self.site_names)), device=env.device, dtype=torch.float32
+    )
+    self.step_dt = env.step_dt
+
+  def getFootHeightWrtTerrain(self, env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg):
+    asset: Entity = env.scene[asset_cfg.name]
+    site_names = asset_cfg.site_names
+    if site_names is None:
+      raise RuntimeError("There is no site assigned to feet.")
+    if isinstance(site_names, str):
+      site_names = (site_names,)
+
+    foot_heights = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
+    for i, name in enumerate(site_names):
+      sensor = env.scene[f"{name}_scan"]
+      assert isinstance(sensor, RayCastSensor)
+      raycast_heights = sensor.data.hit_pos_w[..., 2]
+      foot_heights[:, i] -= raycast_heights.mean(dim=-1)
+    return foot_heights
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    target_height: float,
+    command_name: str,
+    command_threshold: float,
+    asset_cfg: SceneEntityCfg,
+  ) -> torch.Tensor:
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    found = contact_sensor.data.found
+    if found is None or found.shape[1] < 8:
+      raise RuntimeError("Split-foot swing-height reward expects 8 contact slots.")
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    foot_heights = self.getFootHeightWrtTerrain(env, asset_cfg)
+
+    split_found = found[:, :8].view(found.shape[0], 2, 4)
+    foot_in_air = torch.all(split_found == 0, dim=2)
+    first_contact = torch.any(
+      contact_sensor.compute_first_contact(dt=self.step_dt)[:, :8].view(
+        found.shape[0], 2, 4
+      ),
+      dim=2,
+    )
+
+    self.peak_heights = torch.where(
+      foot_in_air,
+      torch.maximum(self.peak_heights, foot_heights),
+      self.peak_heights,
+    )
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    total_command = linear_norm + angular_norm
+    active = (total_command > command_threshold).float()
+    error = self.peak_heights / target_height - 1.0
+    cost = torch.sum(torch.square(error) * first_contact.float(), dim=1) * active
+    num_landings = torch.sum(first_contact.float())
+    peak_heights_at_landing = self.peak_heights * first_contact.float()
+    mean_peak_height = torch.sum(peak_heights_at_landing) / torch.clamp(
+      num_landings, min=1
+    )
+    env.extras["log"]["Metrics/peak_height_mean"] = mean_peak_height
+    self.peak_heights = torch.where(
+      first_contact,
+      torch.zeros_like(self.peak_heights),
+      self.peak_heights,
+    )
+    return cost
+
+
+def feet_slip(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  command_threshold: float = 0.01,
+  standing_scale: float = 2.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize foot sliding (xy velocity while in contact)."""
+  asset: Entity = env.scene[asset_cfg.name]
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  linear_norm = torch.norm(command[:, :2], dim=1)
+  angular_norm = torch.abs(command[:, 2])
+  total_command = linear_norm + angular_norm
+  active = (total_command > command_threshold).float()
+  assert contact_sensor.data.found is not None
+  in_contact = (contact_sensor.data.found > 0).float()  # [B, N]
+  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
+  vel_xy_norm = torch.norm(foot_vel_xy, dim=-1)  # [B, N]
+  vel_xy_norm_sq = torch.square(vel_xy_norm)  # [B, N]
+  standing = 1.0 - active
+  scale = 1.0 + standing_scale * standing
+  cost = torch.sum(vel_xy_norm_sq * in_contact, dim=1) * scale
+  num_in_contact = torch.sum(in_contact)
+  mean_slip_vel = torch.sum(vel_xy_norm * in_contact) / torch.clamp(
+    num_in_contact, min=1
+  )
+  env.extras["log"]["Metrics/slip_velocity_mean"] = mean_slip_vel
+  return cost
+
+
+def split_feet_slip(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  command_threshold: float = 0.01,
+  standing_scale: float = 2.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Split-contact version of foot-slip reward aggregated per foot."""
+  asset: Entity = env.scene[asset_cfg.name]
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  linear_norm = torch.norm(command[:, :2], dim=1)
+  angular_norm = torch.abs(command[:, 2])
+  total_command = linear_norm + angular_norm
+  active = (total_command > command_threshold).float()
+
+  _, foot_in_contact = _split_foot_contact_tensors(contact_sensor)  # [B, 2]
+  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, 2, 2]
+  vel_xy_norm = torch.norm(foot_vel_xy, dim=-1)
+  vel_xy_norm_sq = torch.square(vel_xy_norm)
+  standing = 1.0 - active
+  scale = 1.0 + standing_scale * standing
+  cost = torch.sum(vel_xy_norm_sq * foot_in_contact, dim=1) * scale
+  num_in_contact = torch.sum(foot_in_contact)
+  mean_slip_vel = torch.sum(vel_xy_norm * foot_in_contact) / torch.clamp(
+    num_in_contact, min=1
+  )
+  env.extras["log"]["Metrics/slip_velocity_mean"] = mean_slip_vel
+
+  return cost
+
+
+def foot_edge_contact_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  min_contacts_per_foot: int = 2,
+  single_support_min_contacts: int = 4,
+  double_support_min_contacts: int = 3,
+  single_support_scale: float = 2.0,
+) -> torch.Tensor:
+  """Penalize non-flat foot support, especially during single support.
+
+  In single support, the stance foot is encouraged to reach flat contact
+  (all split foot contact zones touching). In double support, the penalty is
+  softer to avoid over-constraining heel-strike / toe-off transitions.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  found = sensor.data.found
+  if found is None:
+    raise RuntimeError("Contact sensor must provide 'found' for edge contact penalty.")
+  if found.shape[1] < 8:
+    raise RuntimeError("foot_edge_contact_penalty expects 8 split foot contacts.")
+
+  contacts = (found[:, :8] > 0).float()
+  left_contacts = torch.sum(contacts[:, :4], dim=1)
+  right_contacts = torch.sum(contacts[:, 4:8], dim=1)
+
+  left_in_stance = (left_contacts > 0).float()
+  right_in_stance = (right_contacts > 0).float()
+
+  single_support_left = left_in_stance * (1.0 - right_in_stance)
+  single_support_right = right_in_stance * (1.0 - left_in_stance)
+  double_support_left = left_in_stance * right_in_stance
+  double_support_right = right_in_stance * left_in_stance
+
+  base_min_contacts = float(min_contacts_per_foot)
+  single_min_contacts = float(single_support_min_contacts)
+  double_min_contacts = float(double_support_min_contacts)
+
+  left_base_deficit = torch.clamp(base_min_contacts - left_contacts, min=0.0) / max(
+    base_min_contacts, 1.0
+  )
+  right_base_deficit = torch.clamp(base_min_contacts - right_contacts, min=0.0) / max(
+    base_min_contacts, 1.0
+  )
+  left_single_deficit = torch.clamp(single_min_contacts - left_contacts, min=0.0) / max(
+    single_min_contacts, 1.0
+  )
+  right_single_deficit = torch.clamp(
+    single_min_contacts - right_contacts, min=0.0
+  ) / max(single_min_contacts, 1.0)
+  left_double_deficit = torch.clamp(double_min_contacts - left_contacts, min=0.0) / max(
+    double_min_contacts, 1.0
+  )
+  right_double_deficit = torch.clamp(
+    double_min_contacts - right_contacts, min=0.0
+  ) / max(double_min_contacts, 1.0)
+
+  left_cost = (
+    torch.square(left_base_deficit) * left_in_stance
+    + single_support_scale * torch.square(left_single_deficit) * single_support_left
+    + torch.square(left_double_deficit) * double_support_left
+  )
+  right_cost = (
+    torch.square(right_base_deficit) * right_in_stance
+    + single_support_scale * torch.square(right_single_deficit) * single_support_right
+    + torch.square(right_double_deficit) * double_support_right
+  )
+  both_in_stance = left_in_stance + right_in_stance
+  avg_contacts = (left_contacts + right_contacts) / torch.clamp(both_in_stance, min=1.0)
+  env.extras["log"]["Metrics/stance_contacts_mean"] = torch.mean(avg_contacts)
+  env.extras["log"]["Metrics/single_support_flat_contacts_mean"] = torch.sum(
+    left_contacts * single_support_left + right_contacts * single_support_right
+  ) / torch.clamp(torch.sum(single_support_left + single_support_right), min=1.0)
+  return left_cost + right_cost
+
+def flat_touchdown_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  required_contacts_per_foot: int = 4,
+  command_name: str | None = None,
+  command_threshold: float = 0.0,
+) -> torch.Tensor:
+  """Penalize touchdowns that do not land with a flat foot.
+
+  For each foot, if any split contact slot registers a first-contact event on the
+  current step, the touchdown is considered active for that foot. The penalty is
+  then based on how many of the four split contact zones are touching at that
+  touchdown instant. This enforces a flat landing rather than heel-first or
+  toe-first roll-over.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  found = sensor.data.found
+  if found is None:
+    raise RuntimeError(
+      "Contact sensor must provide 'found' for flat touchdown penalty."
+    )
+  if found.shape[1] < 8:
+    raise RuntimeError("flat_touchdown_penalty expects 8 split foot contacts.")
+
+  first_contact = sensor.compute_first_contact(dt=env.step_dt)
+  contacts = (found[:, :8] > 0).float().view(found.shape[0], 2, 4)
+  contact_count = torch.sum(contacts, dim=2)  # [B, 2]
+
+  touchdown = torch.stack(
+    (
+      torch.any(first_contact[:, :4], dim=1),
+      torch.any(first_contact[:, 4:8], dim=1),
+    ),
+    dim=1,
+  ).float()
+
+  required_contacts = float(required_contacts_per_foot)
+  deficit = torch.clamp(required_contacts - contact_count, min=0.0) / max(
+    required_contacts, 1.0
+  )
+  cost = torch.sum(torch.square(deficit) * touchdown, dim=1)
+
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    total_command = linear_norm + angular_norm
+    cost = cost * (total_command > command_threshold).float()
+
+  env.extras["log"]["Metrics/flat_touchdown_contacts_mean"] = torch.sum(
+    contact_count * touchdown
+  ) / torch.clamp(torch.sum(touchdown), min=1.0)
+  return cost
+
+
+def stance_action_acc_l2(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  left_joint_indices: list[int],
+  right_joint_indices: list[int],
+) -> torch.Tensor:
+  """Penalize action acceleration only for the joints of the stance (contact) leg.
+
+  Swing-leg joints are excluded, allowing vigorous foot lifting without penalty
+  while still preventing oscillations on the weight-bearing leg.
+
+  The contact sensor must provide a ``found`` tensor with at least 8 columns:
+  columns 0-3 for the left foot split patches, columns 4-7 for the right.
+  """
+  action_acc = (
+    env.action_manager.action
+    - 2 * env.action_manager.prev_action
+    + env.action_manager.prev_prev_action
+  )
+  sensor: ContactSensor = env.scene[sensor_name]
+  found = sensor.data.found
+  if found is None or found.shape[1] < 8:
+    return torch.zeros(env.num_envs, device=env.device)
+  contacts = (found[:, :8] > 0).float()
+  left_stance = (contacts[:, :4].sum(dim=1) > 0).float()
+  right_stance = (contacts[:, 4:8].sum(dim=1) > 0).float()
+  left_acc_sq = torch.sum(torch.square(action_acc[:, left_joint_indices]), dim=1)
+  right_acc_sq = torch.sum(torch.square(action_acc[:, right_joint_indices]), dim=1)
+  return left_stance * left_acc_sq + right_stance * right_acc_sq
+
+
+def flat_support_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  required_contacts_per_foot: int = 4,
+) -> torch.Tensor:
+  """Enforce a strict 4-or-0 support rule for each foot.
+
+  For each foot independently:
+  - if no split contact zone is touching, cost is zero
+  - if any split contact zone is touching, all four must be touching
+
+  This is stricter than a generic edge-contact penalty and matches robots that
+  must land and support weight with a flat sole rather than rolling over heel,
+  toe, or edge.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  found = sensor.data.found
+  if found is None:
+    raise RuntimeError("Contact sensor must provide 'found' for flat support penalty.")
+  if found.shape[1] < 8:
+    raise RuntimeError("flat_support_penalty expects 8 split foot contacts.")
+
+  contacts = (found[:, :8] > 0).float().view(found.shape[0], 2, 4)
+  contact_count = torch.sum(contacts, dim=2)  # [B, 2]
+  in_contact = (contact_count > 0).float()
+
+  required_contacts = float(required_contacts_per_foot)
+  deficit = torch.clamp(required_contacts - contact_count, min=0.0) / max(
+    required_contacts, 1.0
+  )
+  cost = torch.sum(torch.square(deficit) * in_contact, dim=1)
+
+  env.extras["log"]["Metrics/flat_support_contacts_mean"] = torch.sum(
+    contact_count * in_contact
+  ) / torch.clamp(torch.sum(in_contact), min=1.0)
+  env.extras["log"]["Metrics/stance_contacts_mean"] = torch.sum(
+    contact_count * in_contact
+  ) / torch.clamp(torch.sum(in_contact), min=1.0)
+  return cost
+
+
+def standing_flat_foot_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  command_threshold: float = 0.05,
+  target_contacts_per_foot: int = 4,
+) -> torch.Tensor:
+  """Penalize non-flat feet when the commanded velocity is near zero."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  found = sensor.data.found
+  if found is None:
+    raise RuntimeError(
+      "Contact sensor must provide 'found' for standing flat-foot penalty."
+    )
+  if found.shape[1] < 8:
+    raise RuntimeError("standing_flat_foot_penalty expects 8 split foot contacts.")
+
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  linear_norm = torch.norm(command[:, :2], dim=1)
+  angular_norm = torch.abs(command[:, 2])
+  total_command = linear_norm + angular_norm
+  standing = (total_command <= command_threshold).float()
+
+  contacts = (found[:, :8] > 0).float()
+  left_contacts = torch.sum(contacts[:, :4], dim=1)
+  right_contacts = torch.sum(contacts[:, 4:8], dim=1)
+  target_contacts = float(target_contacts_per_foot)
+
+  left_deficit = torch.clamp(target_contacts - left_contacts, min=0.0) / max(
+    target_contacts, 1.0
+  )
+  right_deficit = torch.clamp(target_contacts - right_contacts, min=0.0) / max(
+    target_contacts, 1.0
+  )
+  cost = standing * (torch.square(left_deficit) + torch.square(right_deficit))
+
+  env.extras["log"]["Metrics/standing_flat_contacts_mean"] = torch.sum(
+    (left_contacts + right_contacts) * standing
+  ) / torch.clamp(2.0 * torch.sum(standing), min=1.0)
+  return cost
+
+
+def impact_velocity(
+  env: ManagerBasedRlEnv,
+  limit: float,
+  sensor_name: str,
+  start_step: int = 0,
+  pre_contact_limit: float | None = None,
+  pre_contact_window_s: float = 0.0,
+  always_limit: float | None = None,
+  command_name: str | None = None,
+  always_command_threshold: float = 0.0,
+) -> torch.Tensor:
+  """Penalize foot linear velocity at landing, using last in-air velocity."""
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  first_contact = contact_sensor.compute_first_contact(dt=env.step_dt)  # [B, N]
+  found = contact_sensor.data.found
+  if found is None:
+    raise RuntimeError(
+      "Contact sensor must provide 'found' to compute impact velocity."
+    )
+
+  eps = 1e-6
+  use_pre_contact_window = pre_contact_limit is not None and pre_contact_window_s > 0.0
+  window_steps = 0
+  if use_pre_contact_window:
+    window_steps = max(1, int(round(pre_contact_window_s / env.step_dt)))
+
+  cost_per_slot = torch.zeros_like(first_contact, dtype=torch.float)
+  landing_vel_per_slot = torch.zeros_like(first_contact, dtype=torch.float)
+  pre_contact_cost = torch.zeros_like(first_contact, dtype=torch.float)
+  pre_contact_peak_vel = torch.zeros_like(first_contact, dtype=torch.float)
+  always_cost = torch.zeros_like(first_contact, dtype=torch.float)
+  always_vel = torch.zeros_like(first_contact, dtype=torch.float)
+
+  always_active: torch.Tensor | None = None
+  if (
+    always_limit is not None
+    and command_name is not None
+    and always_command_threshold > 0.0
+  ):
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    total_command = linear_norm + angular_norm
+    always_active = (total_command >= always_command_threshold).float()
+
+  # Assumed order of slots:
+  # [left_foot1, left_foot2, left_foot3, left_foot4,
+  #  right_foot1, right_foot2, right_foot3, right_foot4]
+  slot_names = [
+    "robot/left_foot_toes_lin_vel",
+    "robot/left_foot_heel_lin_vel",
+    "robot/left_foot_inner_lin_vel",
+    "robot/left_foot_outer_lin_vel",
+    "robot/right_foot_toes_lin_vel",
+    "robot/right_foot_heel_lin_vel",
+    "robot/right_foot_inner_lin_vel",
+    "robot/right_foot_outer_lin_vel",
+  ]
+
+  for idx, sensor_path in enumerate(slot_names):
+    vel_sensor: Entity = env.scene[sensor_path]
+    vel_data = vel_sensor.data
+    assert vel_data is not None
+    vel_norm = torch.norm(vel_data, dim=1)  # [B]
+
+    # Buffer last in-air velocity to approximate pre-impact speed.
+    buf_key = "impact_vel_last_air"
+    if buf_key not in env.extras:
+      env.extras[buf_key] = torch.zeros_like(first_contact, dtype=torch.float)
+    last_air_vel = env.extras[buf_key]
+    in_air = found[:, idx] == 0
+    last_air_vel[:, idx] = torch.where(in_air, vel_norm, last_air_vel[:, idx])
+
+    # Use buffered velocity at touchdown; zero otherwise.
+    landing_vel = torch.where(
+      first_contact[:, idx], last_air_vel[:, idx], torch.zeros_like(vel_norm)
+    )
+
+    # Track velocity history to constrain speed shortly before impact.
+    if use_pre_contact_window:
+      window_key = "impact_vel_window_buffer"
+      if window_key not in env.extras:
+        env.extras[window_key] = vel_norm.new_zeros(
+          (env.num_envs, len(slot_names), window_steps)
+        )
+      else:
+        window_buf = env.extras[window_key]
+        if (
+          window_buf.shape[1] != len(slot_names) or window_buf.shape[2] != window_steps
+        ):
+          env.extras[window_key] = vel_norm.new_zeros(
+            (env.num_envs, len(slot_names), window_steps)
+          )
+      window_buf = env.extras[window_key]
+      window_buf = torch.roll(window_buf, shifts=-1, dims=2)
+      window_buf[:, idx, -1] = vel_norm
+      env.extras[window_key] = window_buf
+
+      window_peak = torch.max(window_buf[:, idx, :], dim=1).values
+      pre_contact_peak_vel[:, idx] = window_peak
+      pre_excess = torch.clamp(window_peak - pre_contact_limit, min=0.0)
+      pre_contact_cost[:, idx] = (
+        torch.square(pre_excess / (pre_contact_limit + eps))
+        * first_contact[:, idx].float()
+      )
+
+    # Always-on swing speed cap.
+    if always_limit is not None:
+      always_vel[:, idx] = vel_norm
+      swing_excess = torch.clamp(vel_norm - always_limit, min=0.0)
+      slot_cost = torch.square(swing_excess / (always_limit + eps))
+      if always_active is not None:
+        slot_cost = slot_cost * always_active
+      always_cost[:, idx] = slot_cost
+
+    # Dimensionless squared penalty: (v/limit)^2.
+    cost_per_slot[:, idx] = torch.square(landing_vel / (limit + eps))
+    landing_vel_per_slot[:, idx] = landing_vel
+
+  # Sum per environment.
+  cost = torch.sum(cost_per_slot, dim=1)
+  if use_pre_contact_window:
+    cost = cost + torch.sum(pre_contact_cost, dim=1)
+  if always_limit is not None:
+    cost = cost + torch.sum(always_cost, dim=1)
+
+  # Optional gating: activate only after a given number of steps in the episode.
+  if start_step > 0 and hasattr(env, "episode_length_buf"):
+    active = (env.episode_length_buf >= start_step).float()
+    cost = cost * active
+
+  left_first_contact = first_contact[:, :4].float()
+  right_first_contact = first_contact[:, 4:].float()
+  left_landing_vel = landing_vel_per_slot[:, :4]
+  right_landing_vel = landing_vel_per_slot[:, 4:]
+
+  left_has_landing = (torch.sum(left_first_contact, dim=1) > 0).float()
+  right_has_landing = (torch.sum(right_first_contact, dim=1) > 0).float()
+  left_mean_per_env = torch.sum(left_landing_vel, dim=1) / torch.clamp(
+    torch.sum(left_first_contact, dim=1), min=1.0
+  )
+  right_mean_per_env = torch.sum(right_landing_vel, dim=1) / torch.clamp(
+    torch.sum(right_first_contact, dim=1), min=1.0
+  )
+
+  left_mean_landing_vel = torch.sum(left_mean_per_env * left_has_landing) / torch.clamp(
+    torch.sum(left_has_landing), min=1.0
+  )
+  right_mean_landing_vel = torch.sum(
+    right_mean_per_env * right_has_landing
+  ) / torch.clamp(torch.sum(right_has_landing), min=1.0)
+
+  foot_landings = left_has_landing + right_has_landing
+  mean_landing_vel = torch.sum(
+    left_mean_per_env * left_has_landing + right_mean_per_env * right_has_landing
+  ) / torch.clamp(torch.sum(foot_landings), min=1.0)
+  env.extras["log"]["Metrics/landing_vel_mean"] = mean_landing_vel
+  env.extras["log"]["Metrics/landing_vel_left_mean"] = left_mean_landing_vel
+  env.extras["log"]["Metrics/landing_vel_right_mean"] = right_mean_landing_vel
+
+  left_marker_vel_sensor: Entity = env.scene["robot/left_foot_lin_vel"]
+  right_marker_vel_sensor: Entity = env.scene["robot/right_foot_lin_vel"]
+  left_marker_vel = torch.norm(left_marker_vel_sensor.data, dim=1)
+  right_marker_vel = torch.norm(right_marker_vel_sensor.data, dim=1)
+  env.extras["log"]["Metrics/left_foot_marker_speed"] = torch.mean(left_marker_vel)
+  env.extras["log"]["Metrics/right_foot_marker_speed"] = torch.mean(right_marker_vel)
+  if use_pre_contact_window:
+    window_landings = torch.sum(first_contact.float())
+    pre_contact_peak_at_landing = pre_contact_peak_vel * first_contact.float()
+    mean_pre_contact_peak = torch.sum(pre_contact_peak_at_landing) / torch.clamp(
+      window_landings, min=1
+    )
+    env.extras["log"]["Metrics/pre_contact_peak_vel_mean"] = mean_pre_contact_peak
+
+  if always_limit is not None:
+    vel_for_log = always_vel
+    if always_active is not None:
+      vel_for_log = vel_for_log * always_active.unsqueeze(1)
+    env.extras["log"]["Metrics/foot_vel_max"] = torch.max(vel_for_log)
+
+  return cost

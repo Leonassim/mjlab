@@ -150,6 +150,115 @@ class electrical_power_cost:
     return torch.sum(mech_pos, dim=1)
 
 
+class joint_effort_l2:
+  """Penalize actuator force for actuators matching a name pattern."""
+
+  def __init__(self, cfg: "RewardTermCfg", env: ManagerBasedRlEnv):
+    import re
+
+    asset: Entity = env.scene[cfg.params["asset_cfg"].name]
+    pattern = cfg.params.get("actuator_pattern", r".*")
+    regex = re.compile(pattern)
+    self._indices = [
+      i for i, name in enumerate(asset.actuator_names) if regex.search(name)
+    ]
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    actuator_pattern: str = r".*",
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.actuator_force[:, self._indices]), dim=1)
+
+
+def joint_torque_limit_margin_penalty(
+  env: ManagerBasedRlEnv,
+  soft_ratio: float = 0.7,
+  power: float = 2.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize actuator forces as they approach their torque limits."""
+  asset: Entity = env.scene[asset_cfg.name]
+  actuator_names = asset.actuator_names
+  active_local_ids = [
+    idx for idx, name in enumerate(actuator_names) if not name.endswith("_motor")
+  ]
+  if not active_local_ids:
+    active_local_ids = list(range(len(actuator_names)))
+
+  active_local_ids_t = torch.tensor(
+    active_local_ids, device=env.device, dtype=torch.long
+  )
+  actuator_force = torch.abs(asset.data.actuator_force[:, active_local_ids_t])
+  ctrl_ids = asset.indexing.ctrl_ids[active_local_ids_t]
+  force_limits = env.sim.model.actuator_forcerange[:, ctrl_ids, 1]
+
+  eps = 1e-6
+  valid = force_limits > eps
+  normalized = torch.zeros_like(actuator_force)
+  normalized[valid] = actuator_force[valid] / force_limits[valid]
+
+  denom = max(1.0 - soft_ratio, eps)
+  excess = torch.clamp((normalized - soft_ratio) / denom, min=0.0)
+  if power != 1.0:
+    excess = torch.pow(excess, power)
+
+  env.extras["log"]["Metrics/torque_limit_ratio_mean"] = torch.mean(normalized)
+  env.extras["log"]["Metrics/torque_limit_ratio_max"] = torch.max(normalized)
+  return torch.sum(excess, dim=1)
+
+
+def joints_action_acc_l2(
+  env: ManagerBasedRlEnv,
+  joint_indices: list[int],
+) -> torch.Tensor:
+  """Penalize action acceleration for a specific subset of joints."""
+  action_acc = (
+    env.action_manager.action
+    - 2 * env.action_manager.prev_action
+    + env.action_manager.prev_prev_action
+  )
+  return torch.sum(torch.square(action_acc[:, joint_indices]), dim=1)
+
+
+class joint_torque_rate_l2:
+  """Penalize step-to-step changes in actuator torque."""
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    asset_cfg: SceneEntityCfg = cfg.params["asset_cfg"]
+    asset: Entity = env.scene[asset_cfg.name]
+
+    joint_names = asset_cfg.joint_names if asset_cfg.joint_names else (".*",)
+    actuator_ids, _ = asset.find_actuators(joint_names)
+    if not actuator_ids:
+      joint_ids, _ = asset.find_joints(joint_names)
+      actuator_ids = joint_ids
+    self._actuator_ids = torch.tensor(actuator_ids, device=env.device, dtype=torch.long)
+    self._prev_tau = torch.zeros(
+      (env.num_envs, len(actuator_ids)), device=env.device, dtype=torch.float
+    )
+    self._initialized = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self._prev_tau[env_ids] = 0.0
+    self._initialized[env_ids] = False
+
+  def __call__(self, env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    tau = asset.data.actuator_force[:, self._actuator_ids]
+    delta = tau - self._prev_tau
+    reward = torch.sum(torch.square(delta), dim=1)
+    first = ~self._initialized
+    reward = torch.where(first, torch.zeros_like(reward), reward)
+    self._prev_tau[:] = tau
+    self._initialized[:] = True
+    return reward
+
+
 def flat_orientation_l2(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,

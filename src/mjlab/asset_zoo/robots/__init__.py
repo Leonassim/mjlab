@@ -16,3 +16,9 @@ from mjlab.asset_zoo.robots.unitree_go1.go1_constants import (
 from mjlab.asset_zoo.robots.unitree_go1.go1_constants import (
   get_go1_robot_cfg as get_go1_robot_cfg,
 )
+from mjlab.asset_zoo.robots.RHPS1.rhps1_constants import (
+  RHPS1_ACTION_SCALE as RHPS1_ACTION_SCALE,
+)
+from mjlab.asset_zoo.robots.RHPS1.rhps1_constants import (
+  get_rhps1_robot_cfg as get_rhps1_robot_cfg,
+)

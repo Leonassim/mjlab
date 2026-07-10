@@ -52,6 +52,12 @@ from mjlab.actuator.builtin_actuator import (
 from mjlab.actuator.builtin_group import BuiltinActuatorGroup as BuiltinActuatorGroup
 from mjlab.actuator.dc_actuator import DcMotorActuator as DcMotorActuator
 from mjlab.actuator.dc_actuator import DcMotorActuatorCfg as DcMotorActuatorCfg
+from mjlab.actuator.finite_difference_pd_actuator import (
+  FiniteDifferencePdActuator as FiniteDifferencePdActuator,
+)
+from mjlab.actuator.finite_difference_pd_actuator import (
+  FiniteDifferencePdActuatorCfg as FiniteDifferencePdActuatorCfg,
+)
 from mjlab.actuator.fused_group import FusedActuatorGroup as FusedActuatorGroup
 from mjlab.actuator.learned_actuator import LearnedMlpActuator as LearnedMlpActuator
 from mjlab.actuator.learned_actuator import (
