@@ -55,6 +55,10 @@ class PlayConfig:
   """Print foot impact velocities and peak swing height at each touchdown (env 0)."""
   convex_visuals: bool = False
   """Render convex collision geoms instead of high-poly visual meshes (faster)."""
+  fast: bool = False
+  """Strip computation not needed for inference: rewards, curriculum, domain
+  randomization, observation noise, and sensors unused by observations or
+  terminations. Combine with --convex-visuals for faster rendering too."""
   log_root: str = "logs/rsl_rl"
   """Root directory under which experiment logs are written."""
 
@@ -77,6 +81,32 @@ def run_play(task_id: str, cfg: PlayConfig):
   if cfg.no_terminations:
     env_cfg.terminations = {}
     print("[INFO]: Terminations disabled")
+
+  if cfg.fast:
+    env_cfg.rewards = {}
+    env_cfg.curriculum = {}
+    env_cfg.events = {
+      name: term for name, term in env_cfg.events.items() if term.mode == "reset"
+    }
+    for group in env_cfg.observations.values():
+      group.enable_corruption = False
+    # Sensors are only kept if an observation or termination term references
+    # them by name; the rest (typically reward-only sensors) are dropped.
+    used_names: set[str] = set()
+    for group in env_cfg.observations.values():
+      for term in group.terms.values():
+        used_names.update(v for v in term.params.values() if isinstance(v, str))
+    for term_cfg in env_cfg.terminations.values():
+      used_names.update(v for v in term_cfg.params.values() if isinstance(v, str))
+    num_sensors = len(env_cfg.scene.sensors)
+    env_cfg.scene.sensors = tuple(
+      s for s in env_cfg.scene.sensors if s.name in used_names
+    )
+    print(
+      "[INFO]: Fast mode: removed rewards, curriculum, domain randomization, "
+      f"observation noise, and {num_sensors - len(env_cfg.scene.sensors)}/"
+      f"{num_sensors} scene sensors."
+    )
 
   # Check if this is a tracking task by checking for motion command.
   is_tracking_task = "motion" in env_cfg.commands and isinstance(
