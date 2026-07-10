@@ -159,6 +159,28 @@ class upright:
       )
 
 
+def leg_proximity_cost(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  min_dist: float = 0.01,
+) -> torch.Tensor:
+  """Penalize leg-leg clearance below ``min_dist``.
+
+  Mirrors the deployment QP's self-collision damper margin so the policy
+  keeps out of its activation zone. Requires a contact sensor with a ``dist``
+  field on geoms whose ``gap`` extends detection beyond ``min_dist``
+  (forceless proximity contacts). Penalty ramps linearly from 0 at
+  ``min_dist`` to 1 at touch, and keeps growing with penetration.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  found = sensor.data.found
+  dist = sensor.data.dist
+  if found is None or dist is None:
+    raise RuntimeError("leg_proximity_cost needs 'found' and 'dist' fields.")
+  violation = torch.clamp(min_dist - dist, min=0.0) * (found > 0).float()
+  return torch.sum(violation, dim=1) / min_dist
+
+
 def self_collision_cost(
   env: ManagerBasedRlEnv,
   sensor_name: str,

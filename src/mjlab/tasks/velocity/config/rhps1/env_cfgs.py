@@ -75,12 +75,35 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     num_slots=1,
     track_air_time=True,
   )
+  # Force-based counting (fields force + history) so the forceless proximity
+  # contacts created by the leg-geom collision gap don't register as
+  # collisions — only actual contact forces do.
   self_collision_cfg = ContactSensorCfg(
     name="self_collision",
     primary=ContactMatch(mode="subtree", pattern="BODY", entity="robot"),
     secondary=ContactMatch(mode="subtree", pattern="BODY", entity="robot"),
-    fields=("found",),
+    fields=("found", "force"),
     reduce="none",
+    num_slots=1,
+    history_length=2,
+  )
+  # Leg-leg clearance, readable up to the collision gap set on these geoms
+  # (forceless proximity contacts). Feeds leg_proximity_cost, which mirrors
+  # the deployment QP's self-collision damper margin.
+  leg_proximity_cfg = ContactSensorCfg(
+    name="leg_proximity",
+    primary=ContactMatch(
+      mode="geom",
+      pattern=r"^rhps1_collision_L_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
+      entity="robot",
+    ),
+    secondary=ContactMatch(
+      mode="geom",
+      pattern=r"^rhps1_collision_R_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
+      entity="robot",
+    ),
+    fields=("found", "dist"),
+    reduce="mindist",
     num_slots=1,
   )
   pattern_cfg = GridPatternCfg(
@@ -142,6 +165,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     feet_ground_split_cfg,
     feet_mesh_cfg,
     self_collision_cfg,
+    leg_proximity_cfg,
     raycast_cfg,
     left_foot_raycast_cfg,
     right_foot_raycast_cfg,
@@ -324,6 +348,13 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     func=mdp.self_collision_cost,
     weight=-0.5,
     params={"sensor_name": self_collision_cfg.name},
+  )
+  # Keep leg clearance above the deployment QP's damper margin (iDist 0.01 on
+  # the leg pairs) so the QP never has to intervene against the gait.
+  cfg.rewards["leg_proximity"] = RewardTermCfg(
+    func=mdp.leg_proximity_cost,
+    weight=-1.0,
+    params={"sensor_name": leg_proximity_cfg.name, "min_dist": 0.01},
   )
   cfg.rewards["torque_limit_margin"] = RewardTermCfg(
     func=mdp.joint_torque_limit_margin_penalty,
