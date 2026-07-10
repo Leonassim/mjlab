@@ -266,3 +266,21 @@ def flat_orientation_l2(
   """Penalize non-flat base orientation."""
   asset: Entity = env.scene[asset_cfg.name]
   return torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+
+
+def joint_torques_l2(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+) -> torch.Tensor:
+  """Penalize joint torques applied on the articulation using L2 squared kernel."""
+  asset: Entity = env.scene[asset_cfg.name]
+  return torch.sum(torch.square(asset.data.actuator_force), dim=1)
+
+
+def action_acc_l2(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Penalize the acceleration of the actions using L2 squared kernel."""
+  action_acc = (
+    env.action_manager.action
+    - 2 * env.action_manager.prev_action
+    + env.action_manager.prev_prev_action
+  )
+  return torch.sum(torch.square(action_acc), dim=1)

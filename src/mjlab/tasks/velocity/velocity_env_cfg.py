@@ -315,6 +315,10 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
       params={"sensor_name": "robot/root_angmom"},
     ),
     "dof_pos_limits": RewardTermCfg(func=mdp.joint_pos_limits, weight=-1.0),
+    "joint_torques_l2": RewardTermCfg(
+      func=envs_mdp.joint_torques_l2, weight=-2e-5
+    ),
+    "action_acc_l2": RewardTermCfg(func=envs_mdp.action_acc_l2, weight=-0.02),
     "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.1),
     "air_time": RewardTermCfg(
       func=mdp.feet_air_time,
