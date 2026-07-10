@@ -169,6 +169,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   old_terms = cfg.observations[actor_group_name].terms
   old_terms.pop("phase", None)
   old_terms.pop("height_scan", None)
+  old_terms.pop("base_lin_vel", None)  # Will be re-added as first term below.
   base_ang_vel_term = old_terms.get("base_ang_vel")
   if base_ang_vel_term is not None:
     base_ang_vel_term.func = mdp.base_ang_vel
@@ -216,6 +217,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   if "critic" in cfg.observations:
     cfg.observations["critic"].terms["base_lin_vel"] = ObservationTermCfg(
       func=mdp.base_lin_vel
+    )
+    cfg.observations["critic"].terms["base_ang_vel"] = ObservationTermCfg(
+      func=mdp.base_ang_vel
     )
 
   for group_name in ("actor_history", "critic", "teacher", "privileged"):
