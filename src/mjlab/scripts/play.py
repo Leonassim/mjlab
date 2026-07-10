@@ -53,6 +53,8 @@ class PlayConfig:
   """Drive env 0's velocity command with a physical gamepad."""
   print_impact_vel: bool = False
   """Print foot impact velocities and peak swing height at each touchdown (env 0)."""
+  convex_visuals: bool = False
+  """Render convex collision geoms instead of high-poly visual meshes (faster)."""
   log_root: str = "logs/rsl_rl"
   """Root directory under which experiment logs are written."""
 
@@ -171,6 +173,23 @@ def run_play(task_id: str, cfg: PlayConfig):
       if hasattr(command, "use_gamepad"):
         command.use_gamepad = True  # type: ignore[attr-defined]
         print("[INFO]: Gamepad control enabled for env 0.")
+  if cfg.convex_visuals:
+    # mjlab convention: visual geoms in group 2, collision geoms in group 3.
+    # Swap so viewers (which show groups 0-2) render the cheap convex shapes.
+    for entity_cfg in env_cfg.scene.entities.values():
+      orig_spec_fn = entity_cfg.spec_fn
+
+      def _convex_spec_fn(orig_fn=orig_spec_fn):
+        spec = orig_fn()
+        for geom in spec.geoms:
+          if geom.group == 2:
+            geom.group = 5
+          elif geom.group == 3:
+            geom.group = 2
+        return spec
+
+      entity_cfg.spec_fn = _convex_spec_fn
+    print("[INFO]: Rendering convex collision geoms instead of visual meshes.")
 
   render_mode = "rgb_array" if (TRAINED_MODE and cfg.video) else None
   if cfg.video and DUMMY_MODE:
