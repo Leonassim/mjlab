@@ -3,10 +3,11 @@
 from mjlab.asset_zoo.robots import RHPS1_ACTION_SCALE, get_rhps1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
-from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.reward_manager import RewardTermCfg
-from mjlab.utils.noise import UniformNoiseCfg as Unoise
+from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import (
   ContactMatch,
   ContactSensorCfg,
@@ -14,11 +15,10 @@ from mjlab.sensor import (
   ObjRef,
   RayCastSensorCfg,
 )
-from mjlab.managers.curriculum_manager import CurriculumTermCfg
-from mjlab.managers.termination_manager import TerminationTermCfg
+from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
-from mjlab.tasks.velocity import mdp
+from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 
 def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
