@@ -15,6 +15,7 @@ from mjlab.sensor import (
   RayCastSensorCfg,
 )
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 from mjlab.tasks.velocity import mdp
@@ -226,10 +227,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   cfg.viewer.body_name = "CHEST_P_LINK"
 
-  # RHPS1 stands at 0.838 m. The default 0.7 m threshold triggers at only 33° of
-  # tilt — H1 (0.97 m) gets 52° of tolerance with the same threshold. Use 0.55 m
-  # so RHPS1 also has ~49° before fell_down fires.
-  cfg.terminations["fell_down"].params["minimum_height"] = 0.55
+  # RHPS1 stands at 0.838 m. Use 0.55 m so RHPS1 gets ~49° of tilt before fell_down.
+  if "fell_down" in cfg.terminations:
+    cfg.terminations["fell_down"].params["minimum_height"] = 0.55
+  else:
+    cfg.terminations["fell_down"] = TerminationTermCfg(
+      func=mdp.root_height_below_minimum,
+      params={"minimum_height": 0.55},
+    )
 
   # base_com body_names defaults to () in the base config ("Set per-robot").
   # Set it explicitly so only the chest CoM is perturbed, matching H1's approach.
