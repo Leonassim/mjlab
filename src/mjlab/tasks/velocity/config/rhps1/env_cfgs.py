@@ -262,14 +262,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "ang_vel_z": (-0.3, 0.3),
       },
       {
-        "step": 1000 * 48,
-        "lin_vel_x": (-0.15, 0.15),
+        "step": 500 * 48,
+        "lin_vel_x": (-0.3, 0.3),
         "lin_vel_y": (-0.25, 0.25),
         "ang_vel_z": (-0.35, 0.35),
       },
       {
         "step": 3000 * 48,
-        "lin_vel_x": (-0.2, 0.2),
+        "lin_vel_x": (-0.3, 0.3),
         "lin_vel_y": (-0.35, 0.35),
         "ang_vel_z": (-0.4, 0.4),
       },
@@ -544,7 +544,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "reward_name": "air_time",
       "weight_stages": [
         {"step": 0, "weight": 5.0},
-        {"step": 500 * 48, "weight": 50.0},
+        {"step": 500 * 48, "weight": 15.0},
       ],
     },
   )
