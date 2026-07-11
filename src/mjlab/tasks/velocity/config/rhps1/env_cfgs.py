@@ -349,12 +349,15 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     weight=-0.5,
     params={"sensor_name": self_collision_cfg.name},
   )
-  # Keep leg clearance above the deployment QP's damper margin (iDist 0.01 on
-  # the leg pairs) so the QP never has to intervene against the gait.
+  # The deployment QP keeps the module's full leg-leg self-collision pairs
+  # (sDist 0.01 on convex hulls, observed hard clamp from ~2 cm hull
+  # distance). MuJoCo convexifies collision meshes, so this sensor measures a
+  # comparable hull-hull distance: penalizing below 2 cm keeps the gait
+  # outside the QP dampers' braking zone with margin.
   cfg.rewards["leg_proximity"] = RewardTermCfg(
     func=mdp.leg_proximity_cost,
-    weight=-1.0,
-    params={"sensor_name": leg_proximity_cfg.name, "min_dist": 0.01},
+    weight=-2.0,
+    params={"sensor_name": leg_proximity_cfg.name, "min_dist": 0.02},
   )
   cfg.rewards["torque_limit_margin"] = RewardTermCfg(
     func=mdp.joint_torque_limit_margin_penalty,
