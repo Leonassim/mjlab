@@ -87,24 +87,44 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     num_slots=1,
     history_length=2,
   )
-  # Leg-leg clearance, readable up to the collision gap set on these geoms
-  # (forceless proximity contacts). Feeds leg_proximity_cost, which mirrors
-  # the deployment QP's self-collision damper margin.
-  leg_proximity_cfg = ContactSensorCfg(
-    name="leg_proximity",
-    primary=ContactMatch(
-      mode="geom",
-      pattern=r"^rhps1_collision_L_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
-      entity="robot",
-    ),
-    secondary=ContactMatch(
-      mode="geom",
-      pattern=r"^rhps1_collision_R_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
-      entity="robot",
-    ),
-    fields=("found", "dist"),
-    reduce="mindist",
-    num_slots=1,
+  # Hull-clearance sensors mirroring the deployment QP's minimalSelfCollisions
+  # pairs, readable up to the collision gap set on these geoms (forceless
+  # proximity contacts). One sensor per QP sDist group; thresholds live in the
+  # matching leg_proximity_cost reward terms (QP sDist + 1 cm buffer).
+  def _proximity_sensor(name: str, primary: str, secondary: str) -> ContactSensorCfg:
+    return ContactSensorCfg(
+      name=name,
+      primary=ContactMatch(mode="geom", pattern=primary, entity="robot"),
+      secondary=ContactMatch(mode="geom", pattern=secondary, entity="robot"),
+      fields=("found", "dist"),
+      reduce="mindist",
+      num_slots=1,
+    )
+
+  leg_proximity_cfg = _proximity_sensor(
+    "leg_proximity",
+    r"^rhps1_collision_L_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
+    r"^rhps1_collision_R_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
+  )
+  arm_torso_proximity_cfg = _proximity_sensor(
+    "arm_torso_proximity",
+    r"^rhps1_collision_[LR]_(ELBOW_Y|WRIST_Y)_LINK$",
+    r"^rhps1_collision_(CHEST_P_LINK|BODY)$",
+  )
+  shoulder_chest_proximity_cfg = _proximity_sensor(
+    "shoulder_chest_proximity",
+    r"^rhps1_collision_[LR]_SHOULDER_Y_LINK$",
+    r"^rhps1_collision_CHEST_P_LINK$",
+  )
+  shoulder_body_proximity_cfg = _proximity_sensor(
+    "shoulder_body_proximity",
+    r"^rhps1_collision_[LR]_SHOULDER_Y_LINK$",
+    r"^rhps1_collision_BODY$",
+  )
+  wrist_thigh_proximity_cfg = _proximity_sensor(
+    "wrist_thigh_proximity",
+    r"^rhps1_collision_[LR]_WRIST_Y_LINK$",
+    r"^rhps1_collision_[LR]_CROTCH_P_LINK$",
   )
   pattern_cfg = GridPatternCfg(
     size=(0.2, 0.2),
@@ -166,6 +186,10 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     feet_mesh_cfg,
     self_collision_cfg,
     leg_proximity_cfg,
+    arm_torso_proximity_cfg,
+    shoulder_chest_proximity_cfg,
+    shoulder_body_proximity_cfg,
+    wrist_thigh_proximity_cfg,
     raycast_cfg,
     left_foot_raycast_cfg,
     right_foot_raycast_cfg,
@@ -349,16 +373,25 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     weight=-0.5,
     params={"sensor_name": self_collision_cfg.name},
   )
-  # The deployment QP keeps the module's full leg-leg self-collision pairs
-  # (sDist 0.01 on convex hulls, observed hard clamp from ~2 cm hull
-  # distance). MuJoCo convexifies collision meshes, so this sensor measures a
-  # comparable hull-hull distance: penalizing below 2 cm keeps the gait
-  # outside the QP dampers' braking zone with margin.
-  cfg.rewards["leg_proximity"] = RewardTermCfg(
-    func=mdp.leg_proximity_cost,
-    weight=-2.0,
-    params={"sensor_name": leg_proximity_cfg.name, "min_dist": 0.02},
-  )
+  # The deployment QP keeps the module's full minimalSelfCollisions (dampers
+  # hard-stop at each pair's sDist on convex hulls). MuJoCo convexifies
+  # collision meshes, so these sensors measure a comparable hull-hull
+  # distance: each threshold = the pair group's QP sDist + 1 cm buffer, so the
+  # policy stays out of the dampers' braking zone. Rest distances (measured):
+  # thighs 2.9 cm, knees 6.7 cm, shoulder-chest 2.2 cm, arm-torso 6-20 cm —
+  # all above their thresholds, no penalty in nominal posture.
+  for prox_cfg, min_dist in (
+    (leg_proximity_cfg, 0.02),  # QP sDist 0.01 (legs)
+    (arm_torso_proximity_cfg, 0.04),  # QP sDist 0.03 (elbow/wrist vs chest/body)
+    (shoulder_chest_proximity_cfg, 0.01),  # QP sDist 0.001
+    (shoulder_body_proximity_cfg, 0.04),  # QP sDist 0.03
+    (wrist_thigh_proximity_cfg, 0.03),  # QP sDist 0.02
+  ):
+    cfg.rewards[prox_cfg.name] = RewardTermCfg(
+      func=mdp.leg_proximity_cost,
+      weight=-2.0,
+      params={"sensor_name": prox_cfg.name, "min_dist": min_dist},
+    )
   cfg.rewards["torque_limit_margin"] = RewardTermCfg(
     func=mdp.joint_torque_limit_margin_penalty,
     weight=-0.16,
