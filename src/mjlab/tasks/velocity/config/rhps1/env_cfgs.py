@@ -571,9 +571,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
   # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
-  # time; steps shorter than threshold_max*sqrt(0.15) are net negative.
+  # time; steps shorter than threshold_max*sqrt(touchdown_cost) are net
+  # negative. The 2026-07-10 run converged exactly at the 0.15 break-even
+  # (air_time_mean 0.174 s vs break-even 0.19 s): 0.30 moves the break-even to
+  # ~0.27 s so short shuffling steps stay clearly unprofitable.
   cfg.rewards["air_time"].params["power"] = 2.0
-  cfg.rewards["air_time"].params["touchdown_cost"] = 0.15
+  cfg.rewards["air_time"].params["touchdown_cost"] = 0.30
   cfg.rewards["foot_clearance"].params["target_height"] = 0.15
   cfg.rewards["foot_clearance"].params["command_name"] = "twist"
   cfg.rewards["foot_clearance"].params["command_threshold"] = 0.05
@@ -629,7 +632,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "reward_name": "air_time",
       "weight_stages": [
         {"step": 0, "weight": 2.0},
-        {"step": 500 * 48, "weight": 5.0},
+        {"step": 500 * 48, "weight": 8.0},
       ],
     },
   )
