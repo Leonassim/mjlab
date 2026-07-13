@@ -360,7 +360,10 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     weight=-0.5,
     params={
       "sensor_name": feet_ground_split_cfg.name,
-      "limit": 0.10,
+      # 0.15 (was 0.10): landing_vel plateaued at the old soft limit across
+      # runs and capped swing height/length — the impact penalty was the
+      # physical ceiling on the air_time incentive.
+      "limit": 0.15,
       "start_step": 0,
       "pre_contact_limit": 0.45,
       "pre_contact_window_s": 0.1,
@@ -536,7 +539,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
-  cfg.rewards["air_time"].weight = 2.0
+  cfg.rewards["air_time"].weight = 8.0
 
   # foot_clearance (|z - target| x foot speed, every step) acts as a
   # per-meter tax on swinging while the feet are low: combined with the
@@ -580,7 +583,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["air_time"].params["sensor_name"] = feet_ground_split_cfg.name
   cfg.rewards["air_time"].params["threshold_min"] = 0.01
-  cfg.rewards["air_time"].params["threshold_max"] = 0.2
+  cfg.rewards["air_time"].params["threshold_max"] = 0.5
   cfg.rewards["air_time"].params["overflow_threshold"] = 2.0
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
@@ -613,32 +616,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.events.pop("push_robot", None)
   assert cfg.curriculum is not None
 
-  cfg.curriculum["air_time"] = CurriculumTermCfg(
-    func=mdp.air_time_curriculum,
-    params={
-      "reward_name": "air_time",
-      "param_name": "threshold_max",
-      "stages": [
-        {"step": 0, "value": 0.10},
-        {"step": 500 * 48, "value": 0.30},
-        {"step": 2000 * 48, "value": 0.50},
-      ],
-    },
-  )
-
-  # Weights calibrated for the fixed landing bonus (last_air_time, power=2,
-  # touchdown_cost): a full-length stride now pays ~0.85 per landing where the
-  # old current_air_time bug paid a constant ~0.02.
-  cfg.curriculum["air_time_weight"] = CurriculumTermCfg(
-    func=mdp.reward_weight,
-    params={
-      "reward_name": "air_time",
-      "weight_stages": [
-        {"step": 0, "weight": 2.0},
-        {"step": 500 * 48, "weight": 8.0},
-      ],
-    },
-  )
+  # No air_time curriculum: the old stage-0 threshold_max=0.1 made every step
+  # longer than 0.1s pay the same net bonus, so the high-exploration phase
+  # locked the policy into high-frequency short steps before the later stages
+  # could create a gradient toward long strides (observed on the 2026-07-13
+  # run: air_time_mean peaked at 0.175 then fell to 0.137 at the stage
+  # switch). Full threshold and weight from step 0 instead.
 
   cfg.curriculum["standing_envs"] = CurriculumTermCfg(
     func=mdp.standing_envs_curriculum,

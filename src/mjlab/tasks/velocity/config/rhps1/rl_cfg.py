@@ -16,7 +16,9 @@ def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       activation="elu",
       distribution_cfg={
         "class_name": "GaussianDistribution",
-        "init_std": 1.0,
+        # 2.0 (was 1.0): together with the x4 leg action scale, widens early
+        # joint-space exploration so long strides are reachable by sampling.
+        "init_std": 2.0,
         "std_type": "scalar",
       },
     ),
