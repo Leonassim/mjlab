@@ -106,6 +106,15 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     r"^rhps1_collision_L_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
     r"^rhps1_collision_R_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
   )
+  # Dedicated knee pair with a higher threshold: the mc_rtc knee hulls are
+  # ~1.5 cm fatter than the mujoco meshes (measured 0.49 cm sch when the
+  # sensor read 2.0 cm during lateral walking), so 3.5 cm here ~= 2 cm sch,
+  # outside the QP knee damper zone (iDist 0.02, sDist 0.01).
+  knee_proximity_cfg = _proximity_sensor(
+    "knee_proximity",
+    r"^rhps1_collision_L_KNEE_P_LINK$",
+    r"^rhps1_collision_R_KNEE_P_LINK$",
+  )
   arm_torso_proximity_cfg = _proximity_sensor(
     "arm_torso_proximity",
     r"^rhps1_collision_[LR]_(ELBOW_Y|WRIST_Y)_LINK$",
@@ -186,6 +195,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     feet_mesh_cfg,
     self_collision_cfg,
     leg_proximity_cfg,
+    knee_proximity_cfg,
     arm_torso_proximity_cfg,
     shoulder_chest_proximity_cfg,
     shoulder_body_proximity_cfg,
@@ -382,6 +392,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # all above their thresholds, no penalty in nominal posture.
   for prox_cfg, min_dist in (
     (leg_proximity_cfg, 0.02),  # QP sDist 0.01 (legs)
+    (knee_proximity_cfg, 0.035),  # mc_rtc knee hulls ~1.5cm fatter than mujoco
     (arm_torso_proximity_cfg, 0.04),  # QP sDist 0.03 (elbow/wrist vs chest/body)
     (shoulder_chest_proximity_cfg, 0.01),  # QP sDist 0.001
     (shoulder_body_proximity_cfg, 0.04),  # QP sDist 0.03
