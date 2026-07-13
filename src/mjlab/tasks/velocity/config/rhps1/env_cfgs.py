@@ -527,20 +527,21 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
   cfg.rewards["air_time"].weight = 2.0
 
-  cfg.rewards["foot_clearance"].func = mdp.feet_clearance_velocity_weighted
-  cfg.rewards["foot_clearance"].params.pop("height_sensor_name", None)
-  cfg.rewards["foot_clearance"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", site_names=site_names
-  )
-  cfg.rewards["foot_clearance"].weight = -4.0
+  # foot_clearance (|z - target| x foot speed, every step) acts as a
+  # per-meter tax on swinging while the feet are low: combined with the
+  # per-airborne-step min-height penalty it made short fast shuffling optimal.
+  # Height incentives are covered by foot_swing_height + min_foot_height.
+  cfg.rewards.pop("foot_clearance", None)
   cfg.rewards["foot_swing_height"].func = mdp.split_feet_swing_height
   cfg.rewards["foot_swing_height"].weight = -5.0
+  # Charged once per landing (clamp(1 - peak/min_height, 0)), not per airborne
+  # step: air time itself is free, only landing with a low swing peak costs.
   cfg.rewards["min_foot_height"] = RewardTermCfg(
-    func=mdp.swing_foot_height,
+    func=mdp.split_feet_min_swing_height,
     weight=-5.0,
     params={
       "min_height": 0.08,
-      "sensor_name": feet_ground_cfg.name,
+      "sensor_name": feet_ground_split_cfg.name,
       "command_name": "twist",
       "command_threshold": 0.1,
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
@@ -577,9 +578,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # ~0.27 s so short shuffling steps stay clearly unprofitable.
   cfg.rewards["air_time"].params["power"] = 2.0
   cfg.rewards["air_time"].params["touchdown_cost"] = 0.30
-  cfg.rewards["foot_clearance"].params["target_height"] = 0.15
-  cfg.rewards["foot_clearance"].params["command_name"] = "twist"
-  cfg.rewards["foot_clearance"].params["command_threshold"] = 0.05
   cfg.rewards["foot_swing_height"].params.pop("height_sensor_name", None)
   cfg.rewards["foot_swing_height"].params["sensor_name"] = feet_ground_split_cfg.name
   cfg.rewards["foot_swing_height"].params["asset_cfg"] = SceneEntityCfg(

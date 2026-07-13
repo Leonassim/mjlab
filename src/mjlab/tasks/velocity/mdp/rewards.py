@@ -745,6 +745,62 @@ class split_feet_swing_height:
     return cost
 
 
+class split_feet_min_swing_height(split_feet_swing_height):
+  """Charge a one-sided minimum-peak-height deficit once per landing.
+
+  Unlike ``swing_foot_height`` (which taxes every step spent airborne below
+  ``min_height`` and therefore penalizes air time itself when the gait is
+  low), this fires a single normalized penalty ``clamp(1 - peak/min_height,
+  0)`` at touchdown: air time is free, only landing with a low swing peak
+  costs. Reuses the terrain-relative peak tracker of
+  ``split_feet_swing_height``.
+  """
+
+  def __call__(  # type: ignore[override]
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    min_height: float,
+    command_name: str,
+    command_threshold: float,
+    asset_cfg: SceneEntityCfg,
+  ) -> torch.Tensor:
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    found = contact_sensor.data.found
+    if found is None or found.shape[1] < 8:
+      raise RuntimeError("Split-foot min-height reward expects 8 contact slots.")
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    foot_heights = self.getFootHeightWrtTerrain(env, asset_cfg)
+
+    split_found = found[:, :8].view(found.shape[0], 2, 4)
+    foot_in_air = torch.all(split_found == 0, dim=2)
+    first_contact = torch.any(
+      contact_sensor.compute_first_contact(dt=self.step_dt)[:, :8].view(
+        found.shape[0], 2, 4
+      ),
+      dim=2,
+    )
+
+    self.peak_heights = torch.where(
+      foot_in_air,
+      torch.maximum(self.peak_heights, foot_heights),
+      self.peak_heights,
+    )
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    total_command = linear_norm + angular_norm
+    active = (total_command > command_threshold).float()
+    deficit = torch.clamp(1.0 - self.peak_heights / min_height, min=0.0)
+    cost = torch.sum(deficit * first_contact.float(), dim=1) * active
+    self.peak_heights = torch.where(
+      first_contact,
+      torch.zeros_like(self.peak_heights),
+      self.peak_heights,
+    )
+    return cost
+
+
 def feet_slip(
   env: ManagerBasedRlEnv,
   sensor_name: str,
