@@ -793,6 +793,11 @@ class split_feet_min_swing_height(split_feet_swing_height):
     active = (total_command > command_threshold).float()
     deficit = torch.clamp(1.0 - self.peak_heights / min_height, min=0.0)
     cost = torch.sum(deficit * first_contact.float(), dim=1) * active
+    num_landings = torch.sum(first_contact.float())
+    peak_heights_at_landing = self.peak_heights * first_contact.float()
+    env.extras["log"]["Metrics/peak_height_mean"] = torch.sum(
+      peak_heights_at_landing
+    ) / torch.clamp(num_landings, min=1)
     self.peak_heights = torch.where(
       first_contact,
       torch.zeros_like(self.peak_heights),

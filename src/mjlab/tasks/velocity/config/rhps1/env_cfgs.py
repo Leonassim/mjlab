@@ -530,10 +530,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # foot_clearance (|z - target| x foot speed, every step) acts as a
   # per-meter tax on swinging while the feet are low: combined with the
   # per-airborne-step min-height penalty it made short fast shuffling optimal.
-  # Height incentives are covered by foot_swing_height + min_foot_height.
+  # The only height shaping left is the min_foot_height safety floor.
   cfg.rewards.pop("foot_clearance", None)
-  cfg.rewards["foot_swing_height"].func = mdp.split_feet_swing_height
-  cfg.rewards["foot_swing_height"].weight = -5.0
+  # foot_swing_height targeted exactly 0.15 m (two-sided quadratic), also
+  # penalizing high steps. Foot height is only floored now: the air_time
+  # incentive lets the gait pick its own natural height/stride above it.
+  cfg.rewards.pop("foot_swing_height", None)
   # Charged once per landing (clamp(1 - peak/min_height, 0)), not per airborne
   # step: air time itself is free, only landing with a low swing peak costs.
   cfg.rewards["min_foot_height"] = RewardTermCfg(
@@ -578,14 +580,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # ~0.27 s so short shuffling steps stay clearly unprofitable.
   cfg.rewards["air_time"].params["power"] = 2.0
   cfg.rewards["air_time"].params["touchdown_cost"] = 0.30
-  cfg.rewards["foot_swing_height"].params.pop("height_sensor_name", None)
-  cfg.rewards["foot_swing_height"].params["sensor_name"] = feet_ground_split_cfg.name
-  cfg.rewards["foot_swing_height"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", site_names=site_names
-  )
-  cfg.rewards["foot_swing_height"].params["target_height"] = 0.15
-  cfg.rewards["foot_swing_height"].params["command_name"] = "twist"
-  cfg.rewards["foot_swing_height"].params["command_threshold"] = 0.1
   cfg.rewards["foot_slip"].params["sensor_name"] = feet_ground_split_cfg.name
   cfg.rewards["foot_slip"].params["command_name"] = "twist"
   cfg.rewards["foot_slip"].params["command_threshold"] = 0.1
