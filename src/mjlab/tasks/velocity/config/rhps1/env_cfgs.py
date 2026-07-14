@@ -372,6 +372,17 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "always_command_threshold": 0.05,
     },
   )
+  # One-leg-does-everything gaits are otherwise profitable (observed: left
+  # foot 0.62 m/s marker speed vs right 0.28 on the 2026-07-13 run).
+  cfg.rewards["air_time_symmetry"] = RewardTermCfg(
+    func=mdp.feet_air_time_symmetry,
+    weight=-2.0,
+    params={
+      "sensor_name": feet_ground_split_cfg.name,
+      "command_name": "twist",
+      "command_threshold": 0.1,
+    },
+  )
   cfg.rewards["no_double_flight"] = RewardTermCfg(
     func=mdp.no_double_flight_penalty,
     weight=-2.0,
@@ -565,11 +576,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["foot_slip"].func = mdp.split_feet_slip
   cfg.rewards["foot_slip"].weight = -0.3
-  cfg.rewards["action_rate_l2"].weight = -0.02
+  # Smoothness penalties are quadratic in ACTION units: the x4 leg action
+  # scale made them 16x weaker in joint space (visible dithering). Rescaled
+  # ~x5-6 as a middle ground (leg-dominated terms; upper-body scale unchanged).
+  cfg.rewards["action_rate_l2"].weight = -0.1
   cfg.rewards["action_acc_l2"].weight = 0.0
   cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
     func=mdp.stance_action_acc_l2,
-    weight=-0.05,
+    weight=-0.3,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "left_joint_indices": list(range(6)),
@@ -578,7 +592,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["upper_body_action_acc_l2"] = RewardTermCfg(
     func=mdp.joints_action_acc_l2,
-    weight=-0.10,
+    weight=-0.2,
     params={"joint_indices": [6, 7, 14, 15, *range(16, 30)]},
   )
   cfg.rewards["air_time"].params["sensor_name"] = feet_ground_split_cfg.name

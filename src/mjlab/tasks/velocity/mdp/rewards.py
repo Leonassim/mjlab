@@ -527,11 +527,14 @@ def split_feet_air_time(
   ot = overflow_threshold if overflow_threshold is not None else 2.0 * threshold_max
   overflow = torch.clamp(foot_air_time - ot, min=0.0) * foot_in_air
   overflow_penalty = torch.sum(overflow, dim=1)
-  reward = landing_reward - overflow_penalty
   num_in_air = torch.sum(foot_in_air)
   mean_air_time = torch.sum(foot_air_time) / torch.clamp(num_in_air, min=1.0)
   env.extras["log"]["Metrics/air_time_mean"] = mean_air_time
 
+  # Only the landing bonus is command-gated: the overflow penalty must also
+  # apply to standing envs, otherwise hovering on one foot at zero command is
+  # free (observed: ~10% single-support rate while standing).
+  reward = landing_reward
   if command_name is not None:
     command = env.command_manager.get_command(command_name)
     if command is not None:
@@ -539,7 +542,39 @@ def split_feet_air_time(
       angular_norm = torch.abs(command[:, 2])
       total_command = linear_norm + angular_norm
       reward = reward * (total_command > command_threshold).float()
-  return reward
+  return reward - overflow_penalty
+
+
+def feet_air_time_symmetry(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str | None = None,
+  command_threshold: float = 0.5,
+) -> torch.Tensor:
+  """Penalize left/right imbalance of the last completed swing durations.
+
+  Nothing else in the reward compares the two feet, so a gait where one leg
+  collects long-stride bonuses while the other makes minimal support hops is
+  otherwise profitable. Cost = |last_air_L - last_air_R| every step (per-foot
+  air time of the last completed swing, max over the 4 split slots).
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  last_air = sensor.data.last_air_time
+  if last_air is None:
+    raise RuntimeError("Contact sensor must have track_air_time=True.")
+  if last_air.shape[1] < 8:
+    raise RuntimeError("Split-foot symmetry reward expects 8 contact slots.")
+  split = last_air[:, :8].view(last_air.shape[0], 2, 4)
+  foot_last = torch.max(split, dim=2).values  # [B, 2]
+  cost = torch.abs(foot_last[:, 0] - foot_last[:, 1])
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      cost = cost * (total_command > command_threshold).float()
+  return cost
 
 
 def no_double_flight_penalty(
