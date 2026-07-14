@@ -453,9 +453,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "required_contacts_per_foot": 4,
     },
   )
+  # -12 (was -4): at zero command the policy stood on one foot ~100% of the
+  # time (rate 0.10 with only 10% standing envs) and -4/s did not dislodge it.
   cfg.rewards["standing_single_support"] = RewardTermCfg(
     func=mdp.standing_single_support_penalty,
-    weight=-4.0,
+    weight=-12.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "command_name": "twist",
@@ -645,9 +647,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     func=mdp.standing_envs_curriculum,
     params={
       "command_name": "twist",
+      # More standing practice (was 0.2 -> 0.1): with only 10% standing envs
+      # the standing behavior was under-trained and its penalties barely
+      # weighed in the batch return.
       "stages": [
-        {"step": 0, "value": 0.2},
-        {"step": 500 * 48, "value": 0.1},
+        {"step": 0, "value": 0.3},
+        {"step": 500 * 48, "value": 0.2},
       ],
     },
   )
