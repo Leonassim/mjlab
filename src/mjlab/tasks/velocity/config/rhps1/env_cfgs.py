@@ -584,7 +584,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["air_time"].params["sensor_name"] = feet_ground_split_cfg.name
   cfg.rewards["air_time"].params["threshold_min"] = 0.01
   cfg.rewards["air_time"].params["threshold_max"] = 0.5
-  cfg.rewards["air_time"].params["overflow_threshold"] = 2.0
+  # 0.8 (was 2.0): the bonus saturates at threshold_max=0.5, so [0.5, 2.0]
+  # was a dead zone where hovering on one foot dodged the touchdown fee for
+  # free — the wide-exploration run converged to second-long low hovers with
+  # collapsed tracking. Anything beyond 0.8 s now pays every step.
+  cfg.rewards["air_time"].params["overflow_threshold"] = 0.8
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
   # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
