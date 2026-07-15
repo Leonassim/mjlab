@@ -355,9 +355,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["pose"].params["running_threshold"] = 1.5
 
   cfg.rewards.pop("soft_landing", None)
+  # -1.0 (was -0.5): landing_vel_mean plateaued at 0.23 m/s over the whole
+  # 2026-07-14 run with the limit at 0.15 — the penalty lost the trade.
   cfg.rewards["impact_vel"] = RewardTermCfg(
     func=mdp.impact_velocity,
-    weight=-0.5,
+    weight=-1.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       # 0.15 (was 0.10): landing_vel plateaued at the old soft limit across
@@ -374,9 +376,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   # One-leg-does-everything gaits are otherwise profitable (observed: left
   # foot 0.62 m/s marker speed vs right 0.28 on the 2026-07-13 run).
+  # -4 (was -2): the 2026-07-14 run still walked at a 1.53 left/right foot
+  # speed ratio with -2.
   cfg.rewards["air_time_symmetry"] = RewardTermCfg(
     func=mdp.feet_air_time_symmetry,
-    weight=-2.0,
+    weight=-4.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "command_name": "twist",
@@ -435,9 +439,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
     },
   )
+  # Edge contacts were chronic on the 2026-07-14 run (flat_touchdown 2.3/4
+  # corners, flat_support 2.0/4): the old -1.8/-2.4 weights lost against the
+  # stepping economics, hence the raise and the foot_orientation term below.
   cfg.rewards["flat_touchdown"] = RewardTermCfg(
     func=mdp.flat_touchdown_penalty,
-    weight=-1.8,
+    weight=-4.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "required_contacts_per_foot": 4,
@@ -447,10 +454,30 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["flat_support"] = RewardTermCfg(
     func=mdp.flat_support_penalty,
-    weight=-2.4,
+    weight=-5.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "required_contacts_per_foot": 4,
+    },
+  )
+  # Sole tilt penalty in every phase: keeps the sole horizontal during swing
+  # (the toe skimmed the ground on the 2026-07-14 run even with a high knee)
+  # and makes touchdowns flat instead of on an edge.
+  cfg.rewards["foot_orientation"] = RewardTermCfg(
+    func=mdp.foot_flat_orientation,
+    weight=-2.0,
+    params={
+      "asset_cfg": SceneEntityCfg("robot", body_names=(r".*_ANKLE_P_LINK",)),
+    },
+  )
+  # Direct tax on the standing wiggle: leg/arm oscillation at zero command
+  # survived the -12 single-support penalty on the 2026-07-14 run.
+  cfg.rewards["standing_joint_vel"] = RewardTermCfg(
+    func=mdp.standing_joint_vel_l2,
+    weight=-1.0,
+    params={
+      "command_name": "twist",
+      "command_threshold": 0.1,
     },
   )
   # -12 (was -4): at zero command the policy stood on one foot ~100% of the

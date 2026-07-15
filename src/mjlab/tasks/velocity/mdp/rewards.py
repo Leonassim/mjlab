@@ -627,6 +627,57 @@ def standing_single_support_penalty(
   return cost
 
 
+def standing_joint_vel_l2(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize joint velocities when the commanded motion is near zero.
+
+  At zero command the robot should hold still; this taxes the residual
+  oscillation directly in joint space without touching the walking gait.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  joint_vel_sq = torch.sum(
+    torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1
+  )
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  standing = (total_command <= command_threshold).float()
+  return joint_vel_sq * standing
+
+
+def foot_flat_orientation(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize sole tilt of the feet relative to the world horizontal.
+
+  The foot links' frames are world-aligned when the sole is flat (the leg
+  pitch chain sums to zero in the keyframe), so the XY components of gravity
+  projected into the foot frame measure sin(tilt). Applied in every phase:
+  during stance it complements the 4-corner contact penalties, during swing
+  it keeps the sole horizontal so the toe does not skim the ground even when
+  the knee is high, and it makes the touchdown flat by construction.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  body_quat_w = asset.data.body_link_quat_w[:, asset_cfg.body_ids, :]  # [B, N, 4]
+  batch, num_feet = body_quat_w.shape[0], body_quat_w.shape[1]
+  gravity_w = asset.data.gravity_vec_w  # [B, 3]
+  gravity_b = quat_apply_inverse(
+    body_quat_w.reshape(-1, 4),
+    gravity_w[:, None, :].expand(batch, num_feet, 3).reshape(-1, 3),
+  ).view(batch, num_feet, 3)
+  gravity_b = gravity_b / torch.clamp(
+    torch.norm(gravity_b, dim=-1, keepdim=True), min=1e-6
+  )
+  tilt = torch.norm(gravity_b[..., :2], dim=-1)  # [B, N], sin(tilt) per foot
+  env.extras["log"]["Metrics/foot_tilt_mean"] = torch.mean(tilt)
+  return torch.sum(tilt, dim=1)
+
+
 def feet_clearance_velocity_weighted(
   env: ManagerBasedRlEnv,
   target_height: float,
