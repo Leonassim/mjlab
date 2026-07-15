@@ -77,6 +77,10 @@ class RslRlPpoAlgorithmCfg:
   """The optimizer to use."""
   share_cnn_encoders: bool = False
   """Share CNN encoders between actor and critic."""
+  symmetry_cfg: dict[str, Any] | None = None
+  """Config dict for the rsl-rl Symmetry extension (mirror augmentation /
+  mirror loss). Keys: data_augmentation_func, use_data_augmentation,
+  use_mirror_loss, mirror_loss_coeff. ``None`` disables symmetry."""
   class_name: str = "PPO"
   """Algorithm class name resolved by RSL-RL."""
 
