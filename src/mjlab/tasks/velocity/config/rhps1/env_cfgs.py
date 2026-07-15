@@ -658,7 +658,18 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["foot_slip"].params["command_threshold"] = 0.1
   cfg.rewards["foot_slip"].params["standing_scale"] = 4.0
 
-  cfg.rewards["termination_penalty"] = RewardTermCfg(func=mdp.is_terminated, weight=-2000.0)
+  # Survival economics: the net per-second reward is negative even for a good
+  # gait (~-12/s on the 2026-07-15 morning run), so once exploration became
+  # effective (held noise, 2026-07-15_17-51-45) the policy discovered that
+  # sprinting on tiptoes for ~1 s and falling beats living: 18 falls/iter with
+  # *improving* mean reward. The alive bonus shifts a decent gait's net rate
+  # above zero (living beats dying at every step) and the raised termination
+  # weight (-2000 -> -10000, i.e. -50/fall instead of -10) keeps a margin
+  # during the early phase where the net rate is still negative.
+  cfg.rewards["alive_bonus"] = RewardTermCfg(func=mdp.is_alive, weight=15.0)
+  cfg.rewards["termination_penalty"] = RewardTermCfg(
+    func=mdp.is_terminated, weight=-10000.0
+  )
 
   if "foot_friction" in cfg.events:
     cfg.events["foot_friction"].params["asset_cfg"].geom_names = (
