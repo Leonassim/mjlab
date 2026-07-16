@@ -627,6 +627,42 @@ def standing_single_support_penalty(
   return cost
 
 
+def multiplicative_reward_total(
+  env: ManagerBasedRlEnv,
+  tau: float = 15.0,
+) -> torch.Tensor:
+  """Convert the summed reward into P * exp(N / tau) (ETH-style modulation).
+
+  P is the sum of the positive per-step term values, N the (negative) sum of
+  the penalty values, both read from the columns already computed this step.
+  The additive floor (positive_total_clamp) killed the suicide exploit but
+  created a penalty haven: whenever the sum was negative every behaviour cost
+  the same (flat zero region -- observed as the passive deadlock of
+  2026-07-16_13-09-01 and the 6.6 s flamingo stance of 2026-07-16_19-08-22).
+  The multiplicative form keeps both guarantees with a gradient everywhere:
+
+  - total >= 0 at every step, so death (termination penalty, added after)
+    is always strictly worse than any life;
+  - every extra unit of penalty multiplies the total by exp(-1/tau) < 1,
+    so nothing is ever free, even deep in penalty territory.
+
+  MUST be the second-to-last term, followed only by ``termination_penalty``.
+  Relies on RewardManager.compute() filling ``_step_reward`` columns in
+  insertion order (weighted, per-second); use weight 1.0. This term's value
+  is the delta that turns the accumulated sum P+N into P*exp(N/tau).
+  """
+  manager = env.reward_manager
+  own_idx = manager._term_names.index("reward_total")
+  prior = manager._step_reward[:, :own_idx]
+  positive = torch.clamp(prior, min=0.0).sum(dim=1)
+  negative = torch.clamp(prior, max=0.0).sum(dim=1)
+  total = positive * torch.exp(negative / tau)
+  env.extras["log"]["Metrics/reward_positive_sum"] = positive.mean()
+  env.extras["log"]["Metrics/reward_negative_sum"] = negative.mean()
+  env.extras["log"]["Metrics/reward_multiplier"] = torch.exp(negative / tau).mean()
+  return total - (positive + negative)
+
+
 def positive_total_clamp(env: ManagerBasedRlEnv) -> torch.Tensor:
   """Clamp the running per-step reward total at zero (legged_gym trick).
 

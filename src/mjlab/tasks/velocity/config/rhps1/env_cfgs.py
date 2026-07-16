@@ -345,9 +345,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
   cfg.rewards["track_linear_velocity"].weight = 6.0
-  cfg.rewards["track_linear_velocity"].params["std"] = 0.20
+  cfg.rewards["track_linear_velocity"].params["std"] = 0.30
   cfg.rewards["track_angular_velocity"].weight = 5.0
-  cfg.rewards["track_angular_velocity"].params["std"] = 0.35
+  cfg.rewards["track_angular_velocity"].params["std"] = 0.45
 
   cfg.rewards["pose"].weight = 0.5
   cfg.rewards["pose"].params["command_name"] = "twist"
@@ -672,10 +672,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # command (tracking ~+7/s) never becomes acceptable.
   cfg.rewards["alive_bonus"] = RewardTermCfg(func=mdp.is_alive, weight=2.0)
   cfg.rewards.pop("termination_penalty", None)
-  cfg.rewards["positive_total_clamp"] = RewardTermCfg(
-    func=mdp.positive_total_clamp, weight=1.0
+  # ETH-style multiplicative total (replaces the additive zero-clamp, which
+  # created a gradient-free penalty haven -- see multiplicative_reward_total).
+  cfg.rewards["reward_total"] = RewardTermCfg(
+    func=mdp.multiplicative_reward_total, weight=1.0, params={"tau": 15.0}
   )
-  # Re-inserted after the clamp on purpose: MUST stay the last term.
+  # Re-inserted after the modulation on purpose: MUST stay the last term.
   cfg.rewards["termination_penalty"] = RewardTermCfg(
     func=mdp.is_terminated, weight=-2000.0
   )
