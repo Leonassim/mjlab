@@ -437,7 +437,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["flat_touchdown"] = RewardTermCfg(
     func=mdp.flat_touchdown_penalty,
-    weight=-1.8,
+    weight=-4.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "required_contacts_per_foot": 4,
@@ -447,7 +447,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["flat_support"] = RewardTermCfg(
     func=mdp.flat_support_penalty,
-    weight=-2.4,
+    weight=-5.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "required_contacts_per_foot": 4,
@@ -582,11 +582,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # action-space rate/acc penalties tax the exploration noise itself, which
   # drives premature std collapse (observed 2.0 -> 0.29 by iter 2300). They
   # are kept small; joint_acc_l2 below carries the anti-vibration signal.
-  cfg.rewards["action_rate_l2"].weight = -0.03
+  cfg.rewards["action_rate_l2"].weight = -0.05
   cfg.rewards["action_acc_l2"].weight = 0.0
   cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
     func=mdp.stance_action_acc_l2,
-    weight=-0.1,
+    weight=-0.15,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "left_joint_indices": list(range(6)),
@@ -595,14 +595,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["upper_body_action_acc_l2"] = RewardTermCfg(
     func=mdp.joints_action_acc_l2,
-    weight=-0.1,
+    weight=-0.15,
     params={"joint_indices": [6, 7, 14, 15, *range(16, 30)]},
   )
   # Physical anti-vibration term. Calibrated on the 2026-07-14 checkpoint
   # (dithering gait: sum-sq leg acc ~9e3 -> ~0.45/s; a smooth gait ~0.15/s).
   cfg.rewards["leg_joint_acc_l2"] = RewardTermCfg(
     func=mdp.joint_acc_l2,
-    weight=-5e-5,
+    weight=-1e-4,
     params={
       "asset_cfg": SceneEntityCfg(
         "robot", joint_names=(r".*CROTCH.*", r".*KNEE.*", r".*ANKLE.*")
