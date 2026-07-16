@@ -344,10 +344,10 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if reward_name in cfg.rewards and "asset_cfg" in cfg.rewards[reward_name].params:
       cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
-  cfg.rewards["track_linear_velocity"].weight = 6.0
-  cfg.rewards["track_linear_velocity"].params["std"] = 0.30
-  cfg.rewards["track_angular_velocity"].weight = 5.0
-  cfg.rewards["track_angular_velocity"].params["std"] = 0.45
+  cfg.rewards["track_linear_velocity"].weight = 3.5
+  cfg.rewards["track_linear_velocity"].params["std"] = 0.20
+  cfg.rewards["track_angular_velocity"].weight = 3.5
+  cfg.rewards["track_angular_velocity"].params["std"] = 0.35
 
   cfg.rewards["pose"].weight = 0.5
   cfg.rewards["pose"].params["command_name"] = "twist"
@@ -355,11 +355,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["pose"].params["running_threshold"] = 1.5
 
   cfg.rewards.pop("soft_landing", None)
-  # -1.0 (was -0.5): landing_vel_mean plateaued at 0.23 m/s over the whole
-  # 2026-07-14 run with the limit at 0.15 — the penalty lost the trade.
   cfg.rewards["impact_vel"] = RewardTermCfg(
     func=mdp.impact_velocity,
-    weight=-1.0,
+    weight=-0.5,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       # 0.15 (was 0.10): landing_vel plateaued at the old soft limit across
@@ -376,11 +374,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   # One-leg-does-everything gaits are otherwise profitable (observed: left
   # foot 0.62 m/s marker speed vs right 0.28 on the 2026-07-13 run).
-  # -4 (was -2): the 2026-07-14 run still walked at a 1.53 left/right foot
-  # speed ratio with -2.
   cfg.rewards["air_time_symmetry"] = RewardTermCfg(
     func=mdp.feet_air_time_symmetry,
-    weight=-1.5,
+    weight=-2.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "command_name": "twist",
@@ -423,7 +419,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
   cfg.rewards["torque_limit_margin"] = RewardTermCfg(
     func=mdp.joint_torque_limit_margin_penalty,
-    weight=-0.08,
+    weight=-0.16,
     params={
       "soft_ratio": 0.8,
       "power": 2.0,
@@ -439,12 +435,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
     },
   )
-  # Edge contacts were chronic on the 2026-07-14 run (flat_touchdown 2.3/4
-  # corners, flat_support 2.0/4): the old -1.8/-2.4 weights lost against the
-  # stepping economics, hence the raise and the foot_orientation term below.
   cfg.rewards["flat_touchdown"] = RewardTermCfg(
     func=mdp.flat_touchdown_penalty,
-    weight=-1.5,
+    weight=-1.8,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "required_contacts_per_foot": 4,
@@ -454,37 +447,17 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["flat_support"] = RewardTermCfg(
     func=mdp.flat_support_penalty,
-    weight=-2.0,
+    weight=-2.4,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "required_contacts_per_foot": 4,
-    },
-  )
-  # Sole tilt penalty in every phase: keeps the sole horizontal during swing
-  # (the toe skimmed the ground on the 2026-07-14 run even with a high knee)
-  # and makes touchdowns flat instead of on an edge.
-  cfg.rewards["foot_orientation"] = RewardTermCfg(
-    func=mdp.foot_flat_orientation,
-    weight=-1.0,
-    params={
-      "asset_cfg": SceneEntityCfg("robot", body_names=(r".*_ANKLE_P_LINK",)),
-    },
-  )
-  # Direct tax on the standing wiggle: leg/arm oscillation at zero command
-  # survived the -12 single-support penalty on the 2026-07-14 run.
-  cfg.rewards["standing_joint_vel"] = RewardTermCfg(
-    func=mdp.standing_joint_vel_l2,
-    weight=-1.0,
-    params={
-      "command_name": "twist",
-      "command_threshold": 0.1,
     },
   )
   # -12 (was -4): at zero command the policy stood on one foot ~100% of the
   # time (rate 0.10 with only 10% standing envs) and -4/s did not dislodge it.
   cfg.rewards["standing_single_support"] = RewardTermCfg(
     func=mdp.standing_single_support_penalty,
-    weight=-6.0,
+    weight=-12.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "command_name": "twist",
@@ -493,7 +466,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["joint_torque_rate_l2"] = RewardTermCfg(
     func=mdp.joint_torque_rate_l2,
-    weight=-2e-5,
+    weight=-4e-5,
     params={
       "asset_cfg": SceneEntityCfg(
         "robot",
@@ -555,13 +528,13 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["upright"].params["std"] = 0.2
 
   cfg.rewards["body_ang_vel"].weight = -0.5
-  cfg.rewards["angular_momentum"].weight = -0.1
+  cfg.rewards["angular_momentum"].weight = -0.2
   cfg.rewards["angular_momentum"].params["sensor_name"] = "robot/root_angmom"
   cfg.rewards["dof_pos_limits"].weight = -1.0
   cfg.rewards["joint_torques_l2"].weight = -1e-5
   cfg.rewards["ankle_roll_torque"] = RewardTermCfg(
     func=mdp.joint_effort_l2,
-    weight=-1e-3,
+    weight=-2e-3,
     params={
       "asset_cfg": SceneEntityCfg("robot"),
       "actuator_pattern": r"^[LR]_ANKLE_R$",
@@ -579,7 +552,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
-  cfg.rewards["air_time"].weight = 40.0
+  cfg.rewards["air_time"].weight = 8.0
 
   # foot_clearance (|z - target| x foot speed, every step) acts as a
   # per-meter tax on swinging while the feet are low: combined with the
@@ -609,11 +582,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # action-space rate/acc penalties tax the exploration noise itself, which
   # drives premature std collapse (observed 2.0 -> 0.29 by iter 2300). They
   # are kept small; joint_acc_l2 below carries the anti-vibration signal.
-  cfg.rewards["action_rate_l2"].weight = -0.01
+  cfg.rewards["action_rate_l2"].weight = -0.03
   cfg.rewards["action_acc_l2"].weight = 0.0
   cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
     func=mdp.stance_action_acc_l2,
-    weight=-0.02,
+    weight=-0.1,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "left_joint_indices": list(range(6)),
@@ -622,14 +595,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["upper_body_action_acc_l2"] = RewardTermCfg(
     func=mdp.joints_action_acc_l2,
-    weight=-0.02,
+    weight=-0.1,
     params={"joint_indices": [6, 7, 14, 15, *range(16, 30)]},
   )
   # Physical anti-vibration term. Calibrated on the 2026-07-14 checkpoint
   # (dithering gait: sum-sq leg acc ~9e3 -> ~0.45/s; a smooth gait ~0.15/s).
   cfg.rewards["leg_joint_acc_l2"] = RewardTermCfg(
     func=mdp.joint_acc_l2,
-    weight=-1e-4,
+    weight=-5e-5,
     params={
       "asset_cfg": SceneEntityCfg(
         "robot", joint_names=(r".*CROTCH.*", r".*KNEE.*", r".*ANKLE.*")
@@ -644,9 +617,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # free — the wide-exploration run converged to second-long low hovers with
   # collapsed tracking. Anything beyond 0.8 s now pays every step.
   cfg.rewards["air_time"].params["overflow_threshold"] = 0.8
-  # Overflow decoupled from the boosted landing bonus: 40 * 0.08 = 3.2
-  # effective, ~ the old guard scale (weight 8).
-  cfg.rewards["air_time"].params["overflow_weight_ratio"] = 0.08
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
   # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
@@ -661,29 +631,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["foot_slip"].params["command_threshold"] = 0.1
   cfg.rewards["foot_slip"].params["standing_scale"] = 4.0
 
-  # Survival economics. The reward is a large sum of penalties, so the net
-  # per-second rate is negative during most of training (~-50/s mid-training,
-  # ~-12/s even for a good gait): with effective (held-noise) exploration the
-  # policy twice learned to fall on purpose (2026-07-15 runs: episode length
-  # collapsed to <250 steps while mean reward improved; an alive bonus of
-  # +15/s and -50/fall did not close the gap and the second run ended in a
-  # full optimization collapse, std 1.9). Fix is the legged_gym recipe:
-  # clamp the per-step total at >= 0, then add the termination penalty after
-  # the clamp -- death is then strictly worse than any life, at any stage of
-  # training. The small alive bonus only breaks the tie between "clamped to
-  # zero" states and death; it must stay small so that ignoring the velocity
-  # command (tracking ~+7/s) never becomes acceptable.
-  cfg.rewards["alive_bonus"] = RewardTermCfg(func=mdp.is_alive, weight=2.0)
-  cfg.rewards.pop("termination_penalty", None)
-  # ETH-style multiplicative total (replaces the additive zero-clamp, which
-  # created a gradient-free penalty haven -- see multiplicative_reward_total).
-  cfg.rewards["reward_total"] = RewardTermCfg(
-    func=mdp.multiplicative_reward_total, weight=1.0, params={"tau": 25.0}
-  )
-  # Re-inserted after the modulation on purpose: MUST stay the last term.
-  cfg.rewards["termination_penalty"] = RewardTermCfg(
-    func=mdp.is_terminated, weight=-2000.0
-  )
+  cfg.rewards["termination_penalty"] = RewardTermCfg(func=mdp.is_terminated, weight=-2000.0)
 
   if "foot_friction" in cfg.events:
     cfg.events["foot_friction"].params["asset_cfg"].geom_names = (
