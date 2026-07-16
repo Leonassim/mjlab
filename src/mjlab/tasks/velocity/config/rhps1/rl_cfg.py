@@ -26,13 +26,10 @@ def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         # Back to 1.0 (was 2.0): the doubled std compensated white-noise
         # exploration inefficiency; held noise at 1.0 explores farther.
         "init_std": 1.0,
-        # Hard cap: on the 2026-07-15_20-06-50 collapse the entropy bonus
-        # inflated std to 1.9 once episodes got too short to carry any other
-        # learning signal; at 1.25 (2026-07-16 run) the residual noise tax
-        # alone kept even quiet standing below the reward clamp -- no
-        # gradient anywhere. At 1.0 the noise floor clears the clamp and the
-        # healthy 2026-07-15 run explored fine at sigma ~1.1.
-        "std_range": (1e-6, 1.0),
+        # Hard cap against entropy-driven blowup (std hit 1.9 on the
+        # 2026-07-15_20-06-50 collapse). 1.25 with the x3 leg scale is the
+        # same physical noise amplitude as ~0.95 was with the x4 scale.
+        "std_range": (1e-6, 1.25),
         "std_type": "scalar",
       },
     ),
@@ -45,10 +42,10 @@ def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       value_loss_coef=1.0,
       use_clipped_value_loss=True,
       clip_param=0.2,
-      # 0.005 (was 0.01): held noise explores more per unit of std, and on
-      # the 2026-07-16 run the entropy bonus pinned std at the cap while the
-      # reward clamp hid the noise costs.
-      entropy_coef=0.005,
+      # Middle ground: 0.01 pinned std at the cap through the reward clamp
+      # (2026-07-16 run), 0.005 under-explored once the smoothness penalties
+      # were restored; 0.0075 pairs with the x3 scale + 1.25 cap.
+      entropy_coef=0.0075,
       num_learning_epochs=5,
       num_mini_batches=4,
       learning_rate=1.0e-3,
