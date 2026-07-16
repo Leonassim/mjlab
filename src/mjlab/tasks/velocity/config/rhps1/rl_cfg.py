@@ -45,7 +45,7 @@ def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       # Middle ground: 0.01 pinned std at the cap through the reward clamp
       # (2026-07-16 run), 0.005 under-explored once the smoothness penalties
       # were restored; 0.0075 pairs with the x3 scale + 1.25 cap.
-      entropy_coef=0.0075,
+      entropy_coef=0.005,
       num_learning_epochs=5,
       num_mini_batches=4,
       learning_rate=1.0e-3,

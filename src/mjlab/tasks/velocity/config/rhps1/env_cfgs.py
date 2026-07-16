@@ -609,11 +609,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # action-space rate/acc penalties tax the exploration noise itself, which
   # drives premature std collapse (observed 2.0 -> 0.29 by iter 2300). They
   # are kept small; joint_acc_l2 below carries the anti-vibration signal.
-  cfg.rewards["action_rate_l2"].weight = -0.03
+  cfg.rewards["action_rate_l2"].weight = -0.01
   cfg.rewards["action_acc_l2"].weight = 0.0
   cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
     func=mdp.stance_action_acc_l2,
-    weight=-0.1,
+    weight=-0.02,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "left_joint_indices": list(range(6)),
@@ -622,7 +622,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["upper_body_action_acc_l2"] = RewardTermCfg(
     func=mdp.joints_action_acc_l2,
-    weight=-0.1,
+    weight=-0.02,
     params={"joint_indices": [6, 7, 14, 15, *range(16, 30)]},
   )
   # Physical anti-vibration term. Calibrated on the 2026-07-14 checkpoint
