@@ -477,6 +477,7 @@ def split_feet_air_time(
   threshold_min: float = 0.05,
   threshold_max: float = 0.5,
   overflow_threshold: float | None = None,
+  overflow_weight_ratio: float = 1.0,
   command_name: str | None = None,
   command_threshold: float = 0.5,
   power: float = 1.0,
@@ -498,7 +499,10 @@ def split_feet_air_time(
   penalty fires each step (to deter hover exploits). Defaults to
   ``2 * threshold_max``. Set it larger than the longest desired step to avoid
   penalising long alternating strides — ``no_double_flight`` handles the
-  both-feet-airborne exploit independently.
+  both-feet-airborne exploit independently. ``overflow_weight_ratio`` scales
+  the overflow penalty relative to the term weight, so the landing bonus can
+  be boosted (event rewards are dt-diluted ~200x versus continuous terms)
+  without turning the overflow guard into a dominant penalty.
   """
   sensor: ContactSensor = env.scene[sensor_name]
   current_air_time = sensor.data.current_air_time
@@ -542,7 +546,7 @@ def split_feet_air_time(
       angular_norm = torch.abs(command[:, 2])
       total_command = linear_norm + angular_norm
       reward = reward * (total_command > command_threshold).float()
-  return reward - overflow_penalty
+  return reward - overflow_weight_ratio * overflow_penalty
 
 
 def feet_air_time_symmetry(

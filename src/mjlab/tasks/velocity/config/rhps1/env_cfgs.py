@@ -493,7 +493,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["joint_torque_rate_l2"] = RewardTermCfg(
     func=mdp.joint_torque_rate_l2,
-    weight=-4e-5,
+    weight=-2e-5,
     params={
       "asset_cfg": SceneEntityCfg(
         "robot",
@@ -561,7 +561,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["joint_torques_l2"].weight = -1e-5
   cfg.rewards["ankle_roll_torque"] = RewardTermCfg(
     func=mdp.joint_effort_l2,
-    weight=-2e-3,
+    weight=-1e-3,
     params={
       "asset_cfg": SceneEntityCfg("robot"),
       "actuator_pattern": r"^[LR]_ANKLE_R$",
@@ -579,7 +579,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
-  cfg.rewards["air_time"].weight = 8.0
+  cfg.rewards["air_time"].weight = 40.0
 
   # foot_clearance (|z - target| x foot speed, every step) acts as a
   # per-meter tax on swinging while the feet are low: combined with the
@@ -644,6 +644,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # free — the wide-exploration run converged to second-long low hovers with
   # collapsed tracking. Anything beyond 0.8 s now pays every step.
   cfg.rewards["air_time"].params["overflow_threshold"] = 0.8
+  # Overflow decoupled from the boosted landing bonus: 40 * 0.08 = 3.2
+  # effective, ~ the old guard scale (weight 8).
+  cfg.rewards["air_time"].params["overflow_weight_ratio"] = 0.08
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
   # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
@@ -675,7 +678,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # ETH-style multiplicative total (replaces the additive zero-clamp, which
   # created a gradient-free penalty haven -- see multiplicative_reward_total).
   cfg.rewards["reward_total"] = RewardTermCfg(
-    func=mdp.multiplicative_reward_total, weight=1.0, params={"tau": 15.0}
+    func=mdp.multiplicative_reward_total, weight=1.0, params={"tau": 25.0}
   )
   # Re-inserted after the modulation on purpose: MUST stay the last term.
   cfg.rewards["termination_penalty"] = RewardTermCfg(
