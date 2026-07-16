@@ -627,6 +627,28 @@ def standing_single_support_penalty(
   return cost
 
 
+def positive_total_clamp(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Clamp the running per-step reward total at zero (legged_gym trick).
+
+  A reward built as a large sum of penalties makes the net per-second rate
+  negative during most of training, so terminating early is worth more than
+  living and the policy learns to fall on purpose (observed twice on
+  2026-07-15: episode length collapsed while mean reward improved). This term
+  cancels the negative excess of everything summed before it, guaranteeing a
+  per-step total >= 0 so that death (termination penalty, added after) is
+  always strictly worse than any life.
+
+  MUST be the second-to-last reward term, followed only by
+  ``termination_penalty`` (legged_gym semantics: clip, then termination).
+  Relies on RewardManager.compute() accumulating terms in insertion order
+  into ``_reward_buf``; use weight 1.0. The logged Episode_Reward value shows
+  how much clamping occurred (0 once the net rate turns positive).
+  """
+  running_total = env.reward_manager._reward_buf
+  scale = env.step_dt if env.cfg.scale_rewards_by_dt else 1.0
+  return torch.clamp(-running_total, min=0.0) / scale
+
+
 def standing_joint_vel_l2(
   env: ManagerBasedRlEnv,
   command_name: str,

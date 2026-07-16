@@ -658,17 +658,26 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["foot_slip"].params["command_threshold"] = 0.1
   cfg.rewards["foot_slip"].params["standing_scale"] = 4.0
 
-  # Survival economics: the net per-second reward is negative even for a good
-  # gait (~-12/s on the 2026-07-15 morning run), so once exploration became
-  # effective (held noise, 2026-07-15_17-51-45) the policy discovered that
-  # sprinting on tiptoes for ~1 s and falling beats living: 18 falls/iter with
-  # *improving* mean reward. The alive bonus shifts a decent gait's net rate
-  # above zero (living beats dying at every step) and the raised termination
-  # weight (-2000 -> -10000, i.e. -50/fall instead of -10) keeps a margin
-  # during the early phase where the net rate is still negative.
-  cfg.rewards["alive_bonus"] = RewardTermCfg(func=mdp.is_alive, weight=15.0)
+  # Survival economics. The reward is a large sum of penalties, so the net
+  # per-second rate is negative during most of training (~-50/s mid-training,
+  # ~-12/s even for a good gait): with effective (held-noise) exploration the
+  # policy twice learned to fall on purpose (2026-07-15 runs: episode length
+  # collapsed to <250 steps while mean reward improved; an alive bonus of
+  # +15/s and -50/fall did not close the gap and the second run ended in a
+  # full optimization collapse, std 1.9). Fix is the legged_gym recipe:
+  # clamp the per-step total at >= 0, then add the termination penalty after
+  # the clamp -- death is then strictly worse than any life, at any stage of
+  # training. The small alive bonus only breaks the tie between "clamped to
+  # zero" states and death; it must stay small so that ignoring the velocity
+  # command (tracking ~+7/s) never becomes acceptable.
+  cfg.rewards["alive_bonus"] = RewardTermCfg(func=mdp.is_alive, weight=2.0)
+  cfg.rewards.pop("termination_penalty", None)
+  cfg.rewards["positive_total_clamp"] = RewardTermCfg(
+    func=mdp.positive_total_clamp, weight=1.0
+  )
+  # Re-inserted after the clamp on purpose: MUST stay the last term.
   cfg.rewards["termination_penalty"] = RewardTermCfg(
-    func=mdp.is_terminated, weight=-10000.0
+    func=mdp.is_terminated, weight=-2000.0
   )
 
   if "foot_friction" in cfg.events:

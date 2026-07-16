@@ -26,6 +26,10 @@ def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         # Back to 1.0 (was 2.0): the doubled std compensated white-noise
         # exploration inefficiency; held noise at 1.0 explores farther.
         "init_std": 1.0,
+        # Hard cap: on the 2026-07-15_20-06-50 collapse the entropy bonus
+        # inflated std to 1.9 once episodes got too short to carry any other
+        # learning signal. Exploration never legitimately needs std > 1.25.
+        "std_range": (1e-6, 1.25),
         "std_type": "scalar",
       },
     ),
