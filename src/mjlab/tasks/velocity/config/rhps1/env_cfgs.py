@@ -311,12 +311,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       func=mdp.reward_weight,
       params={
         "reward_name": "pd_demand_excess",
+        # Capped at -1.5: on 2026-07-17_15-51-02 the -1 stage alone drove
+        # the demand ratio from 1.2 to 0.43 (deployable needs only <= 1);
+        # the -2/-3 stages just traded gait amplitude (foot speed 0.39 ->
+        # 0.25, peak height 1.33 -> 0.97 cm) for margin nobody needs.
         "weight_stages": [
-          {"step": 240_000, "weight": -1.0},
-          {"step": 300_000, "weight": -2.0},
-          {"step": 360_000, "weight": -3.0},
-          {"step": 420_000, "weight": -4.0},
-          {"step": 480_000, "weight": -5.0},
+          {"step": 240_000, "weight": -0.5},
+          {"step": 330_000, "weight": -1.0},
+          {"step": 420_000, "weight": -1.5},
         ],
       },
     )
@@ -584,7 +586,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
-  cfg.rewards["air_time"].weight = 20.0
+  cfg.rewards["air_time"].weight = 40.0
 
   # foot_clearance (|z - target| x foot speed, every step) acts as a
   # per-meter tax on swinging while the feet are low: combined with the
@@ -599,7 +601,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # step: air time itself is free, only landing with a low swing peak costs.
   cfg.rewards["min_foot_height"] = RewardTermCfg(
     func=mdp.split_feet_min_swing_height,
-    weight=-15.0,
+    weight=-25.0,
     params={
       "min_height": 0.08,
       "sensor_name": feet_ground_split_cfg.name,
@@ -651,7 +653,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["air_time"].params["overflow_threshold"] = 0.8
   # 20 * 0.4 = 8: the anti-hover guard keeps the exact pre-boost scale;
   # only the (dt-diluted) landing bonus is amplified.
-  cfg.rewards["air_time"].params["overflow_weight_ratio"] = 0.4
+  cfg.rewards["air_time"].params["overflow_weight_ratio"] = 0.2
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
   # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
