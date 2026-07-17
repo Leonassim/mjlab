@@ -307,6 +307,19 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   if "reset_base" in cfg.events:
     cfg.events["reset_base"].params["pose_range"]["z"] = (0.0, 0.02)
   if cfg.curriculum is not None:
+    cfg.curriculum["pd_demand_weight"] = CurriculumTermCfg(
+      func=mdp.reward_weight,
+      params={
+        "reward_name": "pd_demand_excess",
+        "weight_stages": [
+          {"step": 240_000, "weight": -1.0},
+          {"step": 300_000, "weight": -2.0},
+          {"step": 360_000, "weight": -3.0},
+          {"step": 420_000, "weight": -4.0},
+          {"step": 480_000, "weight": -5.0},
+        ],
+      },
+    )
     cfg.curriculum["velocity_damper"] = CurriculumTermCfg(
       func=mdp.velocity_damper_progress,
       params={"start_step": 360_000, "end_step": 612_000},
@@ -376,7 +389,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # foot 0.62 m/s marker speed vs right 0.28 on the 2026-07-13 run).
   cfg.rewards["air_time_symmetry"] = RewardTermCfg(
     func=mdp.feet_air_time_symmetry,
-    weight=-2.0,
+    weight=-1.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "command_name": "twist",
@@ -422,9 +435,17 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # saturation -- mc_mujoco (no forcerange, by design) and possibly the real
   # drives do not clamp like the training actuator does. EMA-filtered so it
   # shapes the mean policy, not the exploration noise.
+  # Weight 0 at start, ramped in by curriculum (below): the clipped
+  # execution is always feasible, so a feasible reference trajectory exists
+  # by construction -- the late ramp asks the policy to distill the clamp
+  # into its own references once the gait exists, instead of taxing the
+  # high-exploration phase into timidity (the air-time curriculum trap, in
+  # reverse).
+  # -1e-6 (not 0.0): zero-weight terms are skipped by the manager entirely,
+  # and we want Metrics/pd_demand_ratio logged from step 0 to calibrate.
   cfg.rewards["pd_demand_excess"] = RewardTermCfg(
     func=mdp.pd_demand_excess,
-    weight=-5.0,
+    weight=-1e-6,
     params={
       # 1.2: an MPC-smooth reference (consistent q*/v*) keeps the servo
       # error at disturbance/kp, i.e. demand ratio ~1 -- the robot's MPC
@@ -438,7 +459,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["torque_limit_margin"] = RewardTermCfg(
     func=mdp.joint_torque_limit_margin_penalty,
-    weight=-0.16,
+    weight=-0.08,
     params={
       "soft_ratio": 0.8,
       "power": 2.0,
@@ -452,16 +473,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "target_distance": 0.14,
       "max_distance": 0.2,
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
-    },
-  )
-  cfg.rewards["flat_touchdown"] = RewardTermCfg(
-    func=mdp.flat_touchdown_penalty,
-    weight=-4.0,
-    params={
-      "sensor_name": feet_ground_split_cfg.name,
-      "required_contacts_per_foot": 4,
-      "command_name": "twist",
-      "command_threshold": 0.05,
     },
   )
   cfg.rewards["flat_support"] = RewardTermCfg(
@@ -571,7 +582,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
-  cfg.rewards["air_time"].weight = 8.0
+  cfg.rewards["air_time"].weight = 20.0
 
   # foot_clearance (|z - target| x foot speed, every step) acts as a
   # per-meter tax on swinging while the feet are low: combined with the
@@ -586,7 +597,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # step: air time itself is free, only landing with a low swing peak costs.
   cfg.rewards["min_foot_height"] = RewardTermCfg(
     func=mdp.split_feet_min_swing_height,
-    weight=-5.0,
+    weight=-15.0,
     params={
       "min_height": 0.08,
       "sensor_name": feet_ground_split_cfg.name,
@@ -636,6 +647,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # free — the wide-exploration run converged to second-long low hovers with
   # collapsed tracking. Anything beyond 0.8 s now pays every step.
   cfg.rewards["air_time"].params["overflow_threshold"] = 0.8
+  # 20 * 0.4 = 8: the anti-hover guard keeps the exact pre-boost scale;
+  # only the (dt-diluted) landing bonus is amplified.
+  cfg.rewards["air_time"].params["overflow_weight_ratio"] = 0.4
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
   # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
