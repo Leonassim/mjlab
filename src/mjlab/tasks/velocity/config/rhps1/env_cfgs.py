@@ -417,6 +417,25 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       weight=-2.0,
       params={"sensor_name": prox_cfg.name, "min_dist": min_dist},
     )
+  # Very strong penalty on the smoothed unclamped PD demand beyond the real
+  # effort limits (Leo, 2026-07-17): policies must not lean on actuator
+  # saturation -- mc_mujoco (no forcerange, by design) and possibly the real
+  # drives do not clamp like the training actuator does. EMA-filtered so it
+  # shapes the mean policy, not the exploration noise.
+  cfg.rewards["pd_demand_excess"] = RewardTermCfg(
+    func=mdp.pd_demand_excess,
+    weight=-5.0,
+    params={
+      # 1.2: an MPC-smooth reference (consistent q*/v*) keeps the servo
+      # error at disturbance/kp, i.e. demand ratio ~1 -- the robot's MPC
+      # controllers prove a dynamic gait can hold it. The margin tolerates
+      # transients without allowing deep saturation reliance.
+      "soft_ratio": 1.2,
+      "cap": 1.0,
+      "ema_dt": 0.04,
+      "asset_cfg": SceneEntityCfg("robot"),
+    },
+  )
   cfg.rewards["torque_limit_margin"] = RewardTermCfg(
     func=mdp.joint_torque_limit_margin_penalty,
     weight=-0.16,

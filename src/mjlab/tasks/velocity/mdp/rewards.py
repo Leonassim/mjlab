@@ -631,6 +631,74 @@ def standing_single_support_penalty(
   return cost
 
 
+class pd_demand_excess:
+  """Penalize the smoothed unclamped PD torque demand beyond the effort limit.
+
+  The training actuator clamps kp*(q*-q)+kd*(v*-v) at effort_limit, so the
+  policy silently learns to lean on saturation (torque_limit_ratio_max
+  pinned at 1.0) -- and the applied-torque margin penalty cannot see past
+  ratio 1. Deployment then diverges wherever the sim/hardware does not clamp
+  identically (observed: mc_mujoco blow-up with 287 N.m demanded on a 35 N.m
+  hip yaw).
+
+  The demand is smoothed with an EMA (~time constant ``ema_dt`` seconds)
+  before the ratio test: white exploration noise alone demands several times
+  the limit on every step (kp * sigma * scale >> effort_limit), but it is
+  zero-mean, so the filtered demand tracks the *mean* policy's demand --
+  which is what runs on hardware -- without taxing exploration.
+
+  Per joint: excess = clamp(|EMA(demand)| / limit - soft_ratio, 0, cap).
+  Logs Metrics/pd_demand_ratio_max for hardware-readiness tracking.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    del cfg
+    self._ema: torch.Tensor | None = None
+    self._env = env
+
+  def reset(self, env_ids: torch.Tensor) -> None:
+    if self._ema is not None:
+      self._ema[env_ids] = 0.0
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    soft_ratio: float = 1.0,
+    cap: float = 1.0,
+    ema_dt: float = 0.04,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    data = asset.data
+    demands = []
+    limits = []
+    for act in asset._actuators:
+      stiffness = getattr(act, "stiffness", None)
+      if stiffness is None:
+        continue
+      ids = act.target_ids
+      q_err = data.joint_pos_target[:, ids] - data.joint_pos[:, ids]
+      vel_target = getattr(act, "_desired_velocity_target", None)
+      if vel_target is None:
+        vel_target = torch.zeros_like(q_err)
+      v_err = vel_target - data.joint_vel[:, ids]
+      demands.append(stiffness * q_err + act.damping * v_err)
+      limits.append(act.force_limit)
+    demand = torch.cat(demands, dim=1)
+    limit = torch.cat(limits, dim=1)
+
+    if self._ema is None or self._ema.shape != demand.shape:
+      self._ema = torch.zeros_like(demand)
+    alpha = float(env.step_dt) / max(ema_dt, float(env.step_dt))
+    self._ema += alpha * (demand - self._ema)
+
+    ratio = torch.abs(self._ema) / torch.clamp(limit, min=1e-6)
+    excess = torch.clamp(ratio - soft_ratio, min=0.0, max=cap)
+    env.extras["log"]["Metrics/pd_demand_ratio_max"] = ratio.max()
+    env.extras["log"]["Metrics/pd_demand_ratio_mean"] = ratio.mean()
+    return torch.sum(excess, dim=1)
+
+
 def multiplicative_reward_total(
   env: ManagerBasedRlEnv,
   tau: float = 15.0,
