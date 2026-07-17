@@ -477,7 +477,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["flat_support"] = RewardTermCfg(
     func=mdp.flat_support_penalty,
-    weight=-5.0,
+    # -7 (was -5): compensates the removed flat_touchdown -- support corners
+    # dropped 2.3 -> 1.87 on the 2026-07-17_15-51-02 run after the removal.
+    weight=-7.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "required_contacts_per_foot": 4,
