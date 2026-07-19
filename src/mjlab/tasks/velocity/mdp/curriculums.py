@@ -129,6 +129,35 @@ def reward_weight(
   return torch.tensor([reward_term_cfg.weight])
 
 
+def air_time_target_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  reward_name: str,
+  stages: list[dict],
+) -> torch.Tensor:
+  """Raise the air-time bonus ceiling (threshold_max) in stages.
+
+  Unlike a naive threshold ramp starting at step 0 (tried and reverted: the
+  early high-exploration phase locked onto whatever short steps saturated a
+  low initial ceiling before later stages could pull toward longer strides),
+  each stage here only fires once the gait has had a window to consolidate
+  at the previous ceiling, and pairs threshold_max with touchdown_cost so
+  the profitability break-even (threshold_max * sqrt(touchdown_cost)) stays
+  near the trailing operating point instead of jumping past it -- raising
+  the ceiling without ever making current behavior suddenly unprofitable.
+  overflow_threshold moves with it to keep the anti-hover guard's margin
+  proportional. Same mutate-in-place mechanism as ``reward_weight``.
+  """
+  del env_ids  # Unused.
+  reward_term_cfg = env.reward_manager.get_term_cfg(reward_name)
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      reward_term_cfg.params["threshold_max"] = stage["threshold_max"]
+      reward_term_cfg.params["touchdown_cost"] = stage["touchdown_cost"]
+      reward_term_cfg.params["overflow_threshold"] = stage["overflow_threshold"]
+  return torch.tensor([reward_term_cfg.params["threshold_max"]])
+
+
 def velocity_damper_progress(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,

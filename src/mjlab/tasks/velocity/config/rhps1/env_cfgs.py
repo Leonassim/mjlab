@@ -645,16 +645,16 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["air_time"].params["sensor_name"] = feet_ground_split_cfg.name
   cfg.rewards["air_time"].params["threshold_min"] = 0.01
-  # 0.65 (was 0.5, 2026-07-19): 2026-07-18_14-52-44 plateaued right at the
-  # break-even (~0.28-0.32 s), the old ceiling — doubling the weight in that
-  # run amplified an already-unsaturated curve without moving the target.
-  # Raising the ceiling asks for more air time itself instead of just a
-  # steeper slope toward the same old target.
-  cfg.rewards["air_time"].params["threshold_max"] = 0.65
-  # 1.0 (was 0.8): keeps the guard's margin above threshold_max proportional
-  # (previously 1.6x threshold_max, same ratio here) — anything beyond still
-  # pays every step, no free hover dead zone.
-  cfg.rewards["air_time"].params["overflow_threshold"] = 1.0
+  # threshold_max/touchdown_cost/overflow_threshold start at the proven
+  # values (2026-07-18_14-52-44's static config) and are raised in stages by
+  # the air_time_target curriculum below instead of jumped directly to a
+  # higher ceiling -- 2026-07-18 plateaued right at this break-even
+  # (~0.28-0.32 s) with the bonus weight doubled but the target unmoved, so
+  # the ceiling itself needs to move; a naive step-0 ramp was tried earlier
+  # and reverted (locks in short steps during high exploration), hence the
+  # staged, break-even-paired curriculum.
+  cfg.rewards["air_time"].params["threshold_max"] = 0.5
+  cfg.rewards["air_time"].params["overflow_threshold"] = 0.8
   # 40 * 0.2 = 8: the anti-hover guard keeps the exact pre-boost scale;
   # only the (dt-diluted) landing bonus is amplified.
   cfg.rewards["air_time"].params["overflow_weight_ratio"] = 0.2
@@ -662,12 +662,32 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
   # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
   # time; steps shorter than threshold_max*sqrt(touchdown_cost) are net
-  # negative. 0.22 (was 0.30, paired with the 0.65 ceiling) keeps the
-  # break-even at ~0.30 s -- close to 2026-07-18_14-52-44's ~0.3 s operating
-  # point, so today's behavior doesn't suddenly become unprofitable, while
-  # the extended ceiling gives real headroom to grow into.
+  # negative.
   cfg.rewards["air_time"].params["power"] = 2.0
-  cfg.rewards["air_time"].params["touchdown_cost"] = 0.22
+  cfg.rewards["air_time"].params["touchdown_cost"] = 0.30
+  if cfg.curriculum is not None:
+    cfg.curriculum["air_time_target"] = CurriculumTermCfg(
+      func=mdp.air_time_target_curriculum,
+      params={
+        "reward_name": "air_time",
+        # Each stage's break-even (threshold_max * sqrt(touchdown_cost))
+        # stays ~0.30 s, near the trailing operating point, so raising the
+        # ceiling never makes the current gait suddenly unprofitable.
+        # overflow_threshold keeps the ~1.6x margin above threshold_max.
+        # All stages land before the pd_demand torque ramp starts (step
+        # 240_000/iter 5000): the ambitious target gets consolidated first,
+        # then the torque-smoothing ramp shapes efficiency on top of it —
+        # mirroring the order that worked for 2026-07-18_14-52-44.
+        "stages": [
+          {"step": 72_000, "threshold_max": 0.6, "touchdown_cost": 0.25,
+           "overflow_threshold": 0.95},
+          {"step": 144_000, "threshold_max": 0.7, "touchdown_cost": 0.20,
+           "overflow_threshold": 1.1},
+          {"step": 216_000, "threshold_max": 0.85, "touchdown_cost": 0.135,
+           "overflow_threshold": 1.3},
+        ],
+      },
+    )
   cfg.rewards["foot_slip"].params["sensor_name"] = feet_ground_split_cfg.name
   cfg.rewards["foot_slip"].params["command_name"] = "twist"
   cfg.rewards["foot_slip"].params["command_threshold"] = 0.1
