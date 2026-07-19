@@ -326,27 +326,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       func=mdp.velocity_damper_progress,
       params={"start_step": 360_000, "end_step": 612_000},
     )
-    # Ramp the leg action scale in, rather than handing the full x5 budget
-    # from step 0 (Léo, 2026-07-20): 2026-07-19_13-07-05 saw
-    # Metrics/pd_demand_ratio_max spike to 49-115x the effort limit, well
-    # above the previous x4-static run's 50-90x -- an abrupt, huge
-    # exploration budget during peak white-noise exploration is exactly the
-    # step-0-jump trap already avoided for the air_time ceiling and the
-    # pd_demand ramp. 0.8 -> 1.0 multiplier means legs start at the
-    # proven-safe x4 effective scale and linearly reach the full x5 by the
-    # same step the air_time curriculum finishes (216_000/iter ~4500),
-    # before the pd_demand torque ramp begins (240_000/iter ~5000).
-    cfg.curriculum["leg_scale_ramp"] = CurriculumTermCfg(
-      func=mdp.action_scale_curriculum,
-      params={
-        "action_name": "joint_pos",
-        "base_scale": None,
-        "stages": [
-          {"step": 0, "multiplier": 0.8},
-          {"step": 216_000, "multiplier": 1.0},
-        ],
-      },
-    )
   if cfg.curriculum is not None and "command_vel" in cfg.curriculum:
     cfg.curriculum["command_vel"].params["velocity_stages"] = [
       {
