@@ -645,24 +645,29 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["air_time"].params["sensor_name"] = feet_ground_split_cfg.name
   cfg.rewards["air_time"].params["threshold_min"] = 0.01
-  cfg.rewards["air_time"].params["threshold_max"] = 0.5
-  # 0.8 (was 2.0): the bonus saturates at threshold_max=0.5, so [0.5, 2.0]
-  # was a dead zone where hovering on one foot dodged the touchdown fee for
-  # free — the wide-exploration run converged to second-long low hovers with
-  # collapsed tracking. Anything beyond 0.8 s now pays every step.
-  cfg.rewards["air_time"].params["overflow_threshold"] = 0.8
-  # 20 * 0.4 = 8: the anti-hover guard keeps the exact pre-boost scale;
+  # 0.65 (was 0.5, 2026-07-19): 2026-07-18_14-52-44 plateaued right at the
+  # break-even (~0.28-0.32 s), the old ceiling — doubling the weight in that
+  # run amplified an already-unsaturated curve without moving the target.
+  # Raising the ceiling asks for more air time itself instead of just a
+  # steeper slope toward the same old target.
+  cfg.rewards["air_time"].params["threshold_max"] = 0.65
+  # 1.0 (was 0.8): keeps the guard's margin above threshold_max proportional
+  # (previously 1.6x threshold_max, same ratio here) — anything beyond still
+  # pays every step, no free hover dead zone.
+  cfg.rewards["air_time"].params["overflow_threshold"] = 1.0
+  # 40 * 0.2 = 8: the anti-hover guard keeps the exact pre-boost scale;
   # only the (dt-diluted) landing bonus is amplified.
   cfg.rewards["air_time"].params["overflow_weight_ratio"] = 0.2
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
   # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
   # time; steps shorter than threshold_max*sqrt(touchdown_cost) are net
-  # negative. The 2026-07-10 run converged exactly at the 0.15 break-even
-  # (air_time_mean 0.174 s vs break-even 0.19 s): 0.30 moves the break-even to
-  # ~0.27 s so short shuffling steps stay clearly unprofitable.
+  # negative. 0.22 (was 0.30, paired with the 0.65 ceiling) keeps the
+  # break-even at ~0.30 s -- close to 2026-07-18_14-52-44's ~0.3 s operating
+  # point, so today's behavior doesn't suddenly become unprofitable, while
+  # the extended ceiling gives real headroom to grow into.
   cfg.rewards["air_time"].params["power"] = 2.0
-  cfg.rewards["air_time"].params["touchdown_cost"] = 0.30
+  cfg.rewards["air_time"].params["touchdown_cost"] = 0.22
   cfg.rewards["foot_slip"].params["sensor_name"] = feet_ground_split_cfg.name
   cfg.rewards["foot_slip"].params["command_name"] = "twist"
   cfg.rewards["foot_slip"].params["command_threshold"] = 0.1
