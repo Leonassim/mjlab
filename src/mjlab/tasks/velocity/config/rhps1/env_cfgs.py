@@ -331,6 +331,33 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       func=mdp.velocity_damper_progress,
       params={"start_step": 360_000, "end_step": 612_000},
     )
+    # Léo, 2026-07-20: let balance consolidate at the known-stable ambition
+    # level (40/-25) before raising the incentive toward bigger, riskier
+    # steps -- ramps finish by iter ~6000, well before the pd_demand ramp
+    # starts squeezing torque (iter ~5000) so the two don't fight; roughly
+    # the same cadence as the air_time ceiling (threshold_max) curriculum.
+    cfg.curriculum["air_time_weight"] = CurriculumTermCfg(
+      func=mdp.reward_weight,
+      params={
+        "reward_name": "air_time",
+        "weight_stages": [
+          {"step": 144_000, "weight": 55.0},
+          {"step": 216_000, "weight": 70.0},
+          {"step": 288_000, "weight": 80.0},
+        ],
+      },
+    )
+    cfg.curriculum["min_foot_height_weight"] = CurriculumTermCfg(
+      func=mdp.reward_weight,
+      params={
+        "reward_name": "min_foot_height",
+        "weight_stages": [
+          {"step": 144_000, "weight": -32.0},
+          {"step": 216_000, "weight": -41.0},
+          {"step": 288_000, "weight": -50.0},
+        ],
+      },
+    )
   if cfg.curriculum is not None and "command_vel" in cfg.curriculum:
     cfg.curriculum["command_vel"].params["velocity_stages"] = [
       {
@@ -590,9 +617,15 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
-  # 80 (was 40, 2026-07-20, Léo): stronger push for higher/longer steps;
-  # paired with min_foot_height doubling and the leg scale bump to x6.
-  cfg.rewards["air_time"].weight = 80.0
+  # Starts at 40 (the last known-stable weight), ramped to 80 by curriculum
+  # (below) instead of doubled from step 0: 2026-07-20_05-11-18 (80 from
+  # start, cold init, x6 scale) plateaued at a ~20-30x higher fall rate than
+  # any prior run and never recovered -- handing the doubled ambition
+  # reward to a policy that hasn't found basic balance yet pushed it toward
+  # big risky swings too early, the same failure mode the air_time-ceiling
+  # and pd_demand curricula were built to avoid. Let balance consolidate
+  # first, then raise the incentive.
+  cfg.rewards["air_time"].weight = 40.0
 
   # foot_clearance (|z - target| x foot speed, every step) acts as a
   # per-meter tax on swinging while the feet are low: combined with the
@@ -605,11 +638,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards.pop("foot_swing_height", None)
   # Charged once per landing (clamp(1 - peak/min_height, 0)), not per airborne
   # step: air time itself is free, only landing with a low swing peak costs.
-  # -50 (was -25, 2026-07-20, Léo): stronger push toward actually clearing
-  # the ground -- peak height gains had been diminishing-returns slow.
+  # Starts at -25 (last known-stable weight), ramped to -50 by curriculum
+  # (below) -- same reasoning as the air_time weight ramp above.
   cfg.rewards["min_foot_height"] = RewardTermCfg(
     func=mdp.split_feet_min_swing_height,
-    weight=-50.0,
+    weight=-25.0,
     params={
       "min_height": 0.08,
       "sensor_name": feet_ground_split_cfg.name,
