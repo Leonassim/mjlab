@@ -647,11 +647,16 @@ class pd_demand_excess:
   pair the policy actually committed to for several consecutive steps, not
   one-off exploration jitter -- whatever produced it (nominal gait, a fall,
   a recovery attempt), state + chosen action + dt deterministically imply
-  the PD demand, and it must fit under the real limit unconditionally,
-  since real hardware won't clip it the way the training actuator does.
-  Applied at full strength from step 0, same footing as the other always-on
-  magnitude penalties (joint_torques_l2, torque_limit_margin): this is a
-  physical constraint, not a style objective to ease into.
+  the PD demand, and it must fit under the real limit unconditionally in
+  the deployed policy, since real hardware won't clip it the way the
+  training actuator does.
+
+  In the env config this term's weight is ramped in late by curriculum, not
+  active from step 0: the training actuator's clamp means the clipped
+  execution is always torque-feasible, so a feasible action already exists
+  for whatever dynamic the policy discovers with free exploration -- the
+  late ramp squeezes the policy into producing that action directly once a
+  gait exists, instead of constraining the exploration that found it.
 
   Per joint: excess = clamp(|EMA(demand)| / limit - soft_ratio, 0, cap).
   Logs Metrics/pd_demand_ratio_mean/max for hardware-readiness tracking.

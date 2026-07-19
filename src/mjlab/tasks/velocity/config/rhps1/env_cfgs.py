@@ -307,6 +307,26 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   if "reset_base" in cfg.events:
     cfg.events["reset_base"].params["pose_range"]["z"] = (0.0, 0.02)
   if cfg.curriculum is not None:
+    cfg.curriculum["pd_demand_weight"] = CurriculumTermCfg(
+      func=mdp.reward_weight,
+      params={
+        "reward_name": "pd_demand_excess",
+        # Léo, 2026-07-20: free exploration first, at full scale, so the
+        # policy can discover an ambitious dynamic unencumbered; only once a
+        # gait exists does it get squeezed into the torque-feasible action
+        # that already realizes it (the clipped execution is always
+        # feasible, so a feasible reference exists by construction). The
+        # last stage runs from iter ~10000 to the end (15000) as a genuine
+        # fine-tuning window at strict strength (soft_ratio 1.0, no margin)
+        # long enough to actually converge, not just be trending toward it
+        # when training stops.
+        "weight_stages": [
+          {"step": 240_000, "weight": -1.0},
+          {"step": 360_000, "weight": -2.0},
+          {"step": 480_000, "weight": -4.0},
+        ],
+      },
+    )
     cfg.curriculum["velocity_damper"] = CurriculumTermCfg(
       func=mdp.velocity_damper_progress,
       params={"start_step": 360_000, "end_step": 612_000},
@@ -418,27 +438,25 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       params={"sensor_name": prox_cfg.name, "min_dist": min_dist},
     )
   # Very strong penalty on the smoothed unclamped PD demand beyond the real
-  # effort limits (Leo, 2026-07-17): policies must not lean on actuator
-  # saturation -- mc_mujoco (no forcerange, by design) and possibly the real
-  # drives do not clamp like the training actuator does. EMA-filtered so it
-  # shapes the mean policy, not the exploration noise.
-  # Léo, 2026-07-20: this is a hard physical constraint, not a style
-  # objective — unlike the air_time ceiling (worth exploring around before
-  # committing), commanding more torque than the joint can deliver is never
-  # informative to explore into, whatever the state (nominal gait, fall,
-  # recovery). State + chosen action + dt deterministically imply the PD
-  # demand; it must fit under the real limit unconditionally, since real
-  # hardware won't clip it the way the training actuator does. Active at
-  # full strength from step 0 -- same footing as the other always-on
-  # magnitude penalties (joint_torques_l2, torque_limit_margin,
-  # ankle_roll_torque) that already coexist fine with learning from step 0;
-  # a prior late-ramp design wrongly borrowed the air_time curriculum's
-  # logic for a term that doesn't need it.
+  # effort limits: policies must not lean on actuator saturation -- mc_mujoco
+  # (no forcerange, by design) and the real drives do not clamp like the
+  # training actuator does.
+  # Léo, 2026-07-20: weight 0 at start, ramped in late (curriculum below).
+  # State + chosen action + dt deterministically imply the PD demand, and it
+  # must fit under the real limit unconditionally in the end -- but the
+  # clipped execution is always feasible, so a feasible reference already
+  # exists for whatever dynamic the policy discovers; the point of the late
+  # ramp is to let a big-scale policy explore an ambitious dynamic freely
+  # first, then squeeze it into the torque-feasible action that already
+  # realizes it, rather than fighting the exploration itself.
+  # -1e-6 (not 0.0): zero-weight terms are skipped by the manager entirely,
+  # and we want Metrics/pd_demand_ratio logged from step 0 to calibrate.
   cfg.rewards["pd_demand_excess"] = RewardTermCfg(
     func=mdp.pd_demand_excess,
-    weight=-3.0,
+    weight=-1e-6,
     params={
-      # 1.0 (not 1.2): no allowed margin above the real effort limit.
+      # 1.0 (not 1.2): no allowed margin above the real effort limit --
+      # "jamais de couple supérieur au couple max".
       "soft_ratio": 1.0,
       "cap": 1.0,
       "ema_dt": 0.04,
