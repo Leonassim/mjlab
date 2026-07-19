@@ -590,7 +590,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
   cfg.rewards["air_time"].func = mdp.split_feet_air_time
-  cfg.rewards["air_time"].weight = 40.0
+  # 80 (was 40, 2026-07-20, Léo): stronger push for higher/longer steps;
+  # paired with min_foot_height doubling and the leg scale bump to x6.
+  cfg.rewards["air_time"].weight = 80.0
 
   # foot_clearance (|z - target| x foot speed, every step) acts as a
   # per-meter tax on swinging while the feet are low: combined with the
@@ -603,9 +605,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards.pop("foot_swing_height", None)
   # Charged once per landing (clamp(1 - peak/min_height, 0)), not per airborne
   # step: air time itself is free, only landing with a low swing peak costs.
+  # -50 (was -25, 2026-07-20, Léo): stronger push toward actually clearing
+  # the ground -- peak height gains had been diminishing-returns slow.
   cfg.rewards["min_foot_height"] = RewardTermCfg(
     func=mdp.split_feet_min_swing_height,
-    weight=-25.0,
+    weight=-50.0,
     params={
       "min_height": 0.08,
       "sensor_name": feet_ground_split_cfg.name,
@@ -620,11 +624,19 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # action-space rate/acc penalties tax the exploration noise itself, which
   # drives premature std collapse (observed 2.0 -> 0.29 by iter 2300). They
   # are kept small; joint_acc_l2 below carries the anti-vibration signal.
-  cfg.rewards["action_rate_l2"].weight = -0.05
+  # action_rate_l2/stance/upper_body_action_acc_l2 operate on RAW action
+  # units (pre-scale): at a bigger leg scale the same physical smoothness
+  # needs a proportionally smaller raw increment, so these weights are
+  # scaled up by the same ratio as the leg scale bump (x5->x6, x1.2) to
+  # keep the same physical-space smoothness enforcement -- otherwise the
+  # anti-oscillation package would quietly weaken every time scale grows.
+  # joint_torque_rate_l2/joint_acc_l2/torque terms are already in physical
+  # units and don't need this adjustment.
+  cfg.rewards["action_rate_l2"].weight = -0.06
   cfg.rewards["action_acc_l2"].weight = 0.0
   cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
     func=mdp.stance_action_acc_l2,
-    weight=-0.15,
+    weight=-0.18,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "left_joint_indices": list(range(6)),
@@ -633,7 +645,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["upper_body_action_acc_l2"] = RewardTermCfg(
     func=mdp.joints_action_acc_l2,
-    weight=-0.15,
+    weight=-0.18,
     params={"joint_indices": [6, 7, 14, 15, *range(16, 30)]},
   )
   # Physical anti-vibration term. Calibrated on the 2026-07-14 checkpoint
@@ -661,7 +673,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["air_time"].params["overflow_threshold"] = 0.8
   # 40 * 0.2 = 8: the anti-hover guard keeps the exact pre-boost scale;
   # only the (dt-diluted) landing bonus is amplified.
-  cfg.rewards["air_time"].params["overflow_weight_ratio"] = 0.2
+  cfg.rewards["air_time"].params["overflow_weight_ratio"] = 0.1
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
   # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
