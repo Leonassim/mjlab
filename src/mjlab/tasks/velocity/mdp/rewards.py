@@ -641,14 +641,20 @@ class pd_demand_excess:
   identically (observed: mc_mujoco blow-up with 287 N.m demanded on a 35 N.m
   hip yaw).
 
-  The demand is smoothed with an EMA (~time constant ``ema_dt`` seconds)
-  before the ratio test: white exploration noise alone demands several times
-  the limit on every step (kp * sigma * scale >> effort_limit), but it is
-  zero-mean, so the filtered demand tracks the *mean* policy's demand --
-  which is what runs on hardware -- without taxing exploration.
+  The demand is smoothed with an EMA (~time constant ``ema_dt`` seconds,
+  ~40 ms) before the ratio test: a single noisy step's demand largely
+  averages out over that window, so an elevated EMA reflects a state+action
+  pair the policy actually committed to for several consecutive steps, not
+  one-off exploration jitter -- whatever produced it (nominal gait, a fall,
+  a recovery attempt), state + chosen action + dt deterministically imply
+  the PD demand, and it must fit under the real limit unconditionally,
+  since real hardware won't clip it the way the training actuator does.
+  Applied at full strength from step 0, same footing as the other always-on
+  magnitude penalties (joint_torques_l2, torque_limit_margin): this is a
+  physical constraint, not a style objective to ease into.
 
   Per joint: excess = clamp(|EMA(demand)| / limit - soft_ratio, 0, cap).
-  Logs Metrics/pd_demand_ratio_max for hardware-readiness tracking.
+  Logs Metrics/pd_demand_ratio_mean/max for hardware-readiness tracking.
   """
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):

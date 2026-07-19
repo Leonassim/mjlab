@@ -307,21 +307,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   if "reset_base" in cfg.events:
     cfg.events["reset_base"].params["pose_range"]["z"] = (0.0, 0.02)
   if cfg.curriculum is not None:
-    cfg.curriculum["pd_demand_weight"] = CurriculumTermCfg(
-      func=mdp.reward_weight,
-      params={
-        "reward_name": "pd_demand_excess",
-        # Capped at -1.5: on 2026-07-17_15-51-02 the -1 stage alone drove
-        # the demand ratio from 1.2 to 0.43 (deployable needs only <= 1);
-        # the -2/-3 stages just traded gait amplitude (foot speed 0.39 ->
-        # 0.25, peak height 1.33 -> 0.97 cm) for margin nobody needs.
-        "weight_stages": [
-          {"step": 240_000, "weight": -0.5},
-          {"step": 330_000, "weight": -1.0},
-          {"step": 420_000, "weight": -1.5},
-        ],
-      },
-    )
     cfg.curriculum["velocity_damper"] = CurriculumTermCfg(
       func=mdp.velocity_damper_progress,
       params={"start_step": 360_000, "end_step": 612_000},
@@ -437,23 +422,24 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # saturation -- mc_mujoco (no forcerange, by design) and possibly the real
   # drives do not clamp like the training actuator does. EMA-filtered so it
   # shapes the mean policy, not the exploration noise.
-  # Weight 0 at start, ramped in by curriculum (below): the clipped
-  # execution is always feasible, so a feasible reference trajectory exists
-  # by construction -- the late ramp asks the policy to distill the clamp
-  # into its own references once the gait exists, instead of taxing the
-  # high-exploration phase into timidity (the air-time curriculum trap, in
-  # reverse).
-  # -1e-6 (not 0.0): zero-weight terms are skipped by the manager entirely,
-  # and we want Metrics/pd_demand_ratio logged from step 0 to calibrate.
+  # Léo, 2026-07-20: this is a hard physical constraint, not a style
+  # objective — unlike the air_time ceiling (worth exploring around before
+  # committing), commanding more torque than the joint can deliver is never
+  # informative to explore into, whatever the state (nominal gait, fall,
+  # recovery). State + chosen action + dt deterministically imply the PD
+  # demand; it must fit under the real limit unconditionally, since real
+  # hardware won't clip it the way the training actuator does. Active at
+  # full strength from step 0 -- same footing as the other always-on
+  # magnitude penalties (joint_torques_l2, torque_limit_margin,
+  # ankle_roll_torque) that already coexist fine with learning from step 0;
+  # a prior late-ramp design wrongly borrowed the air_time curriculum's
+  # logic for a term that doesn't need it.
   cfg.rewards["pd_demand_excess"] = RewardTermCfg(
     func=mdp.pd_demand_excess,
-    weight=-1e-6,
+    weight=-3.0,
     params={
-      # 1.2: an MPC-smooth reference (consistent q*/v*) keeps the servo
-      # error at disturbance/kp, i.e. demand ratio ~1 -- the robot's MPC
-      # controllers prove a dynamic gait can hold it. The margin tolerates
-      # transients without allowing deep saturation reliance.
-      "soft_ratio": 1.2,
+      # 1.0 (not 1.2): no allowed margin above the real effort limit.
+      "soft_ratio": 1.0,
       "cap": 1.0,
       "ema_dt": 0.04,
       "asset_cfg": SceneEntityCfg("robot"),
