@@ -549,6 +549,86 @@ def split_feet_air_time(
   return reward - overflow_weight_ratio * overflow_penalty
 
 
+def split_feet_air_time_dense(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  threshold_min: float = 0.05,
+  threshold_max: float = 0.5,
+  overflow_threshold: float | None = None,
+  overflow_weight_ratio: float = 1.0,
+  command_name: str | None = None,
+  command_threshold: float = 0.5,
+  power: float = 1.0,
+  touchdown_cost: float = 0.0,
+) -> torch.Tensor:
+  """Potential-based dense air-time shaping (Ng, Harada & Russell 1999).
+
+  ``split_feet_air_time`` pays the landing bonus ``Phi(a) = (min(a,
+  threshold_max)/threshold_max)**power`` once, at touchdown -- a sparse,
+  delayed signal that GAE must propagate back through many steps to credit
+  the actions that shaped the swing. This version pays the *rate* dPhi/dt
+  every step a foot is airborne instead. By the telescoping-sum identity, the
+  total paid over a complete swing of duration T is exactly Phi(T), same as
+  the event-based version -- policy-invariant, only the timing of payment
+  changes, giving every step during the swing its own well-localized
+  gradient. dPhi/da grows with elapsed air time (quadratic Phi, power=2), so
+  actions that extend an already-committed swing are rewarded increasingly,
+  not just retroactively. dPhi/da clamps to 0 past threshold_max (saturated
+  bonus, matching the event-based version's cap) -- no incentive to hover
+  from this term; overflow_threshold/overflow_weight_ratio (continuous,
+  unchanged) still guard against it.
+
+  A flat touchdown_cost is still charged once at landing (gated by
+  threshold_min the same way as the event-based version) so near-zero hops
+  stay net negative, though the quadratic Phi already makes their
+  accumulated dense reward tiny on its own.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  current_air_time = sensor.data.current_air_time
+  last_air_time = sensor.data.last_air_time
+  if current_air_time is None or last_air_time is None:
+    raise RuntimeError("Contact sensor must have track_air_time=True.")
+  if current_air_time.shape[1] < 8:
+    raise RuntimeError("Split-foot air-time reward expects 8 contact slots.")
+
+  split_air = current_air_time[:, :8].view(current_air_time.shape[0], 2, 4)
+  _, foot_in_contact = _split_foot_contact_tensors(sensor)
+  foot_in_air = 1.0 - foot_in_contact
+  foot_air_time = torch.max(split_air, dim=2).values * foot_in_air  # [B, 2]
+
+  clamped_a = torch.clamp(foot_air_time, max=threshold_max)
+  d_phi_da = power * torch.pow(clamped_a / threshold_max, power - 1.0) / threshold_max
+  d_phi_da = torch.where(
+    foot_air_time < threshold_max, d_phi_da, torch.zeros_like(d_phi_da)
+  )
+  dense_bonus = torch.sum(d_phi_da * env.step_dt * foot_in_air, dim=1)
+
+  first_contact = sensor.compute_first_contact(dt=env.step_dt)
+  split_first = first_contact[:, :8].view(first_contact.shape[0], 2, 4).float()
+  split_last_air = last_air_time[:, :8].view(last_air_time.shape[0], 2, 4)
+  foot_last_air = torch.max(split_last_air * split_first, dim=2).values
+  foot_landed = (foot_last_air > threshold_min).float()
+  touchdown_fee = torch.sum(touchdown_cost * foot_landed, dim=1)
+
+  ot = overflow_threshold if overflow_threshold is not None else 2.0 * threshold_max
+  overflow = torch.clamp(foot_air_time - ot, min=0.0) * foot_in_air
+  overflow_penalty = torch.sum(overflow, dim=1)
+
+  num_in_air = torch.sum(foot_in_air)
+  mean_air_time = torch.sum(foot_air_time) / torch.clamp(num_in_air, min=1.0)
+  env.extras["log"]["Metrics/air_time_mean"] = mean_air_time
+
+  reward = dense_bonus - touchdown_fee
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      reward = reward * (total_command > command_threshold).float()
+  return reward - overflow_weight_ratio * overflow_penalty
+
+
 def feet_air_time_symmetry(
   env: ManagerBasedRlEnv,
   sensor_name: str,
