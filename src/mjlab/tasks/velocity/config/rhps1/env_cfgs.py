@@ -624,7 +624,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "actuator_pattern": r"^[LR]_ANKLE_P$",
     },
   )
-  cfg.rewards["air_time"].func = mdp.split_feet_air_time
+  # Dense (potential-based) shaping instead of the event-based lump sum at
+  # touchdown: every step during the swing pays dPhi/dt, telescoping to the
+  # same total per completed stride but reinforcing every intermediate step
+  # instead of only the landing event -- see split_feet_air_time_dense's
+  # docstring. Same params (threshold_max/touchdown_cost/overflow_threshold)
+  # are still driven by the air_time_target curriculum below, which mutates
+  # them by name and is agnostic to which function reads them.
+  cfg.rewards["air_time"].func = mdp.split_feet_air_time_dense
   # Starts at 40 (the last known-stable weight), ramped to 80 by curriculum
   # (below) instead of doubled from step 0: 2026-07-20_05-11-18 (80 from
   # start, cold init, x6 scale) plateaued at a ~20-30x higher fall rate than
