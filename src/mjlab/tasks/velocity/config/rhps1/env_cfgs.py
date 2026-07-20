@@ -358,6 +358,33 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ],
       },
     )
+    # Léo, 2026-07-21: flat contact and low impact velocity are non-negotiable
+    # -- as air_time/min_foot_height push toward bigger, more dynamic steps
+    # (curricula above), contact-safety pressure must grow in lockstep, not
+    # lag behind and get outrun by the growing ambition. Same step cadence
+    # as the ambition curricula so the two move together.
+    cfg.curriculum["impact_vel_weight"] = CurriculumTermCfg(
+      func=mdp.reward_weight,
+      params={
+        "reward_name": "impact_vel",
+        "weight_stages": [
+          {"step": 144_000, "weight": -0.7},
+          {"step": 216_000, "weight": -0.85},
+          {"step": 288_000, "weight": -1.0},
+        ],
+      },
+    )
+    cfg.curriculum["flat_support_weight"] = CurriculumTermCfg(
+      func=mdp.reward_weight,
+      params={
+        "reward_name": "flat_support",
+        "weight_stages": [
+          {"step": 144_000, "weight": -8.0},
+          {"step": 216_000, "weight": -9.0},
+          {"step": 288_000, "weight": -10.0},
+        ],
+      },
+    )
   if cfg.curriculum is not None and "command_vel" in cfg.curriculum:
     cfg.curriculum["command_vel"].params["velocity_stages"] = [
       {
