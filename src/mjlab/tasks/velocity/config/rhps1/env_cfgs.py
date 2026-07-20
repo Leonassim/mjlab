@@ -392,9 +392,17 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
   cfg.rewards["track_linear_velocity"].weight = 3.5
-  cfg.rewards["track_linear_velocity"].params["std"] = 0.20
+  # 0.30 (was 0.20, 2026-07-20, Léo): the tight kernel is evaluated every
+  # 5ms and heavily punishes the instantaneous COM velocity oscillation
+  # that a long, slow stride naturally causes over its swing cycle, while
+  # many short quick steps keep velocity nearly constant at all times --
+  # an implicit, high-frequency bias toward short fast steps that
+  # air_time's comparatively rare per-landing bonus (every ~0.3-0.5s)
+  # can't outweigh just by raising its weight. Widening the kernel trades
+  # some tracking precision for tolerance of that natural oscillation.
+  cfg.rewards["track_linear_velocity"].params["std"] = 0.30
   cfg.rewards["track_angular_velocity"].weight = 3.5
-  cfg.rewards["track_angular_velocity"].params["std"] = 0.35
+  cfg.rewards["track_angular_velocity"].params["std"] = 0.45
 
   cfg.rewards["pose"].weight = 0.5
   cfg.rewards["pose"].params["command_name"] = "twist"
