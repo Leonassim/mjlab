@@ -332,12 +332,24 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       params={"start_step": 360_000, "end_step": 612_000},
     )
     # Léo, 2026-07-20: let balance consolidate at the known-stable ambition
-    # level (-25) before raising min_foot_height toward more demanding
-    # clearance -- ramps finish by iter ~6000, well before the pd_demand
-    # ramp starts squeezing torque (iter ~5000) so the two don't fight;
-    # roughly the same cadence as the air_time ceiling (threshold_max)
-    # curriculum. (air_time_weight curriculum removed 2026-07-21: air_time
-    # is now a static, secondary nudge -- see its weight assignment.)
+    # level (40/-25) before raising the incentive toward bigger, riskier
+    # steps -- ramps finish by iter ~6000, well before the pd_demand ramp
+    # starts squeezing torque (iter ~5000) so the two don't fight; roughly
+    # the same cadence as the air_time ceiling (threshold_max) curriculum.
+    # Reinstated 2026-07-21 with the terminal-clawback fix in place (see
+    # split_feet_air_time_dense) after tracing the previous plateau to that
+    # missing correction rather than to air_time's role itself.
+    cfg.curriculum["air_time_weight"] = CurriculumTermCfg(
+      func=mdp.reward_weight,
+      params={
+        "reward_name": "air_time",
+        "weight_stages": [
+          {"step": 144_000, "weight": 55.0},
+          {"step": 216_000, "weight": 70.0},
+          {"step": 288_000, "weight": 80.0},
+        ],
+      },
+    )
     cfg.curriculum["min_foot_height_weight"] = CurriculumTermCfg(
       func=mdp.reward_weight,
       params={
@@ -589,12 +601,18 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     r".*KNEE.*": 0.95,
     r".*ANKLE_P.*": 0.6,
     r".*ANKLE_R.*": 0.05,
-    r".*CHEST.*": 0.18,
-    r".*SHOULDER_P.*": 0.08,
-    r".*SHOULDER_R.*": 0.08,
-    r".*SHOULDER_Y.*": 0.06,
-    r".*ELBOW.*": 0.08,
-    r".*WRIST.*": 0.05,
+    # Loosened 2026-07-21 (Léo): balance during single-leg support is a
+    # stance-leg + upper-body joint effort (arm/torso counterweight), like a
+    # human's natural arm swing; std=0.06-0.08 rad (~3-5 deg) on the arms
+    # left almost no room for that (exp(-err^2/std^2) already near zero at
+    # a modest ~15-20 deg counter-swing) -- pose was structurally fighting
+    # the very mechanism needed to balance through a stride.
+    r".*CHEST.*": 0.30,
+    r".*SHOULDER_P.*": 0.25,
+    r".*SHOULDER_R.*": 0.25,
+    r".*SHOULDER_Y.*": 0.15,
+    r".*ELBOW.*": 0.20,
+    r".*WRIST.*": 0.08,
     r".*HEAD.*": 0.03,
   }
   cfg.rewards["pose"].params["std_running"] = {
@@ -619,7 +637,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["upright"].params["std"] = 0.2
 
   cfg.rewards["body_ang_vel"].weight = -0.5
-  cfg.rewards["angular_momentum"].weight = -0.2
+  # -0.1 (was -0.2, 2026-07-21, Léo): angular momentum shifts (arm swing,
+  # torso counter-rotation) are also the mechanism the stance leg/upper
+  # body use to balance through a stride, not just unwanted spin -- halved
+  # alongside the pose loosening above so it doesn't keep taxing the same
+  # thing back down.
+  cfg.rewards["angular_momentum"].weight = -0.1
   cfg.rewards["angular_momentum"].params["sensor_name"] = "robot/root_angmom"
   cfg.rewards["dof_pos_limits"].weight = -1.0
   cfg.rewards["joint_torques_l2"].weight = -1e-5
@@ -650,15 +673,19 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # are still driven by the air_time_target curriculum below, which mutates
   # them by name and is agnostic to which function reads them.
   cfg.rewards["air_time"].func = mdp.split_feet_air_time_dense
-  # 20 (was ramped 40->80, 2026-07-21, Léo): air_time rewards mere time off
-  # the ground, which a foot stuck airborne during a fall satisfies just as
-  # well as a genuine stride -- 2026-07-21_09-32-49 plateaued at an elevated
-  # fall rate with air_time_mean high but peak_height flat, consistent with
-  # falls inflating the metric. Demoted to a modest secondary nudge; the new
-  # split_feet_swing_advance term (below) becomes the primary "take a good
-  # step" driver, since it only pays for the foot genuinely advancing past
-  # the body (can't be satisfied by dragging/falling).
-  cfg.rewards["air_time"].weight = 20.0
+  # Léo, 2026-07-21: kept as the primary "take a good step" driver -- a
+  # distance/stride-length term (tried and reverted, see git history) would
+  # over-condition the gait toward one specific solution (long fast stride)
+  # when a long smooth stride OR a slower short stride are both fine, as
+  # long as air time is decent. The real bug behind 2026-07-21_09-32-49's
+  # plateau (air_time_mean high, peak_height flat, elevated non-recovering
+  # falls) was traced to split_feet_air_time_dense not zeroing its
+  # potential at termination (Ng et al. 1999) -- a foot stuck airborne
+  # during a fall kept banking dense credit for a swing that never landed.
+  # Fixed at the source (terminal clawback, see the function's docstring);
+  # air_time itself is restored to its full ramped role via the
+  # air_time_weight curriculum below.
+  cfg.rewards["air_time"].weight = 40.0
 
   # foot_clearance (|z - target| x foot speed, every step) acts as a
   # per-meter tax on swinging while the feet are low: combined with the
@@ -678,25 +705,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     weight=-25.0,
     params={
       "min_height": 0.08,
-      "sensor_name": feet_ground_split_cfg.name,
-      "command_name": "twist",
-      "command_threshold": 0.1,
-      "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
-    },
-  )
-  # New primary "take a good step" driver (2026-07-21, Léo): rewards the
-  # swing foot's forward reach relative to the body -- driving the leg
-  # forward via hip flexion and knee coordination, the actual mechanism of
-  # a human-like stride -- instead of just time spent off the ground.
-  # Potential-based/dense (see split_feet_swing_advance's docstring): can't
-  # be satisfied by a foot merely dragging or stuck airborne during a fall.
-  # Weight 6 is a reasoned starting point (a genuine ~0.3s swing reaching
-  # ~15-20cm forward implies an average realized rate on the order of what
-  # track_linear_velocity produces); recalibrate from this run's data.
-  cfg.rewards["swing_advance"] = RewardTermCfg(
-    func=mdp.split_feet_swing_advance,
-    weight=6.0,
-    params={
       "sensor_name": feet_ground_split_cfg.name,
       "command_name": "twist",
       "command_threshold": 0.1,
