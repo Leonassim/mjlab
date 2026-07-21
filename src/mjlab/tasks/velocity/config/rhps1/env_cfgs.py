@@ -595,13 +595,21 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     r"^(?!.*CROTCH_P.*)(?!.*CROTCH_R.*)(?!.*ANKLE.*)(?!.*SHOULDER.*)(?!.*ELBOW.*)(?!.*WRIST.*)(?!.*HEAD.*).*$": 0.04,
   }
   cfg.rewards["pose"].params["std_walking"] = {
-    r".*CROTCH_P.*": 0.85,
-    r".*CROTCH_R.*": 0.45,
-    r".*CROTCH_Y.*": 0.45,
-    r".*KNEE.*": 0.95,
-    r".*ANKLE_P.*": 0.6,
-    r".*ANKLE_R.*": 0.05,
-    # Loosened 2026-07-21 (Léo): balance during single-leg support is a
+    # Loosened across the board 2026-07-21 (Léo): pose should be a gentle
+    # pull back toward a neutral, safe posture, not a constraint on gait
+    # shape -- an ample stride needs real deviation everywhere, not just
+    # the upper body. ANKLE_R stays the most conservative of the bunch
+    # (tripled, not ~1.4x like the others): lateral ankle stability is the
+    # one axis where "safe" and "loose" trade off most directly, so this
+    # one is deliberately held back more than the rest pending evidence
+    # it's actually limiting the gait.
+    r".*CROTCH_P.*": 1.0,
+    r".*CROTCH_R.*": 0.65,
+    r".*CROTCH_Y.*": 0.65,
+    r".*KNEE.*": 1.1,
+    r".*ANKLE_P.*": 0.8,
+    r".*ANKLE_R.*": 0.15,
+    # Upper body (2026-07-21): balance during single-leg support is a
     # stance-leg + upper-body joint effort (arm/torso counterweight), like a
     # human's natural arm swing; std=0.06-0.08 rad (~3-5 deg) on the arms
     # left almost no room for that (exp(-err^2/std^2) already near zero at
