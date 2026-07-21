@@ -629,6 +629,88 @@ def split_feet_air_time_dense(
   return reward - overflow_weight_ratio * overflow_penalty
 
 
+class split_feet_swing_advance:
+  """Dense reward for the swing foot's forward reach relative to the body.
+
+  Léo, 2026-07-21: air_time (duration alone) turned out gameable -- a foot
+  stuck airborne during a fall satisfies "time spent off the ground" just as
+  well as a genuine stride, and 2026-07-21_09-32-49 plateaued at an elevated
+  fall rate with air_time_mean high but peak_height flat, consistent with
+  falls inflating the metric rather than real strides. What actually defines
+  a human-like step is the swing leg being driven forward past the body via
+  hip flexion and knee coordination -- so reward that directly: the
+  step-to-step increase of (foot position - root position) projected onto
+  the body's forward axis, for whichever foot is airborne.
+
+  This is potential-based (Phi = forward-relative foot position), so it
+  telescopes to the total forward reach achieved over a complete swing
+  regardless of any mid-swing wiggle, and it is paid every step (dense),
+  reinforcing the ongoing reach throughout the swing rather than only a
+  lump sum at landing. A foot that is merely airborne without advancing
+  (dragging, stuck during a fall, or the body drifting under it) does not
+  accumulate this reward, unlike a pure air-time bonus.
+
+  Gated to envs with a nonzero command (no reason to reach the leg forward
+  at a standstill). Reset per-env on episode reset to avoid a spurious
+  first-step delta from stale state.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    del cfg
+    self._prev_reach: torch.Tensor | None = None
+    self._env = env
+
+  def reset(self, env_ids: torch.Tensor) -> None:
+    if self._prev_reach is None:
+      return
+    reach = self._compute_reach(self._env, self._asset_cfg)
+    self._prev_reach[env_ids] = reach[env_ids]
+
+  @staticmethod
+  def _compute_reach(
+    env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    foot_pos_w = asset.data.site_pos_w[:, asset_cfg.site_ids, :]  # [B, 2, 3]
+    root_pos_w = asset.data.root_link_pos_w.unsqueeze(1)  # [B, 1, 3]
+    root_quat_w = asset.data.root_link_quat_w  # [B, 4]
+    rel_pos_w = foot_pos_w - root_pos_w  # [B, 2, 3]
+    batch, num_feet = rel_pos_w.shape[0], rel_pos_w.shape[1]
+    rel_pos_b = quat_apply_inverse(
+      root_quat_w[:, None, :].expand(batch, num_feet, 4).reshape(-1, 4),
+      rel_pos_w.reshape(-1, 3),
+    ).view(batch, num_feet, 3)
+    return rel_pos_b[..., 0]  # forward (body +x) component, [B, 2]
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    self._asset_cfg = asset_cfg
+    sensor: ContactSensor = env.scene[sensor_name]
+    _, foot_in_contact = _split_foot_contact_tensors(sensor)
+    foot_in_air = 1.0 - foot_in_contact  # [B, 2]
+
+    reach = self._compute_reach(env, asset_cfg)
+    if self._prev_reach is None:
+      self._prev_reach = reach.clone()
+    delta = (reach - self._prev_reach) * foot_in_air
+    self._prev_reach = reach
+
+    reward = torch.sum(delta, dim=1)
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      reward = reward * (total_command > command_threshold).float()
+    return reward
+
+
 def feet_air_time_symmetry(
   env: ManagerBasedRlEnv,
   sensor_name: str,
