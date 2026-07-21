@@ -14,6 +14,10 @@ artifacts/
 render_robots.py
 benchmark_results/
 
+# RHPS1 hardware description (meshes/xml) is confidential — kept locally only,
+# never tracked or pushed.
+src/mjlab/asset_zoo/robots/RHPS1/
+
 # Documentation outputs.
 **/_build/*
 **/generated/*
