@@ -558,7 +558,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     r".*CROTCH_R.*": 0.65,
     r".*CROTCH_Y.*": 0.65,
     r".*KNEE.*": 1.1,
-    r".*ANKLE_P.*": 0.8,
+    # Ankles stay close to neutral (unlike the rest of the body): only a
+    # slight pitch angulation during walking, roll even tighter.
+    r".*ANKLE_P.*": 0.25,
     r".*ANKLE_R.*": 0.15,
     r".*CHEST.*": 0.30,
     r".*SHOULDER_P.*": 0.25,
