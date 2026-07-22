@@ -645,7 +645,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # scale^2 to preserve physical-space enforcement across a leg-scale
   # change -- these are calibrated for scale=5.0, rescaled by (1.5/5.0)^2.
   cfg.rewards["action_rate_l2"].weight = -0.0054
-  cfg.rewards["action_acc_l2"].weight = 0.0
+  # Split by phase below instead: stance/upper-body joints have different
+  # smoothness needs than one blanket term captures.
+  cfg.rewards.pop("action_acc_l2", None)
   cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
     func=mdp.stance_action_acc_l2,
     weight=-0.0162,
