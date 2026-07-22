@@ -320,10 +320,27 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         # fine-tuning window at strict strength (soft_ratio 1.0, no margin)
         # long enough to actually converge, not just be trending toward it
         # when training stops.
+        # Re-graded 2026-07-22 (Léo): the 4-stage version (-1/-2/-4/-8, 2x
+        # jumps every 2500 iters) collapsed training at the very first jump
+        # (iter 7500, -1.0 -> -2.0): pd_demand_ratio_max was still 90-280 at
+        # that point (nowhere near feasible even at -1.0), and doubling the
+        # weight onto an already-saturated excess term (cap=1.0 per joint)
+        # broke the gait outright -- fell_down jumped from ~0.3 to 10+ and
+        # never recovered. Finer stages (~1.3x instead of 2x) spread further
+        # apart give the policy more runway to actually bring the ratio down
+        # at each level before the next squeeze, instead of being yanked
+        # straight to torque-feasible.
         "weight_stages": [
-          {"step": 240_000, "weight": -1.0},
-          {"step": 360_000, "weight": -2.0},
-          {"step": 480_000, "weight": -4.0},
+          {"step": 240_000, "weight": -0.5},
+          {"step": 288_000, "weight": -0.75},
+          {"step": 336_000, "weight": -1.0},
+          {"step": 384_000, "weight": -1.5},
+          {"step": 432_000, "weight": -2.0},
+          {"step": 480_000, "weight": -2.5},
+          {"step": 528_000, "weight": -3.0},
+          {"step": 576_000, "weight": -4.0},
+          {"step": 624_000, "weight": -6.0},
+          {"step": 672_000, "weight": -8.0},
         ],
       },
     )
@@ -366,14 +383,18 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # (curricula above), contact-safety pressure must grow in lockstep, not
     # lag behind and get outrun by the growing ambition. Same step cadence
     # as the ambition curricula so the two move together.
+    # Ceilings raised 2026-07-21 (Léo): x5/x6 play-tests both showed feet
+    # rolling instead of landing flat and impact velocity too high -- these
+    # are non-negotiable for hardware safety, so both curricula climb higher
+    # than before, same stage cadence as the ambition curricula.
     cfg.curriculum["impact_vel_weight"] = CurriculumTermCfg(
       func=mdp.reward_weight,
       params={
         "reward_name": "impact_vel",
         "weight_stages": [
-          {"step": 144_000, "weight": -0.7},
-          {"step": 216_000, "weight": -0.85},
-          {"step": 288_000, "weight": -1.0},
+          {"step": 144_000, "weight": -1.0},
+          {"step": 216_000, "weight": -1.3},
+          {"step": 288_000, "weight": -1.6},
         ],
       },
     )
@@ -382,9 +403,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       params={
         "reward_name": "flat_support",
         "weight_stages": [
-          {"step": 144_000, "weight": -8.0},
-          {"step": 216_000, "weight": -9.0},
-          {"step": 288_000, "weight": -10.0},
+          {"step": 144_000, "weight": -11.0},
+          {"step": 216_000, "weight": -13.0},
+          {"step": 288_000, "weight": -15.0},
         ],
       },
     )
@@ -442,7 +463,10 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards.pop("soft_landing", None)
   cfg.rewards["impact_vel"] = RewardTermCfg(
     func=mdp.impact_velocity,
-    weight=-0.5,
+    # -0.7 (was -0.5, 2026-07-21, Léo): both x5 and x6 play-tests showed
+    # impact velocity still too high at touchdown -- contact safety must win
+    # this trade-off, strengthened alongside the curriculum ceiling below.
+    weight=-0.7,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       # 0.15 (was 0.10): landing_vel plateaued at the old soft limit across
@@ -548,9 +572,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["flat_support"] = RewardTermCfg(
     func=mdp.flat_support_penalty,
-    # -7 (was -5): compensates the removed flat_touchdown -- support corners
-    # dropped 2.3 -> 1.87 on the 2026-07-17_15-51-02 run after the removal.
-    weight=-7.0,
+    # -9 (was -7, 2026-07-21, Léo): both x5 and x6 play-tests showed feet
+    # rolling heel-to-toe instead of landing with all 4 sole corners at once
+    # -- essential for hardware safety, strengthened alongside the
+    # curriculum ceiling below.
+    weight=-9.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "required_contacts_per_foot": 4,
@@ -726,18 +752,23 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # drives premature std collapse (observed 2.0 -> 0.29 by iter 2300). They
   # are kept small; joint_acc_l2 below carries the anti-vibration signal.
   # action_rate_l2/stance/upper_body_action_acc_l2 operate on RAW action
-  # units (pre-scale): at a bigger leg scale the same physical smoothness
-  # needs a proportionally smaller raw increment, so these weights are
-  # scaled up by the same ratio as the leg scale bump (x5->x6, x1.2) to
-  # keep the same physical-space smoothness enforcement -- otherwise the
-  # anti-oscillation package would quietly weaken every time scale grows.
+  # units (pre-scale) with an L2-squared kernel (torch.square, see
+  # envs/mdp/rewards.py): physical_rate = scale * raw_rate, so
+  # physical_rate^2 = scale^2 * raw_rate^2 -- keeping the same physical-space
+  # smoothness enforcement across a scale change requires these weights to
+  # move with scale^2, not scale^1. (Correction, 2026-07-21, Léo: the
+  # previous comment/values here only applied the linear scale ratio
+  # (x5->x6, x1.2) instead of its square -- an imprecise heuristic, not a
+  # deliberate choice; fixed going forward.)
   # joint_torque_rate_l2/joint_acc_l2/torque terms are already in physical
   # units and don't need this adjustment.
-  cfg.rewards["action_rate_l2"].weight = -0.06
+  # 2026-07-21: scale reverted 5.0 -> 1.5 (see _LEG_SCALE_MULTIPLIER); these
+  # were calibrated at scale=5.0, so rescaled by (1.5/5.0)^2 = 0.09.
+  cfg.rewards["action_rate_l2"].weight = -0.0054
   cfg.rewards["action_acc_l2"].weight = 0.0
   cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
     func=mdp.stance_action_acc_l2,
-    weight=-0.18,
+    weight=-0.0162,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "left_joint_indices": list(range(6)),
@@ -746,7 +777,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["upper_body_action_acc_l2"] = RewardTermCfg(
     func=mdp.joints_action_acc_l2,
-    weight=-0.18,
+    weight=-0.0162,
     params={"joint_indices": [6, 7, 14, 15, *range(16, 30)]},
   )
   # Physical anti-vibration term. Calibrated on the 2026-07-14 checkpoint
