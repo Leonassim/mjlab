@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import tyro
 
+import mjlab
+
 
 @dataclass
 class PlotTorquesConfig:
@@ -38,7 +40,7 @@ def _moving_average(values: np.ndarray, window: int) -> np.ndarray:
 
 
 def main() -> None:
-  cfg = tyro.cli(PlotTorquesConfig)
+  cfg = tyro.cli(PlotTorquesConfig, config=mjlab.TYRO_FLAGS)
 
   try:
     import matplotlib.pyplot as plt
