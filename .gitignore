@@ -15,8 +15,10 @@ render_robots.py
 benchmark_results/
 
 # RHPS1 hardware description (meshes/xml) is confidential — kept locally only,
-# never tracked or pushed.
-src/mjlab/asset_zoo/robots/RHPS1/
+# never tracked or pushed. Override the xml path with MJLAB_RHPS1_XML on any
+# machine that has its own local copy (see rhps1_constants.py).
+src/mjlab/asset_zoo/robots/RHPS1/meshes/
+src/mjlab/asset_zoo/robots/RHPS1/xmls/
 
 # Documentation outputs.
 **/_build/*
