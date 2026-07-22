@@ -1509,3 +1509,4 @@ def impact_velocity(
     env.extras["log"]["Metrics/foot_vel_max"] = torch.max(vel_for_log)
 
   return cost
+
