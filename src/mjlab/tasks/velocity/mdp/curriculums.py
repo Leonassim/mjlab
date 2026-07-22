@@ -192,6 +192,31 @@ def velocity_damper_progress(
   return torch.tensor([progress])
 
 
+class PushStage(TypedDict):
+  step: int
+  scale: float
+
+
+def push_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  event_name: str,
+  max_velocity_range: dict[str, tuple[float, float]],
+  stages: list[PushStage],
+) -> torch.Tensor:
+  """Scale push perturbation velocity range based on training progress."""
+  del env_ids
+  scale = 0.0
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      scale = stage["scale"]
+  event_cfg = env.event_manager.get_term_cfg(event_name)
+  event_cfg.params["velocity_range"] = {
+    k: (v[0] * scale, v[1] * scale) for k, v in max_velocity_range.items()
+  }
+  return torch.tensor([scale])
+
+
 class StandingEnvsStage(TypedDict):
   step: int
   value: float

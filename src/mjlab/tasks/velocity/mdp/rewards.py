@@ -471,6 +471,74 @@ def _split_foot_contact_tensors(
   return contact_count, foot_in_contact
 
 
+def split_feet_air_time(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  threshold_min: float = 0.05,
+  threshold_max: float = 0.5,
+  overflow_threshold: float | None = None,
+  overflow_weight_ratio: float = 1.0,
+  command_name: str | None = None,
+  command_threshold: float = 0.5,
+  power: float = 1.0,
+  touchdown_cost: float = 0.0,
+) -> torch.Tensor:
+  """Reward per-foot air time aggregated from 4 split contacts per foot.
+
+  Event-based: pays ``(min(last_air_time, threshold_max) /
+  threshold_max) ** power - touchdown_cost`` once, at touchdown (contrast
+  with the dense, potential-based ``split_feet_air_time_dense`` below, which
+  pays the same total but spread across every airborne step). Landings
+  whose air time is below ``threshold_min`` earn nothing.
+
+  ``overflow_threshold`` sets the per-foot air-time limit beyond which a
+  penalty fires each step (deters hover exploits); ``no_double_flight``
+  handles the both-feet-airborne exploit independently.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  current_air_time = sensor.data.current_air_time
+  last_air_time = sensor.data.last_air_time
+  if current_air_time is None or last_air_time is None:
+    raise RuntimeError("Contact sensor must have track_air_time=True.")
+  if current_air_time.shape[1] < 8:
+    raise RuntimeError("Split-foot air-time reward expects 8 contact slots.")
+
+  split_air = current_air_time[:, :8].view(current_air_time.shape[0], 2, 4)
+  _, foot_in_contact = _split_foot_contact_tensors(sensor)
+  foot_in_air = 1.0 - foot_in_contact
+  foot_air_time = torch.max(split_air, dim=2).values * foot_in_air
+
+  # Air time of the stride that just ended. current_air_time is zeroed at the
+  # contact step, so read last_air_time from the slots that landed within the
+  # last step.
+  first_contact = sensor.compute_first_contact(dt=env.step_dt)
+  split_first = first_contact[:, :8].view(first_contact.shape[0], 2, 4).float()
+  split_last_air = last_air_time[:, :8].view(last_air_time.shape[0], 2, 4)
+  foot_last_air = torch.max(split_last_air * split_first, dim=2).values
+  foot_landed = (foot_last_air > threshold_min).float()
+  value = (torch.clamp(foot_last_air, max=threshold_max) / threshold_max) ** power
+  landing_reward = torch.sum((value - touchdown_cost) * foot_landed, dim=1)
+  ot = overflow_threshold if overflow_threshold is not None else 2.0 * threshold_max
+  overflow = torch.clamp(foot_air_time - ot, min=0.0) * foot_in_air
+  overflow_penalty = torch.sum(overflow, dim=1)
+  num_in_air = torch.sum(foot_in_air)
+  mean_air_time = torch.sum(foot_air_time) / torch.clamp(num_in_air, min=1.0)
+  env.extras["log"]["Metrics/air_time_mean"] = mean_air_time
+
+  # Only the landing bonus is command-gated: the overflow penalty must also
+  # apply to standing envs, otherwise hovering on one foot at zero command is
+  # free.
+  reward = landing_reward
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      reward = reward * (total_command > command_threshold).float()
+  return reward - overflow_weight_ratio * overflow_penalty
+
+
 def split_feet_air_time_dense(
   env: ManagerBasedRlEnv,
   sensor_name: str,
