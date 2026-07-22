@@ -777,6 +777,80 @@ class pd_demand_excess:
     return torch.sum(excess, dim=1)
 
 
+def standing_joint_vel_l2(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize joint velocities when the commanded motion is near zero.
+
+  At zero command the robot should hold still; this taxes the residual
+  oscillation directly in joint space without touching the walking gait.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  joint_vel_sq = torch.sum(
+    torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1
+  )
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  standing = (total_command <= command_threshold).float()
+  return joint_vel_sq * standing
+
+
+def foot_flat_orientation(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize sole tilt of the feet relative to the world horizontal.
+
+  The foot links' frames are world-aligned when the sole is flat (the leg
+  pitch chain sums to zero in the keyframe), so the XY components of gravity
+  projected into the foot frame measure sin(tilt). Applied in every phase,
+  unlike the contact-count-based flat_support_penalty which only fires at
+  touchdown.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  body_quat_w = asset.data.body_link_quat_w[:, asset_cfg.body_ids, :]  # [B, N, 4]
+  batch, num_feet = body_quat_w.shape[0], body_quat_w.shape[1]
+  gravity_w = asset.data.gravity_vec_w  # [B, 3]
+  gravity_b = quat_apply_inverse(
+    body_quat_w.reshape(-1, 4),
+    gravity_w[:, None, :].expand(batch, num_feet, 3).reshape(-1, 3),
+  ).view(batch, num_feet, 3)
+  gravity_b = gravity_b / torch.clamp(
+    torch.norm(gravity_b, dim=-1, keepdim=True), min=1e-6
+  )
+  tilt = torch.norm(gravity_b[..., :2], dim=-1)  # [B, N], sin(tilt) per foot
+  env.extras["log"]["Metrics/foot_tilt_mean"] = torch.mean(tilt)
+  return torch.sum(tilt, dim=1)
+
+
+def feet_clearance_velocity_weighted(
+  env: ManagerBasedRlEnv,
+  target_height: float,
+  command_name: str | None = None,
+  command_threshold: float = 0.01,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize deviation from target clearance height (absolute z), weighted by foot velocity."""
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
+  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
+  vel_norm = torch.norm(foot_vel_xy, dim=-1)  # [B, N]
+  delta = torch.abs(foot_z - target_height)  # [B, N]
+  cost = torch.sum(delta * vel_norm, dim=1)  # [B]
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      active = (total_command > command_threshold).float()
+      cost = cost * active
+  return cost
+
 
 def feet_distance_penalty(
   env: ManagerBasedRlEnv,
