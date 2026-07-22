@@ -192,31 +192,6 @@ def velocity_damper_progress(
   return torch.tensor([progress])
 
 
-class PushStage(TypedDict):
-  step: int
-  scale: float
-
-
-def push_curriculum(
-  env: ManagerBasedRlEnv,
-  env_ids: torch.Tensor,
-  event_name: str,
-  max_velocity_range: dict[str, tuple[float, float]],
-  stages: list[PushStage],
-) -> torch.Tensor:
-  """Scale push perturbation velocity range based on training progress."""
-  del env_ids
-  scale = 0.0
-  for stage in stages:
-    if env.common_step_counter > stage["step"]:
-      scale = stage["scale"]
-  event_cfg = env.event_manager.get_term_cfg(event_name)
-  event_cfg.params["velocity_range"] = {
-    k: (v[0] * scale, v[1] * scale) for k, v in max_velocity_range.items()
-  }
-  return torch.tensor([scale])
-
-
 class StandingEnvsStage(TypedDict):
   step: int
   value: float
@@ -237,63 +212,3 @@ def standing_envs_curriculum(
   command_term = env.command_manager.get_term(command_name)
   command_term.cfg.rel_standing_envs = value
   return torch.tensor([value])
-
-
-class ActionScaleStage(TypedDict):
-  step: int
-  multiplier: float
-
-
-def action_scale_curriculum(
-  env: ManagerBasedRlEnv,
-  env_ids: torch.Tensor,
-  action_name: str,
-  base_scale: torch.Tensor | None,
-  stages: list[ActionScaleStage],
-) -> torch.Tensor:
-  """Scale action magnitude over training with linear interpolation between stages."""
-  del env_ids
-  step = env.common_step_counter
-  # Find surrounding stages and linearly interpolate multiplier.
-  multiplier = stages[0]["multiplier"]
-  for i in range(len(stages) - 1):
-    s0, s1 = stages[i], stages[i + 1]
-    if s0["step"] <= step < s1["step"]:
-      t = (step - s0["step"]) / max(s1["step"] - s0["step"], 1)
-      multiplier = s0["multiplier"] + t * (s1["multiplier"] - s0["multiplier"])
-      break
-  else:
-    if step >= stages[-1]["step"]:
-      multiplier = stages[-1]["multiplier"]
-  action_term = env.action_manager.get_term(action_name)
-  if base_scale is None:
-    base_scale = action_term._scale.clone()
-    for term_cfg in env.curriculum_manager._term_cfgs:
-      if term_cfg.func == action_scale_curriculum:
-        term_cfg.params["base_scale"] = base_scale
-        break
-  action_term._scale = base_scale * multiplier
-  return torch.tensor([multiplier])
-
-
-class AirTimeStage(TypedDict):
-  step: int
-  value: float
-
-
-def air_time_curriculum(
-  env: ManagerBasedRlEnv,
-  env_ids: torch.Tensor,
-  reward_name: str,
-  param_name: str,
-  stages: list[AirTimeStage],
-) -> torch.Tensor:
-  """Update an air_time reward parameter over training."""
-  del env_ids
-  current = stages[0]["value"]
-  for stage in stages:
-    if env.common_step_counter > stage["step"]:
-      current = stage["value"]
-  reward_cfg = env.reward_manager.get_term_cfg(reward_name)
-  reward_cfg.params[param_name] = current
-  return torch.tensor([current])

@@ -75,9 +75,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     num_slots=1,
     track_air_time=True,
   )
-  # Force-based counting (fields force + history) so the forceless proximity
-  # contacts created by the leg-geom collision gap don't register as
-  # collisions — only actual contact forces do.
+  # Force-based (not proximity) so the forceless leg-gap contacts below don't
+  # register as self-collisions.
   self_collision_cfg = ContactSensorCfg(
     name="self_collision",
     primary=ContactMatch(mode="subtree", pattern="BODY", entity="robot"),
@@ -87,10 +86,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     num_slots=1,
     history_length=2,
   )
-  # Hull-clearance sensors mirroring the deployment QP's minimalSelfCollisions
-  # pairs, readable up to the collision gap set on these geoms (forceless
-  # proximity contacts). One sensor per QP sDist group; thresholds live in the
-  # matching leg_proximity_cost reward terms (QP sDist + 1 cm buffer).
+  # Mirrors the deployment QP's minimalSelfCollisions pairs; thresholds live
+  # in the matching leg_proximity_cost reward terms below.
   def _proximity_sensor(name: str, primary: str, secondary: str) -> ContactSensorCfg:
     return ContactSensorCfg(
       name=name,
@@ -106,10 +103,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     r"^rhps1_collision_L_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
     r"^rhps1_collision_R_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
   )
-  # Dedicated knee pair with a higher threshold: the mc_rtc knee hulls are
-  # ~1.5 cm fatter than the mujoco meshes (measured 0.49 cm sch when the
-  # sensor read 2.0 cm during lateral walking), so 3.5 cm here ~= 2 cm sch,
-  # outside the QP knee damper zone (iDist 0.02, sDist 0.01).
+  # Wider threshold: mc_rtc knee hulls are ~1.5cm fatter than the mujoco mesh.
   knee_proximity_cfg = _proximity_sensor(
     "knee_proximity",
     r"^rhps1_collision_L_KNEE_P_LINK$",
@@ -307,29 +301,15 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   if "reset_base" in cfg.events:
     cfg.events["reset_base"].params["pose_range"]["z"] = (0.0, 0.02)
   if cfg.curriculum is not None:
+    # Torque feasibility is squeezed in late, after a gait exists: the
+    # clipped execution is always feasible, so free exploration at full
+    # scale first finds a dynamic, then this ramp squeezes the policy into
+    # the torque-feasible action that already realizes it. Fine stages
+    # (~1.3x, not 2x) give it room to actually converge at each level.
     cfg.curriculum["pd_demand_weight"] = CurriculumTermCfg(
       func=mdp.reward_weight,
       params={
         "reward_name": "pd_demand_excess",
-        # Léo, 2026-07-20: free exploration first, at full scale, so the
-        # policy can discover an ambitious dynamic unencumbered; only once a
-        # gait exists does it get squeezed into the torque-feasible action
-        # that already realizes it (the clipped execution is always
-        # feasible, so a feasible reference exists by construction). The
-        # last stage runs from iter ~10000 to the end (15000) as a genuine
-        # fine-tuning window at strict strength (soft_ratio 1.0, no margin)
-        # long enough to actually converge, not just be trending toward it
-        # when training stops.
-        # Re-graded 2026-07-22 (Léo): the 4-stage version (-1/-2/-4/-8, 2x
-        # jumps every 2500 iters) collapsed training at the very first jump
-        # (iter 7500, -1.0 -> -2.0): pd_demand_ratio_max was still 90-280 at
-        # that point (nowhere near feasible even at -1.0), and doubling the
-        # weight onto an already-saturated excess term (cap=1.0 per joint)
-        # broke the gait outright -- fell_down jumped from ~0.3 to 10+ and
-        # never recovered. Finer stages (~1.3x instead of 2x) spread further
-        # apart give the policy more runway to actually bring the ratio down
-        # at each level before the next squeeze, instead of being yanked
-        # straight to torque-feasible.
         "weight_stages": [
           {"step": 240_000, "weight": -0.5},
           {"step": 288_000, "weight": -0.75},
@@ -348,14 +328,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       func=mdp.velocity_damper_progress,
       params={"start_step": 360_000, "end_step": 612_000},
     )
-    # Léo, 2026-07-20: let balance consolidate at the known-stable ambition
-    # level (40/-25) before raising the incentive toward bigger, riskier
-    # steps -- ramps finish by iter ~6000, well before the pd_demand ramp
-    # starts squeezing torque (iter ~5000) so the two don't fight; roughly
-    # the same cadence as the air_time ceiling (threshold_max) curriculum.
-    # Reinstated 2026-07-21 with the terminal-clawback fix in place (see
-    # split_feet_air_time_dense) after tracing the previous plateau to that
-    # missing correction rather than to air_time's role itself.
     cfg.curriculum["air_time_weight"] = CurriculumTermCfg(
       func=mdp.reward_weight,
       params={
@@ -378,15 +350,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ],
       },
     )
-    # Léo, 2026-07-21: flat contact and low impact velocity are non-negotiable
-    # -- as air_time/min_foot_height push toward bigger, more dynamic steps
-    # (curricula above), contact-safety pressure must grow in lockstep, not
-    # lag behind and get outrun by the growing ambition. Same step cadence
-    # as the ambition curricula so the two move together.
-    # Ceilings raised 2026-07-21 (Léo): x5/x6 play-tests both showed feet
-    # rolling instead of landing flat and impact velocity too high -- these
-    # are non-negotiable for hardware safety, so both curricula climb higher
-    # than before, same stage cadence as the ambition curricula.
+    # Contact-safety pressure grows in lockstep with air_time/min_foot_height
+    # ambition, not lagging behind it.
     cfg.curriculum["impact_vel_weight"] = CurriculumTermCfg(
       func=mdp.reward_weight,
       params={
@@ -443,14 +408,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
   cfg.rewards["track_linear_velocity"].weight = 3.5
-  # 0.30 (was 0.20, 2026-07-20, Léo): the tight kernel is evaluated every
-  # 5ms and heavily punishes the instantaneous COM velocity oscillation
-  # that a long, slow stride naturally causes over its swing cycle, while
-  # many short quick steps keep velocity nearly constant at all times --
-  # an implicit, high-frequency bias toward short fast steps that
-  # air_time's comparatively rare per-landing bonus (every ~0.3-0.5s)
-  # can't outweigh just by raising its weight. Widening the kernel trades
-  # some tracking precision for tolerance of that natural oscillation.
+  # Wide kernel: a tight one punishes the COM oscillation a long stride
+  # naturally causes, implicitly biasing toward short quick steps.
   cfg.rewards["track_linear_velocity"].params["std"] = 0.30
   cfg.rewards["track_angular_velocity"].weight = 3.5
   cfg.rewards["track_angular_velocity"].params["std"] = 0.45
@@ -463,15 +422,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards.pop("soft_landing", None)
   cfg.rewards["impact_vel"] = RewardTermCfg(
     func=mdp.impact_velocity,
-    # -0.7 (was -0.5, 2026-07-21, Léo): both x5 and x6 play-tests showed
-    # impact velocity still too high at touchdown -- contact safety must win
-    # this trade-off, strengthened alongside the curriculum ceiling below.
     weight=-0.7,
     params={
       "sensor_name": feet_ground_split_cfg.name,
-      # 0.15 (was 0.10): landing_vel plateaued at the old soft limit across
-      # runs and capped swing height/length — the impact penalty was the
-      # physical ceiling on the air_time incentive.
       "limit": 0.15,
       "start_step": 0,
       "pre_contact_limit": 0.45,
@@ -481,8 +434,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "always_command_threshold": 0.05,
     },
   )
-  # One-leg-does-everything gaits are otherwise profitable (observed: left
-  # foot 0.62 m/s marker speed vs right 0.28 on the 2026-07-13 run).
+  # One-leg-does-everything gaits are otherwise profitable.
   cfg.rewards["air_time_symmetry"] = RewardTermCfg(
     func=mdp.feet_air_time_symmetry,
     weight=-1.0,
@@ -506,47 +458,30 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     weight=-0.5,
     params={"sensor_name": self_collision_cfg.name},
   )
-  # The deployment QP keeps the module's full minimalSelfCollisions (dampers
-  # hard-stop at each pair's sDist on convex hulls). MuJoCo convexifies
-  # collision meshes, so these sensors measure a comparable hull-hull
-  # distance: each threshold = the pair group's QP sDist + 1 cm buffer, so the
-  # policy stays out of the dampers' braking zone. Rest distances (measured):
-  # thighs 2.9 cm, knees 6.7 cm, shoulder-chest 2.2 cm, arm-torso 6-20 cm —
-  # all above their thresholds, no penalty in nominal posture.
+  # Thresholds = matching QP sDist + 1cm buffer, so the policy stays out of
+  # the deployment damper's braking zone.
   for prox_cfg, min_dist in (
-    (leg_proximity_cfg, 0.02),  # QP sDist 0.01 (legs)
-    (knee_proximity_cfg, 0.035),  # mc_rtc knee hulls ~1.5cm fatter than mujoco
-    (arm_torso_proximity_cfg, 0.04),  # QP sDist 0.03 (elbow/wrist vs chest/body)
-    (shoulder_chest_proximity_cfg, 0.01),  # QP sDist 0.001
-    (shoulder_body_proximity_cfg, 0.04),  # QP sDist 0.03
-    (wrist_thigh_proximity_cfg, 0.03),  # QP sDist 0.02
+    (leg_proximity_cfg, 0.02),
+    (knee_proximity_cfg, 0.035),
+    (arm_torso_proximity_cfg, 0.04),
+    (shoulder_chest_proximity_cfg, 0.01),
+    (shoulder_body_proximity_cfg, 0.04),
+    (wrist_thigh_proximity_cfg, 0.03),
   ):
     cfg.rewards[prox_cfg.name] = RewardTermCfg(
       func=mdp.leg_proximity_cost,
       weight=-2.0,
       params={"sensor_name": prox_cfg.name, "min_dist": min_dist},
     )
-  # Very strong penalty on the smoothed unclamped PD demand beyond the real
-  # effort limits: policies must not lean on actuator saturation -- mc_mujoco
-  # (no forcerange, by design) and the real drives do not clamp like the
-  # training actuator does.
-  # Léo, 2026-07-20: weight 0 at start, ramped in late (curriculum below).
-  # State + chosen action + dt deterministically imply the PD demand, and it
-  # must fit under the real limit unconditionally in the end -- but the
-  # clipped execution is always feasible, so a feasible reference already
-  # exists for whatever dynamic the policy discovers; the point of the late
-  # ramp is to let a big-scale policy explore an ambitious dynamic freely
-  # first, then squeeze it into the torque-feasible action that already
-  # realizes it, rather than fighting the exploration itself.
-  # -1e-6 (not 0.0): zero-weight terms are skipped by the manager entirely,
-  # and we want Metrics/pd_demand_ratio logged from step 0 to calibrate.
+  # Penalizes the smoothed unclamped PD demand beyond the real effort
+  # limits, so the policy can't lean on training-actuator saturation --
+  # mc_mujoco and the real drives don't clamp like it does. Weight ramps in
+  # late via the curriculum above (see rationale there).
   cfg.rewards["pd_demand_excess"] = RewardTermCfg(
     func=mdp.pd_demand_excess,
-    weight=-1e-6,
+    weight=-1e-6,  # nonzero so Metrics/pd_demand_ratio logs from step 0
     params={
-      # 1.0 (not 1.2): no allowed margin above the real effort limit --
-      # "jamais de couple supérieur au couple max".
-      "soft_ratio": 1.0,
+      "soft_ratio": 1.0,  # no margin above the real effort limit
       "cap": 1.0,
       "ema_dt": 0.04,
       "asset_cfg": SceneEntityCfg("robot"),
@@ -572,18 +507,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["flat_support"] = RewardTermCfg(
     func=mdp.flat_support_penalty,
-    # -9 (was -7, 2026-07-21, Léo): both x5 and x6 play-tests showed feet
-    # rolling heel-to-toe instead of landing with all 4 sole corners at once
-    # -- essential for hardware safety, strengthened alongside the
-    # curriculum ceiling below.
     weight=-9.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "required_contacts_per_foot": 4,
     },
   )
-  # -12 (was -4): at zero command the policy stood on one foot ~100% of the
-  # time (rate 0.10 with only 10% standing envs) and -4/s did not dislodge it.
   cfg.rewards["standing_single_support"] = RewardTermCfg(
     func=mdp.standing_single_support_penalty,
     weight=-12.0,
@@ -620,27 +549,17 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     r".*HEAD.*": 0.02,
     r"^(?!.*CROTCH_P.*)(?!.*CROTCH_R.*)(?!.*ANKLE.*)(?!.*SHOULDER.*)(?!.*ELBOW.*)(?!.*WRIST.*)(?!.*HEAD.*).*$": 0.04,
   }
+  # Pose is a gentle pull toward a neutral, safe posture, not a gait-shape
+  # constraint -- loosened across the whole body. ANKLE_R stays tighter:
+  # lateral ankle stability is the one axis where "safe" and "loose" trade
+  # off most directly.
   cfg.rewards["pose"].params["std_walking"] = {
-    # Loosened across the board 2026-07-21 (Léo): pose should be a gentle
-    # pull back toward a neutral, safe posture, not a constraint on gait
-    # shape -- an ample stride needs real deviation everywhere, not just
-    # the upper body. ANKLE_R stays the most conservative of the bunch
-    # (tripled, not ~1.4x like the others): lateral ankle stability is the
-    # one axis where "safe" and "loose" trade off most directly, so this
-    # one is deliberately held back more than the rest pending evidence
-    # it's actually limiting the gait.
     r".*CROTCH_P.*": 1.0,
     r".*CROTCH_R.*": 0.65,
     r".*CROTCH_Y.*": 0.65,
     r".*KNEE.*": 1.1,
     r".*ANKLE_P.*": 0.8,
     r".*ANKLE_R.*": 0.15,
-    # Upper body (2026-07-21): balance during single-leg support is a
-    # stance-leg + upper-body joint effort (arm/torso counterweight), like a
-    # human's natural arm swing; std=0.06-0.08 rad (~3-5 deg) on the arms
-    # left almost no room for that (exp(-err^2/std^2) already near zero at
-    # a modest ~15-20 deg counter-swing) -- pose was structurally fighting
-    # the very mechanism needed to balance through a stride.
     r".*CHEST.*": 0.30,
     r".*SHOULDER_P.*": 0.25,
     r".*SHOULDER_R.*": 0.25,
@@ -671,11 +590,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["upright"].params["std"] = 0.2
 
   cfg.rewards["body_ang_vel"].weight = -0.5
-  # -0.1 (was -0.2, 2026-07-21, Léo): angular momentum shifts (arm swing,
-  # torso counter-rotation) are also the mechanism the stance leg/upper
-  # body use to balance through a stride, not just unwanted spin -- halved
-  # alongside the pose loosening above so it doesn't keep taxing the same
-  # thing back down.
+  # Arm swing / torso counter-rotation is also how the stance leg and upper
+  # body balance through a stride, not just unwanted spin.
   cfg.rewards["angular_momentum"].weight = -0.1
   cfg.rewards["angular_momentum"].params["sensor_name"] = "robot/root_angmom"
   cfg.rewards["dof_pos_limits"].weight = -1.0
@@ -688,9 +604,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "actuator_pattern": r"^[LR]_ANKLE_R$",
     },
   )
-  # Light pitch-effort penalty: sustained plantarflexion torque is the
-  # signature of tiptoeing. Kept well below the roll weight since ankle pitch
-  # legitimately works during push-off.
+  # Sustained plantarflexion torque is the signature of tiptoeing; kept well
+  # below the roll weight since ankle pitch legitimately works at push-off.
   cfg.rewards["ankle_pitch_torque"] = RewardTermCfg(
     func=mdp.joint_effort_l2,
     weight=-2e-4,
@@ -699,41 +614,17 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "actuator_pattern": r"^[LR]_ANKLE_P$",
     },
   )
-  # Dense (potential-based) shaping instead of the event-based lump sum at
-  # touchdown: every step during the swing pays dPhi/dt, telescoping to the
-  # same total per completed stride but reinforcing every intermediate step
-  # instead of only the landing event -- see split_feet_air_time_dense's
-  # docstring. Same params (threshold_max/touchdown_cost/overflow_threshold)
-  # are still driven by the air_time_target curriculum below, which mutates
-  # them by name and is agnostic to which function reads them.
+  # Dense (potential-based) shaping: every step during the swing pays
+  # dPhi/dt instead of a lump sum at touchdown. See split_feet_air_time_dense.
   cfg.rewards["air_time"].func = mdp.split_feet_air_time_dense
-  # Léo, 2026-07-21: kept as the primary "take a good step" driver -- a
-  # distance/stride-length term (tried and reverted, see git history) would
-  # over-condition the gait toward one specific solution (long fast stride)
-  # when a long smooth stride OR a slower short stride are both fine, as
-  # long as air time is decent. The real bug behind 2026-07-21_09-32-49's
-  # plateau (air_time_mean high, peak_height flat, elevated non-recovering
-  # falls) was traced to split_feet_air_time_dense not zeroing its
-  # potential at termination (Ng et al. 1999) -- a foot stuck airborne
-  # during a fall kept banking dense credit for a swing that never landed.
-  # Fixed at the source (terminal clawback, see the function's docstring);
-  # air_time itself is restored to its full ramped role via the
-  # air_time_weight curriculum below.
   cfg.rewards["air_time"].weight = 40.0
 
-  # foot_clearance (|z - target| x foot speed, every step) acts as a
-  # per-meter tax on swinging while the feet are low: combined with the
-  # per-airborne-step min-height penalty it made short fast shuffling optimal.
-  # The only height shaping left is the min_foot_height safety floor.
+  # Height shaping lives only in the min_foot_height floor below; per-step
+  # clearance/swing-height taxes made short fast shuffling optimal.
   cfg.rewards.pop("foot_clearance", None)
-  # foot_swing_height targeted exactly 0.15 m (two-sided quadratic), also
-  # penalizing high steps. Foot height is only floored now: the air_time
-  # incentive lets the gait pick its own natural height/stride above it.
   cfg.rewards.pop("foot_swing_height", None)
-  # Charged once per landing (clamp(1 - peak/min_height, 0)), not per airborne
-  # step: air time itself is free, only landing with a low swing peak costs.
-  # Starts at -25 (last known-stable weight), ramped to -50 by curriculum
-  # (below) -- same reasoning as the air_time weight ramp above.
+  # Charged once per landing, not per airborne step: air time is free, only
+  # landing with a low swing peak costs.
   cfg.rewards["min_foot_height"] = RewardTermCfg(
     func=mdp.split_feet_min_swing_height,
     weight=-25.0,
@@ -747,23 +638,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["foot_slip"].func = mdp.split_feet_slip
   cfg.rewards["foot_slip"].weight = -0.3
-  # Smoothness pressure lives in JOINT space (physical, scale-independent):
-  # action-space rate/acc penalties tax the exploration noise itself, which
-  # drives premature std collapse (observed 2.0 -> 0.29 by iter 2300). They
-  # are kept small; joint_acc_l2 below carries the anti-vibration signal.
-  # action_rate_l2/stance/upper_body_action_acc_l2 operate on RAW action
-  # units (pre-scale) with an L2-squared kernel (torch.square, see
-  # envs/mdp/rewards.py): physical_rate = scale * raw_rate, so
-  # physical_rate^2 = scale^2 * raw_rate^2 -- keeping the same physical-space
-  # smoothness enforcement across a scale change requires these weights to
-  # move with scale^2, not scale^1. (Correction, 2026-07-21, Léo: the
-  # previous comment/values here only applied the linear scale ratio
-  # (x5->x6, x1.2) instead of its square -- an imprecise heuristic, not a
-  # deliberate choice; fixed going forward.)
-  # joint_torque_rate_l2/joint_acc_l2/torque terms are already in physical
-  # units and don't need this adjustment.
-  # 2026-07-21: scale reverted 5.0 -> 1.5 (see _LEG_SCALE_MULTIPLIER); these
-  # were calibrated at scale=5.0, so rescaled by (1.5/5.0)^2 = 0.09.
+  # Smoothness pressure lives in joint (physical) space; action-space
+  # rate/acc terms tax exploration noise itself and are kept small to avoid
+  # premature std collapse. They use an L2-squared kernel on raw actions
+  # (physical_rate = scale * raw_rate), so their weight must move with
+  # scale^2 to preserve physical-space enforcement across a leg-scale
+  # change -- these are calibrated for scale=5.0, rescaled by (1.5/5.0)^2.
   cfg.rewards["action_rate_l2"].weight = -0.0054
   cfg.rewards["action_acc_l2"].weight = 0.0
   cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
@@ -780,8 +660,6 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     weight=-0.0162,
     params={"joint_indices": [6, 7, 14, 15, *range(16, 30)]},
   )
-  # Physical anti-vibration term. Calibrated on the 2026-07-14 checkpoint
-  # (dithering gait: sum-sq leg acc ~9e3 -> ~0.45/s; a smooth gait ~0.15/s).
   cfg.rewards["leg_joint_acc_l2"] = RewardTermCfg(
     func=mdp.joint_acc_l2,
     weight=-1e-4,
@@ -793,39 +671,25 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["air_time"].params["sensor_name"] = feet_ground_split_cfg.name
   cfg.rewards["air_time"].params["threshold_min"] = 0.01
-  # threshold_max/touchdown_cost/overflow_threshold start at the proven
-  # values (2026-07-18_14-52-44's static config) and are raised in stages by
-  # the air_time_target curriculum below instead of jumped directly to a
-  # higher ceiling -- 2026-07-18 plateaued right at this break-even
-  # (~0.28-0.32 s) with the bonus weight doubled but the target unmoved, so
-  # the ceiling itself needs to move; a naive step-0 ramp was tried earlier
-  # and reverted (locks in short steps during high exploration), hence the
-  # staged, break-even-paired curriculum.
   cfg.rewards["air_time"].params["threshold_max"] = 0.5
   cfg.rewards["air_time"].params["overflow_threshold"] = 0.8
-  # 40 * 0.2 = 8: the anti-hover guard keeps the exact pre-boost scale;
-  # only the (dt-diluted) landing bonus is amplified.
   cfg.rewards["air_time"].params["overflow_weight_ratio"] = 0.1
   cfg.rewards["air_time"].params["command_name"] = "twist"
   cfg.rewards["air_time"].params["command_threshold"] = 0.1
-  # Quadratic bonus + flat touchdown fee: reward rate grows with absolute air
-  # time; steps shorter than threshold_max*sqrt(touchdown_cost) are net
+  # Quadratic bonus + flat touchdown fee: reward rate grows with absolute
+  # air time; steps shorter than threshold_max*sqrt(touchdown_cost) are net
   # negative.
   cfg.rewards["air_time"].params["power"] = 2.0
   cfg.rewards["air_time"].params["touchdown_cost"] = 0.30
   if cfg.curriculum is not None:
+    # Each stage's break-even (threshold_max * sqrt(touchdown_cost)) stays
+    # near the trailing operating point, so raising the ceiling never makes
+    # the current gait suddenly unprofitable. All stages land before the
+    # pd_demand torque ramp starts (step 240_000).
     cfg.curriculum["air_time_target"] = CurriculumTermCfg(
       func=mdp.air_time_target_curriculum,
       params={
         "reward_name": "air_time",
-        # Each stage's break-even (threshold_max * sqrt(touchdown_cost))
-        # stays ~0.30 s, near the trailing operating point, so raising the
-        # ceiling never makes the current gait suddenly unprofitable.
-        # overflow_threshold keeps the ~1.6x margin above threshold_max.
-        # All stages land before the pd_demand torque ramp starts (step
-        # 240_000/iter 5000): the ambitious target gets consolidated first,
-        # then the torque-smoothing ramp shapes efficiency on top of it —
-        # mirroring the order that worked for 2026-07-18_14-52-44.
         "stages": [
           {"step": 72_000, "threshold_max": 0.6, "touchdown_cost": 0.25,
            "overflow_threshold": 0.95},
@@ -858,20 +722,10 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.events.pop("push_robot", None)
   assert cfg.curriculum is not None
 
-  # No air_time curriculum: the old stage-0 threshold_max=0.1 made every step
-  # longer than 0.1s pay the same net bonus, so the high-exploration phase
-  # locked the policy into high-frequency short steps before the later stages
-  # could create a gradient toward long strides (observed on the 2026-07-13
-  # run: air_time_mean peaked at 0.175 then fell to 0.137 at the stage
-  # switch). Full threshold and weight from step 0 instead.
-
   cfg.curriculum["standing_envs"] = CurriculumTermCfg(
     func=mdp.standing_envs_curriculum,
     params={
       "command_name": "twist",
-      # More standing practice (was 0.2 -> 0.1): with only 10% standing envs
-      # the standing behavior was under-trained and its penalties barely
-      # weighed in the batch return.
       "stages": [
         {"step": 0, "value": 0.3},
         {"step": 500 * 48, "value": 0.2},

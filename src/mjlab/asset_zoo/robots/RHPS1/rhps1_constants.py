@@ -529,19 +529,11 @@ RHPS1_REF_JOINT_ORDER = [
   "R_WRIST_Y",
 ]
 
-# Keyframe / initial state derived from mc_rhps1 _stance (deg -> rad), with
-# the legs re-solved for a straighter knee (0.40 rad instead of 0.622): the
-# real robot's knees are fragile and a higher CoM lowers their standing
-# torque. Solved by FK: flat sole (pitch chain sums to zero), same CoM
-# horizontal offset over the feet, same foot clearance; CoM +1.7 cm.
-# 2026-07-21 (Léo): knees bent a further ~5 deg from the base keyframe to add
-# margin from R/L_KNEE_P's lower joint limit (0 rad = full extension) after a
-# near-limit warning during dynamic gait ("pos lower: 0.024 < 0.024"). Solved
-# numerically via mujoco FK (not hand algebra) for the new CROTCH_P/ANKLE_P/
-# base-z that keep the foot sole exactly flat (ankle pitch = 0) and preserve
-# the exact same hip-to-ankle offset (x and absolute z) as the previous
-# keyframe, so this is a pure redistribution of flexion toward the knee, not
-# a change in standing height or forward lean.
+# Keyframe / initial state derived from mc_rhps1 _stance (deg -> rad), legs
+# re-solved via mujoco FK for a straighter knee to keep standing torque low
+# on the real robot's fragile knees: foot sole flat (pitch chain sums to
+# zero) and hip-to-ankle offset unchanged, so this is a pure redistribution
+# of flexion, not a change in standing height or forward lean.
 RHPS1_INIT_STATE = EntityCfg.InitialStateCfg(
   pos=(0.0, 0.0, 0.850698),
   joint_pos={
@@ -704,49 +696,11 @@ for name in (
 ):
   RHPS1_ACTION_SCALE[name] = upper_scale
 
-# 4.0 (was 1.5): with the policy's unit-std Gaussian exploration, the action
-# scale IS the exploration amplitude in joint space. At 1.5 x effort/stiffness
-# (~0.01 rad/unit on the hips) the policy explored +-0.02 rad and could never
-# discover long strides — five runs converged to micro-steps regardless of the
-# air-time shaping. Deployment note: the controller yaml action_scale must
-# match the training that produced the deployed ONNX.
-# 5.0 (was 4.0, 2026-07-19): 2026-07-18_14-52-44 was the best run yet
-# (peak 1.47 cm / 0.43 m/s pre-ramp) but foot height still only reached
-# ~1 cm despite min_foot_height x3. Gentle further widening of the
-# achievable joint-space excursion per unit network output, now backstopped
-# by pd_demand_excess (didn't exist during the earlier x4 blow-ups) and the
-# mirror loss, so a bigger budget should not reproduce the old chaos.
-# 6.0 (was 5.0, 2026-07-20, Léo): more exploration room, paired with
-# doubled air_time/min_foot_height incentives. Kept static for the whole
-# run (never curriculum this: it redefines what a raw network output
-# means, unlike reward-shaping curricula which only add pressure).
-# pd_demand_excess (late-ramped, strict soft_ratio=1.0) is what keeps this
-# safe: free exploration first, then squeezed into torque-feasible actions
-# for whatever dynamic it finds.
-# 4.0 (was 6.0, 2026-07-21, Léo): 2026-07-21_09-32-49 (x6 + widened
-# tracking kernel + dense air_time, all three at once) plateaued at an
-# elevated fall rate that never resolved -- reverting scale to the
-# last-uncontested level to isolate it as a variable while the air_time
-# redesign (split_feet_swing_advance) is tested on its own.
-# 5.0 (was 4.0, 2026-07-21, Léo): play-tested both the x5 checkpoint
-# (2026-07-19_13-07-05/model_11250.pt) and the x6 checkpoint
-# (2026-07-20_08-37-35/model_14999.pt) with the scale temporarily restored to
-# match each one's training -- both walk decently, x6 behavior-wise is clean
-# too, but neither is clearly ahead and x5 carries one less scale step of
-# risk. Settling on x5 as the standing scale (no longer a temporary test
-# value). The 2026-07-21_09-32-49 plateau above was later traced to the
-# air_time terminal-potential leak (see split_feet_air_time_dense), not the
-# scale itself.
-# 1.5 (was 5.0, 2026-07-21, Léo): the x5 run launched the same day (new knee
-# keyframe, strengthened flat_support/impact_vel, extended pd_demand
-# curriculum) fell far more than the two reference runs at the same
-# iteration (~47 fell_down count vs 0 for both references at iter 5202) and
-# flat_support_contacts_mean regressed instead of improving. Dropping back to
-# the most conservative scale ever used (documented below: pre-2026-07-14,
-# five runs converged to micro-steps at this value) to isolate whether the
-# scale ambition itself is destabilizing, independent of whether the day's
-# reward-shaping changes (knee margin, contact-quality weights, torque
-# curriculum) are actually helping -- those stay in place at this scale.
+# With the policy's unit-std Gaussian exploration, this scale IS the
+# exploration amplitude in joint space -- never drive it with a curriculum,
+# unlike reward-shaping terms, since it redefines what a raw network output
+# means mid-training. Deployment note: the controller yaml action_scale
+# must match the training that produced the deployed ONNX.
 _LEG_SCALE_MULTIPLIER = 1.5
 for k in list(RHPS1_ACTION_SCALE):
   if k not in [

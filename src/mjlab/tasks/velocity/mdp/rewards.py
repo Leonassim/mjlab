@@ -471,84 +471,6 @@ def _split_foot_contact_tensors(
   return contact_count, foot_in_contact
 
 
-def split_feet_air_time(
-  env: ManagerBasedRlEnv,
-  sensor_name: str,
-  threshold_min: float = 0.05,
-  threshold_max: float = 0.5,
-  overflow_threshold: float | None = None,
-  overflow_weight_ratio: float = 1.0,
-  command_name: str | None = None,
-  command_threshold: float = 0.5,
-  power: float = 1.0,
-  touchdown_cost: float = 0.0,
-) -> torch.Tensor:
-  """Reward per-foot air time aggregated from 4 split contacts per foot.
-
-  At each touchdown, pays ``(min(last_air_time, threshold_max) /
-  threshold_max) ** power - touchdown_cost``. Landings whose air time is below
-  ``threshold_min`` earn nothing (contact-noise floor). With ``power=1`` the
-  per-second reward rate only depends on the fraction of time spent in flight
-  (a bonus proportional to air time is exactly cancelled by the lower landing
-  frequency); ``power=2`` makes the rate grow with absolute air time, and
-  ``touchdown_cost`` charges a flat fee per landing so short shuffling steps
-  are net negative (break-even air time = threshold_max *
-  touchdown_cost**(1/power)).
-
-  ``overflow_threshold`` sets the per-foot air-time limit beyond which a
-  penalty fires each step (to deter hover exploits). Defaults to
-  ``2 * threshold_max``. Set it larger than the longest desired step to avoid
-  penalising long alternating strides — ``no_double_flight`` handles the
-  both-feet-airborne exploit independently. ``overflow_weight_ratio`` scales
-  the overflow penalty relative to the term weight, so the landing bonus can
-  be boosted (event rewards are dt-diluted ~200x versus continuous terms)
-  without turning the overflow guard into a dominant penalty.
-  """
-  sensor: ContactSensor = env.scene[sensor_name]
-  current_air_time = sensor.data.current_air_time
-  last_air_time = sensor.data.last_air_time
-  if current_air_time is None or last_air_time is None:
-    raise RuntimeError("Contact sensor must have track_air_time=True.")
-  if current_air_time.shape[1] < 8:
-    raise RuntimeError("Split-foot air-time reward expects 8 contact slots.")
-
-  split_air = current_air_time[:, :8].view(current_air_time.shape[0], 2, 4)
-  _, foot_in_contact = _split_foot_contact_tensors(sensor)
-  foot_in_air = 1.0 - foot_in_contact
-  foot_air_time = torch.max(split_air, dim=2).values * foot_in_air
-
-  # Air time of the stride that just ended. current_air_time is zeroed at the
-  # contact step, so read last_air_time from the slots that landed within the
-  # last step: heel-first touchdowns carry the full flight time, micro-taps
-  # during stance carry ~zero and fall under the threshold_min floor.
-  first_contact = sensor.compute_first_contact(dt=env.step_dt)
-  split_first = first_contact[:, :8].view(first_contact.shape[0], 2, 4).float()
-  split_last_air = last_air_time[:, :8].view(last_air_time.shape[0], 2, 4)
-  foot_last_air = torch.max(split_last_air * split_first, dim=2).values
-  foot_landed = (foot_last_air > threshold_min).float()
-  value = (torch.clamp(foot_last_air, max=threshold_max) / threshold_max) ** power
-  landing_reward = torch.sum((value - touchdown_cost) * foot_landed, dim=1)
-  ot = overflow_threshold if overflow_threshold is not None else 2.0 * threshold_max
-  overflow = torch.clamp(foot_air_time - ot, min=0.0) * foot_in_air
-  overflow_penalty = torch.sum(overflow, dim=1)
-  num_in_air = torch.sum(foot_in_air)
-  mean_air_time = torch.sum(foot_air_time) / torch.clamp(num_in_air, min=1.0)
-  env.extras["log"]["Metrics/air_time_mean"] = mean_air_time
-
-  # Only the landing bonus is command-gated: the overflow penalty must also
-  # apply to standing envs, otherwise hovering on one foot at zero command is
-  # free (observed: ~10% single-support rate while standing).
-  reward = landing_reward
-  if command_name is not None:
-    command = env.command_manager.get_command(command_name)
-    if command is not None:
-      linear_norm = torch.norm(command[:, :2], dim=1)
-      angular_norm = torch.abs(command[:, 2])
-      total_command = linear_norm + angular_norm
-      reward = reward * (total_command > command_threshold).float()
-  return reward - overflow_weight_ratio * overflow_penalty
-
-
 def split_feet_air_time_dense(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -563,37 +485,15 @@ def split_feet_air_time_dense(
 ) -> torch.Tensor:
   """Potential-based dense air-time shaping (Ng, Harada & Russell 1999).
 
-  ``split_feet_air_time`` pays the landing bonus ``Phi(a) = (min(a,
-  threshold_max)/threshold_max)**power`` once, at touchdown -- a sparse,
-  delayed signal that GAE must propagate back through many steps to credit
-  the actions that shaped the swing. This version pays the *rate* dPhi/dt
-  every step a foot is airborne instead. By the telescoping-sum identity, the
-  total paid over a complete swing of duration T is exactly Phi(T), same as
-  the event-based version -- policy-invariant, only the timing of payment
-  changes, giving every step during the swing its own well-localized
-  gradient. dPhi/da grows with elapsed air time (quadratic Phi, power=2), so
-  actions that extend an already-committed swing are rewarded increasingly,
-  not just retroactively. dPhi/da clamps to 0 past threshold_max (saturated
-  bonus, matching the event-based version's cap) -- no incentive to hover
-  from this term; overflow_threshold/overflow_weight_ratio (continuous,
-  unchanged) still guard against it.
+  Pays dPhi/dt every step a foot is airborne, where Phi(a) = (min(a,
+  threshold_max)/threshold_max)**power. By the telescoping-sum identity this
+  sums to Phi(T) over a complete swing of duration T -- policy-invariant,
+  just paid continuously instead of once at touchdown.
 
-  A flat touchdown_cost is still charged once at landing (gated by
-  threshold_min the same way as the event-based version) so near-zero hops
-  stay net negative, though the quadratic Phi already makes their
-  accumulated dense reward tiny on its own.
-
-  Terminal-potential correction (Léo, 2026-07-21): Ng et al.'s
-  policy-invariance proof requires Phi(terminal state) = 0 -- otherwise an
-  episode that ends mid-swing lets the agent keep dense credit for a swing
-  that never completed with a landing, which the event-based version would
-  have paid nothing for. 2026-07-21_09-32-49 plateaued at an elevated fall
-  rate with air_time_mean high but peak_height flat, consistent with this
-  leak: a foot stuck airborne during a fall kept banking dPhi/dt. On the
-  step where ``env.termination_manager.terminated`` is True (an actual
-  failure, not a timeout), the already-paid potential for any
-  currently-airborne foot is clawed back in full, zeroing Phi at the
-  terminal state and restoring the "no landing, no payment" property.
+  Ng et al.'s proof requires Phi(terminal state) = 0, or an episode ending
+  mid-swing banks credit for a landing that never happened. On termination
+  (not timeout), the potential for any still-airborne foot is clawed back to
+  restore that invariant.
   """
   sensor: ContactSensor = env.scene[sensor_name]
   current_air_time = sensor.data.current_air_time
@@ -809,171 +709,6 @@ class pd_demand_excess:
     return torch.sum(excess, dim=1)
 
 
-def multiplicative_reward_total(
-  env: ManagerBasedRlEnv,
-  tau: float = 15.0,
-) -> torch.Tensor:
-  """Convert the summed reward into P * exp(N / tau) (ETH-style modulation).
-
-  P is the sum of the positive per-step term values, N the (negative) sum of
-  the penalty values, both read from the columns already computed this step.
-  The additive floor (positive_total_clamp) killed the suicide exploit but
-  created a penalty haven: whenever the sum was negative every behaviour cost
-  the same (flat zero region -- observed as the passive deadlock of
-  2026-07-16_13-09-01 and the 6.6 s flamingo stance of 2026-07-16_19-08-22).
-  The multiplicative form keeps both guarantees with a gradient everywhere:
-
-  - total >= 0 at every step, so death (termination penalty, added after)
-    is always strictly worse than any life;
-  - every extra unit of penalty multiplies the total by exp(-1/tau) < 1,
-    so nothing is ever free, even deep in penalty territory.
-
-  MUST be the second-to-last term, followed only by ``termination_penalty``.
-  Relies on RewardManager.compute() filling ``_step_reward`` columns in
-  insertion order (weighted, per-second); use weight 1.0. This term's value
-  is the delta that turns the accumulated sum P+N into P*exp(N/tau).
-  """
-  manager = env.reward_manager
-  own_idx = manager._term_names.index("reward_total")
-  prior = manager._step_reward[:, :own_idx]
-  positive = torch.clamp(prior, min=0.0).sum(dim=1)
-  negative = torch.clamp(prior, max=0.0).sum(dim=1)
-  total = positive * torch.exp(negative / tau)
-  env.extras["log"]["Metrics/reward_positive_sum"] = positive.mean()
-  env.extras["log"]["Metrics/reward_negative_sum"] = negative.mean()
-  env.extras["log"]["Metrics/reward_multiplier"] = torch.exp(negative / tau).mean()
-  return total - (positive + negative)
-
-
-def positive_total_clamp(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """Clamp the running per-step reward total at zero (legged_gym trick).
-
-  A reward built as a large sum of penalties makes the net per-second rate
-  negative during most of training, so terminating early is worth more than
-  living and the policy learns to fall on purpose (observed twice on
-  2026-07-15: episode length collapsed while mean reward improved). This term
-  cancels the negative excess of everything summed before it, guaranteeing a
-  per-step total >= 0 so that death (termination penalty, added after) is
-  always strictly worse than any life.
-
-  MUST be the second-to-last reward term, followed only by
-  ``termination_penalty`` (legged_gym semantics: clip, then termination).
-  Relies on RewardManager.compute() accumulating terms in insertion order
-  into ``_reward_buf``; use weight 1.0. The logged Episode_Reward value shows
-  how much clamping occurred (0 once the net rate turns positive).
-  """
-  running_total = env.reward_manager._reward_buf
-  scale = env.step_dt if env.cfg.scale_rewards_by_dt else 1.0
-  return torch.clamp(-running_total, min=0.0) / scale
-
-
-def standing_joint_vel_l2(
-  env: ManagerBasedRlEnv,
-  command_name: str,
-  command_threshold: float = 0.1,
-  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-  """Penalize joint velocities when the commanded motion is near zero.
-
-  At zero command the robot should hold still; this taxes the residual
-  oscillation directly in joint space without touching the walking gait.
-  """
-  asset: Entity = env.scene[asset_cfg.name]
-  joint_vel_sq = torch.sum(
-    torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1
-  )
-  command = env.command_manager.get_command(command_name)
-  assert command is not None
-  total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
-  standing = (total_command <= command_threshold).float()
-  return joint_vel_sq * standing
-
-
-def foot_flat_orientation(
-  env: ManagerBasedRlEnv,
-  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-  """Penalize sole tilt of the feet relative to the world horizontal.
-
-  The foot links' frames are world-aligned when the sole is flat (the leg
-  pitch chain sums to zero in the keyframe), so the XY components of gravity
-  projected into the foot frame measure sin(tilt). Applied in every phase:
-  during stance it complements the 4-corner contact penalties, during swing
-  it keeps the sole horizontal so the toe does not skim the ground even when
-  the knee is high, and it makes the touchdown flat by construction.
-  """
-  asset: Entity = env.scene[asset_cfg.name]
-  body_quat_w = asset.data.body_link_quat_w[:, asset_cfg.body_ids, :]  # [B, N, 4]
-  batch, num_feet = body_quat_w.shape[0], body_quat_w.shape[1]
-  gravity_w = asset.data.gravity_vec_w  # [B, 3]
-  gravity_b = quat_apply_inverse(
-    body_quat_w.reshape(-1, 4),
-    gravity_w[:, None, :].expand(batch, num_feet, 3).reshape(-1, 3),
-  ).view(batch, num_feet, 3)
-  gravity_b = gravity_b / torch.clamp(
-    torch.norm(gravity_b, dim=-1, keepdim=True), min=1e-6
-  )
-  tilt = torch.norm(gravity_b[..., :2], dim=-1)  # [B, N], sin(tilt) per foot
-  env.extras["log"]["Metrics/foot_tilt_mean"] = torch.mean(tilt)
-  return torch.sum(tilt, dim=1)
-
-
-def feet_clearance_velocity_weighted(
-  env: ManagerBasedRlEnv,
-  target_height: float,
-  command_name: str | None = None,
-  command_threshold: float = 0.01,
-  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-  """Penalize deviation from target clearance height (absolute z), weighted by foot velocity."""
-  asset: Entity = env.scene[asset_cfg.name]
-  foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
-  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
-  vel_norm = torch.norm(foot_vel_xy, dim=-1)  # [B, N]
-  delta = torch.abs(foot_z - target_height)  # [B, N]
-  cost = torch.sum(delta * vel_norm, dim=1)  # [B]
-  if command_name is not None:
-    command = env.command_manager.get_command(command_name)
-    if command is not None:
-      linear_norm = torch.norm(command[:, :2], dim=1)
-      angular_norm = torch.abs(command[:, 2])
-      total_command = linear_norm + angular_norm
-      active = (total_command > command_threshold).float()
-      cost = cost * active
-  return cost
-
-
-def swing_foot_height(
-  env: ManagerBasedRlEnv,
-  min_height: float,
-  sensor_name: str | None = None,
-  command_name: str | None = None,
-  command_threshold: float = 0.05,
-  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-  """Penalize swing feet below min_height every step.
-
-  When sensor_name is provided, only penalizes feet that are NOT in contact
-  (i.e. in the swing phase), leaving the stance foot untouched.
-  """
-  asset: Entity = env.scene[asset_cfg.name]
-  foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
-  deficit = torch.clamp(min_height - foot_z, min=0.0)  # [B, N]
-  if sensor_name is not None:
-    contact_sensor: ContactSensor = env.scene[sensor_name]
-    in_air = (contact_sensor.data.found == 0).float()  # [B, N]
-    deficit = deficit * in_air
-  cost = torch.sum(deficit, dim=1)  # [B]
-  if command_name is not None:
-    command = env.command_manager.get_command(command_name)
-    if command is not None:
-      linear_norm = torch.norm(command[:, :2], dim=1)
-      angular_norm = torch.abs(command[:, 2])
-      total_command = linear_norm + angular_norm
-      active = (total_command > command_threshold).float()
-      cost = cost * active
-  return cost
-
 
 def feet_distance_penalty(
   env: ManagerBasedRlEnv,
@@ -1074,12 +809,9 @@ class split_feet_swing_height:
 class split_feet_min_swing_height(split_feet_swing_height):
   """Charge a one-sided minimum-peak-height deficit once per landing.
 
-  Unlike ``swing_foot_height`` (which taxes every step spent airborne below
-  ``min_height`` and therefore penalizes air time itself when the gait is
-  low), this fires a single normalized penalty ``clamp(1 - peak/min_height,
-  0)`` at touchdown: air time is free, only landing with a low swing peak
-  costs. Reuses the terrain-relative peak tracker of
-  ``split_feet_swing_height``.
+  Fires ``clamp(1 - peak/min_height, 0)`` at touchdown: air time is free,
+  only landing with a low swing peak costs. Reuses the terrain-relative peak
+  tracker of ``split_feet_swing_height``.
   """
 
   def __call__(  # type: ignore[override]
@@ -1196,62 +928,6 @@ def split_feet_slip(
   )
   env.extras["log"]["Metrics/slip_velocity_mean"] = mean_slip_vel
 
-  return cost
-
-
-def flat_touchdown_penalty(
-  env: ManagerBasedRlEnv,
-  sensor_name: str,
-  required_contacts_per_foot: int = 4,
-  command_name: str | None = None,
-  command_threshold: float = 0.0,
-) -> torch.Tensor:
-  """Penalize touchdowns that do not land with a flat foot.
-
-  For each foot, if any split contact slot registers a first-contact event on the
-  current step, the touchdown is considered active for that foot. The penalty is
-  then based on how many of the four split contact zones are touching at that
-  touchdown instant. This enforces a flat landing rather than heel-first or
-  toe-first roll-over.
-  """
-  sensor: ContactSensor = env.scene[sensor_name]
-  found = sensor.data.found
-  if found is None:
-    raise RuntimeError(
-      "Contact sensor must provide 'found' for flat touchdown penalty."
-    )
-  if found.shape[1] < 8:
-    raise RuntimeError("flat_touchdown_penalty expects 8 split foot contacts.")
-
-  first_contact = sensor.compute_first_contact(dt=env.step_dt)
-  contacts = (found[:, :8] > 0).float().view(found.shape[0], 2, 4)
-  contact_count = torch.sum(contacts, dim=2)  # [B, 2]
-
-  touchdown = torch.stack(
-    (
-      torch.any(first_contact[:, :4], dim=1),
-      torch.any(first_contact[:, 4:8], dim=1),
-    ),
-    dim=1,
-  ).float()
-
-  required_contacts = float(required_contacts_per_foot)
-  deficit = torch.clamp(required_contacts - contact_count, min=0.0) / max(
-    required_contacts, 1.0
-  )
-  cost = torch.sum(torch.square(deficit) * touchdown, dim=1)
-
-  if command_name is not None:
-    command = env.command_manager.get_command(command_name)
-    assert command is not None
-    linear_norm = torch.norm(command[:, :2], dim=1)
-    angular_norm = torch.abs(command[:, 2])
-    total_command = linear_norm + angular_norm
-    cost = cost * (total_command > command_threshold).float()
-
-  env.extras["log"]["Metrics/flat_touchdown_contacts_mean"] = torch.sum(
-    contact_count * touchdown
-  ) / torch.clamp(torch.sum(touchdown), min=1.0)
   return cost
 
 
