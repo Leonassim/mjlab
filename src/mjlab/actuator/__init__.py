@@ -52,6 +52,21 @@ from mjlab.actuator.builtin_actuator import (
 from mjlab.actuator.builtin_group import BuiltinActuatorGroup as BuiltinActuatorGroup
 from mjlab.actuator.dc_actuator import DcMotorActuator as DcMotorActuator
 from mjlab.actuator.dc_actuator import DcMotorActuatorCfg as DcMotorActuatorCfg
+from mjlab.actuator.elmo_replica_actuator import (
+  ElmoReplicaActuator as ElmoReplicaActuator,
+)
+from mjlab.actuator.elmo_replica_actuator import (
+  ElmoReplicaActuatorCfg as ElmoReplicaActuatorCfg,
+)
+from mjlab.actuator.elmo_replica_differential_actuator import (
+  ElmoChannelParams as ElmoChannelParams,
+)
+from mjlab.actuator.elmo_replica_differential_actuator import (
+  ElmoReplicaDifferentialActuator as ElmoReplicaDifferentialActuator,
+)
+from mjlab.actuator.elmo_replica_differential_actuator import (
+  ElmoReplicaDifferentialActuatorCfg as ElmoReplicaDifferentialActuatorCfg,
+)
 from mjlab.actuator.finite_difference_pd_actuator import (
   FiniteDifferencePdActuator as FiniteDifferencePdActuator,
 )

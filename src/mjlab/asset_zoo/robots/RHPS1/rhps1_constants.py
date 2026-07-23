@@ -6,7 +6,12 @@ from pathlib import Path
 import mujoco
 
 from mjlab import MJLAB_SRC_PATH
-from mjlab.actuator import FiniteDifferencePdActuatorCfg
+from mjlab.actuator import (
+  ElmoChannelParams,
+  ElmoReplicaActuatorCfg,
+  ElmoReplicaDifferentialActuatorCfg,
+  FiniteDifferencePdActuatorCfg,
+)
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.spec_config import CollisionCfg
 
@@ -309,11 +314,37 @@ RHPS1_ACTUATOR_CROTCH_R = FiniteDifferencePdActuatorCfg(
   velocity_damper_vel_percent=0.9,
 )
 
-RHPS1_ACTUATOR_KNEE = FiniteDifferencePdActuatorCfg(
-  target_names_expr=(r".*_KNEE_P",),
+# effort_limit below: real per-side ELMO current-limit-derived torque bound, NOT the
+# previous flat placeholder (100.0, was ~= URDF's effort="108" for L/R_KNEE_P, rounded).
+# tau_max = eta * N * Kt * i_limit, using PL[1] (peak current, valid <= PL[2]=8s before the
+# drive derates to CL[1]) rather than the continuous CL[1] bound -- deliberately optimistic
+# for now (a training episode is assumed short enough vs. 8s); the flat clamp still can't
+# express the drive's actual derate-after-8s behavior, only its magnitude. eta=0.77 is a
+# calibrated (not measured) estimate: see RHPS1_gains/pdgains/PositionControlSimulation.ipynb
+# "eta calibration" section for the two independent cross-checks it's based on.
+#   N=210, Kt=0.101 Nm/Arms (same both sides, real, RHPS1_gains/FromRealRobot/drive_gains_map.csv)
+#   L: PL[1]=6.79A -> tau_max_peak = 0.77*210*0.101*6.79 ~= 110.9 Nm (was flat 100.0)
+#   R: PL[1]=4.24A -> tau_max_peak = 0.77*210*0.101*4.24 ~=  69.3 Nm (was flat 100.0 -- the
+#      old value EXCEEDED this joint's real peak capability, let alone its continuous one)
+RHPS1_ACTUATOR_KNEE_L = FiniteDifferencePdActuatorCfg(
+  target_names_expr=(r"L_KNEE_P",),
   stiffness=20000.0,
   damping=400.0,
-  effort_limit=100.0,
+  effort_limit=110.9,
+  armature=1.0,
+  position_target_filter_alpha=0.0,
+  velocity_target_limit=10.0,
+  velocity_limits=10.0,
+  velocity_damper_di=0.4,
+  velocity_damper_ds=0.01,
+  velocity_damper_vel_percent=0.9,
+)
+
+RHPS1_ACTUATOR_KNEE_R = FiniteDifferencePdActuatorCfg(
+  target_names_expr=(r"R_KNEE_P",),
+  stiffness=20000.0,
+  damping=400.0,
+  effort_limit=69.3,
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
@@ -481,7 +512,8 @@ RHPS1_ACTUATORS: tuple[FiniteDifferencePdActuatorCfg, ...] = (
   RHPS1_ACTUATOR_CROTCH_Y,
   RHPS1_ACTUATOR_CROTCH_P,
   RHPS1_ACTUATOR_CROTCH_R,
-  RHPS1_ACTUATOR_KNEE,
+  RHPS1_ACTUATOR_KNEE_L,
+  RHPS1_ACTUATOR_KNEE_R,
   RHPS1_ACTUATOR_ANKLE_P,
   RHPS1_ACTUATOR_ANKLE_R,
   RHPS1_ACTUATOR_TORSO,
@@ -493,6 +525,206 @@ RHPS1_ACTUATORS: tuple[FiniteDifferencePdActuatorCfg, ...] = (
   RHPS1_ACTUATOR_WRIST,
   RHPS1_ACTUATOR_HEAD,
 )
+
+##
+# Real ELMO-drive-replica actuators (P(pos)/PI(vel) cascade + current saturation +
+# anti-windup, see mjlab.actuator.elmo_replica_actuator / elmo_replica_differential_actuator).
+#
+# NOT ACTIVATED: these cfgs exist so the wiring/values are ready, but are not part of
+# RHPS1_ACTUATORS above -- the FiniteDifferencePdActuatorCfg-based entries still drive
+# training. Swap them in (and re-tune/re-train) deliberately, not as a drive-by change.
+#
+# Covers the 22 ACTUATOR_TYPE_ROTATE joints only (both knees, crotch_Y, chest, head,
+# shoulders, elbows, wrists). The 8 linear-actuator joints (hip roll/pitch, ankle
+# roll/pitch) are NOT covered -- real per-drive current limits are known for them too
+# (RHPS1_gains CSV), but converting drive-side force to joint-side torque needs the
+# parallel-cylinder attachment-point geometry, which isn't in any file we have access to
+# (see RHPS1_gains/README.md "Actuator Limits (Real Values, All Joints)").
+#
+# All numeric values below are real, from RHPS1_gains/FromRealRobot/drive_gains_map.csv
+# (Kp_pos<-KP3, Kp_vel<-KP2, Ki_vel<-KI2, gear_ratio<-gear_ratio_N, torque_constant<-
+# torque_constant_Nm_per_Arms, current_limit_continuous<-current_limit_continuous_A,
+# current_limit_peak<-current_limit_peak_A), not placeholders. eta is left at the
+# ElmoReplicaActuatorCfg/ElmoChannelParams default (1.0, an upper bound) throughout --
+# the ~0.77 calibrated estimate is knee-specific (see RHPS1_gains's notebook "eta
+# calibration" section) and hasn't been cross-checked for the other 20 joints, so it is
+# NOT applied here; revisit before activating.
+##
+
+RHPS1_ELMO_ACTUATOR_L_CROTCH_Y = ElmoReplicaActuatorCfg(
+  target_names_expr=("L_CROTCH_Y",),
+  Kp_pos=30.0, Kp_vel=1.1e-6, Ki_vel=45.0,
+  gear_ratio=159.0907, torque_constant=0.0582,
+  current_limit_continuous=0.88, current_limit_peak=2.55,
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_R_CROTCH_Y = ElmoReplicaActuatorCfg(
+  target_names_expr=("R_CROTCH_Y",),
+  Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0,
+  gear_ratio=159.0907, torque_constant=0.0582,
+  current_limit_continuous=2.16, current_limit_peak=4.24,
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_L_KNEE_P = ElmoReplicaActuatorCfg(
+  target_names_expr=("L_KNEE_P",),
+  Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0,
+  gear_ratio=210.0, torque_constant=0.101,
+  current_limit_continuous=2.94, current_limit_peak=6.79,
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_R_KNEE_P = ElmoReplicaActuatorCfg(
+  target_names_expr=("R_KNEE_P",),
+  Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0,
+  gear_ratio=210.0, torque_constant=0.101,
+  current_limit_continuous=2.16, current_limit_peak=4.24,
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_L_SHOULDER_P = ElmoReplicaActuatorCfg(
+  target_names_expr=("L_SHOULDER_P",),
+  Kp_pos=39.0, Kp_vel=1.1e-6, Ki_vel=45.0,
+  gear_ratio=200.0, torque_constant=0.0470,
+  current_limit_continuous=0.88, current_limit_peak=1.68,
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_R_SHOULDER_P = ElmoReplicaActuatorCfg(
+  target_names_expr=("R_SHOULDER_P",),
+  Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0,
+  gear_ratio=199.9998, torque_constant=0.0470,
+  current_limit_continuous=2.94, current_limit_peak=6.79,
+  armature=1.0,
+)
+
+RHPS1_ELMO_ACTUATOR_CHEST = ElmoReplicaDifferentialActuatorCfg(
+  # dof order (target_names_expr) = (CHEST_P, CHEST_Y); ch_a=ChestYPL=P+Y, ch_b=ChestYPR=P-Y
+  target_names_expr=("CHEST_P", "CHEST_Y"),
+  channel_a=ElmoChannelParams(
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=160.0, torque_constant=0.0470,
+    current_limit_continuous=2.94, current_limit_peak=6.79,
+  ),
+  channel_b=ElmoChannelParams(
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=160.0, torque_constant=0.0470,
+    current_limit_continuous=2.94, current_limit_peak=6.79,
+  ),
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_HEAD = ElmoReplicaDifferentialActuatorCfg(
+  # dof order = (HEAD_P, HEAD_Y); ch_a=HeadYPL=P+Y, ch_b=HeadYPR=P-Y
+  target_names_expr=("HEAD_P", "HEAD_Y"),
+  channel_a=ElmoChannelParams(
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=70.8332, torque_constant=0.0458,
+    current_limit_continuous=2.16, current_limit_peak=4.24,
+  ),
+  channel_b=ElmoChannelParams(
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=70.8332, torque_constant=0.0458,
+    current_limit_continuous=2.16, current_limit_peak=4.24,
+  ),
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_L_SHOULDER_RY = ElmoReplicaDifferentialActuatorCfg(
+  # dof order = (L_SHOULDER_R, L_SHOULDER_Y); ch_a=LShoulderRYF=R+Y, ch_b=LShoulderRYB=R-Y
+  target_names_expr=("L_SHOULDER_R", "L_SHOULDER_Y"),
+  channel_a=ElmoChannelParams(
+    Kp_pos=39.0, Kp_vel=1.1e-6, Ki_vel=45.0, gear_ratio=166.6667, torque_constant=0.0487,
+    current_limit_continuous=0.88, current_limit_peak=1.68,
+  ),
+  channel_b=ElmoChannelParams(
+    Kp_pos=39.0, Kp_vel=1.1e-6, Ki_vel=45.0, gear_ratio=166.6667, torque_constant=0.0487,
+    current_limit_continuous=0.88, current_limit_peak=2.56,
+  ),
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_R_SHOULDER_RY = ElmoReplicaDifferentialActuatorCfg(
+  # dof order = (R_SHOULDER_R, R_SHOULDER_Y); ch_a=RShoulderRYF=R+Y, ch_b=RShoulderRYB=R-Y
+  target_names_expr=("R_SHOULDER_R", "R_SHOULDER_Y"),
+  channel_a=ElmoChannelParams(
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=166.6667, torque_constant=0.0487,
+    current_limit_continuous=2.16, current_limit_peak=2.83,
+  ),
+  channel_b=ElmoChannelParams(
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=166.6667, torque_constant=0.0487,
+    current_limit_continuous=2.16, current_limit_peak=2.83,
+  ),
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_L_ELBOW_PY = ElmoReplicaDifferentialActuatorCfg(
+  # dof order = (L_ELBOW_P, L_ELBOW_Y); ch_a=LElbowPYO=P+Y, ch_b=LElbowPYI=P-Y
+  target_names_expr=("L_ELBOW_P", "L_ELBOW_Y"),
+  channel_a=ElmoChannelParams(
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=199.9998, torque_constant=0.0458,
+    current_limit_continuous=2.94, current_limit_peak=6.79,
+  ),
+  channel_b=ElmoChannelParams(
+    Kp_pos=39.0, Kp_vel=1.1e-6, Ki_vel=45.0, gear_ratio=200.0001, torque_constant=0.0458,
+    current_limit_continuous=0.88, current_limit_peak=2.56,
+  ),
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_R_ELBOW_PY = ElmoReplicaDifferentialActuatorCfg(
+  # dof order = (R_ELBOW_P, R_ELBOW_Y); ch_a=RElbowPYI=P+Y, ch_b=RElbowPYO=P-Y
+  # NOTE: mirrored vs L_ELBOW (channel_a/b swapped which physical drive plays which
+  # role) -- verified against TransListenerEx.hpp, not a typo.
+  target_names_expr=("R_ELBOW_P", "R_ELBOW_Y"),
+  channel_a=ElmoChannelParams(
+    Kp_pos=39.0, Kp_vel=1.1e-6, Ki_vel=45.0, gear_ratio=200.0001, torque_constant=0.0458,
+    current_limit_continuous=0.71, current_limit_peak=2.05,
+  ),
+  channel_b=ElmoChannelParams(
+    Kp_pos=50.0, Kp_vel=4.3e-6, Ki_vel=0.02, gear_ratio=199.9998, torque_constant=0.0458,
+    current_limit_continuous=1.03, current_limit_peak=2.03,
+  ),
+  armature=1.0,
+)
+# L/R_WRIST: the real robot's own joint names here are L/R_WRIST_R (Roll) + L/R_WRIST_Y
+# (Yaw) -- matching RHPS1main.urdf and RHPS1_REF_JOINT_ORDER below -- NOT the "P" the
+# motor channel names ("WristPYI/PYO") and RHPS1_gains's raw CSV joint_a column suggest.
+# That CSV labeling was deliberately NOT "fixed": it may be correct for a different
+# hand/end-effector configuration than the one this file targets (RHPS1_gains's URDF
+# check confirmed no _WRIST_P joint exists in ITS bundled URDF, but wrist DOF naming can
+# vary by robot config/hand). The dof_a/dof_b assignment below uses this repo's own
+# RHPS1_REF_JOINT_ORDER naming (_WRIST_R), independent of that CSV column.
+RHPS1_ELMO_ACTUATOR_L_WRIST_RY = ElmoReplicaDifferentialActuatorCfg(
+  # dof order = (L_WRIST_R, L_WRIST_Y); ch_a=LWristPYI=R+Y, ch_b=LWristPYO=R-Y
+  target_names_expr=("L_WRIST_R", "L_WRIST_Y"),
+  channel_a=ElmoChannelParams(
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=150.0003, torque_constant=0.0458,
+    current_limit_continuous=2.94, current_limit_peak=6.79,
+  ),
+  channel_b=ElmoChannelParams(
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=150.0, torque_constant=0.0458,
+    current_limit_continuous=2.94, current_limit_peak=6.79,
+  ),
+  armature=1.0,
+)
+RHPS1_ELMO_ACTUATOR_R_WRIST_RY = ElmoReplicaDifferentialActuatorCfg(
+  # dof order = (R_WRIST_R, R_WRIST_Y); ch_a=RWristPYI=R+Y, ch_b=RWristPYO=R-Y
+  target_names_expr=("R_WRIST_R", "R_WRIST_Y"),
+  channel_a=ElmoChannelParams(
+    Kp_pos=39.0, Kp_vel=1.1e-6, Ki_vel=45.0, gear_ratio=150.0, torque_constant=0.0458,
+    current_limit_continuous=0.71, current_limit_peak=2.05,
+  ),
+  channel_b=ElmoChannelParams(
+    Kp_pos=50.0, Kp_vel=4.3e-6, Ki_vel=0.02, gear_ratio=150.0003, torque_constant=0.0458,
+    current_limit_continuous=1.03, current_limit_peak=2.03,
+  ),
+  armature=1.0,
+)
+
+RHPS1_ELMO_ACTUATORS_INACTIVE = (
+  RHPS1_ELMO_ACTUATOR_L_CROTCH_Y,
+  RHPS1_ELMO_ACTUATOR_R_CROTCH_Y,
+  RHPS1_ELMO_ACTUATOR_L_KNEE_P,
+  RHPS1_ELMO_ACTUATOR_R_KNEE_P,
+  RHPS1_ELMO_ACTUATOR_L_SHOULDER_P,
+  RHPS1_ELMO_ACTUATOR_R_SHOULDER_P,
+  RHPS1_ELMO_ACTUATOR_CHEST,
+  RHPS1_ELMO_ACTUATOR_HEAD,
+  RHPS1_ELMO_ACTUATOR_L_SHOULDER_RY,
+  RHPS1_ELMO_ACTUATOR_R_SHOULDER_RY,
+  RHPS1_ELMO_ACTUATOR_L_ELBOW_PY,
+  RHPS1_ELMO_ACTUATOR_R_ELBOW_PY,
+  RHPS1_ELMO_ACTUATOR_L_WRIST_RY,
+  RHPS1_ELMO_ACTUATOR_R_WRIST_RY,
+)  # 6 solo + 8*2 differential = 22 joints. NOT referenced by RHPS1_ACTUATORS.
 
 ##
 # Reference joint order from mc_rhps1 (useful when wiring observations/actions).
