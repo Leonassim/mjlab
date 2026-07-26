@@ -72,6 +72,18 @@ def joint_vel_rel(
   return asset.data.joint_vel[:, jnt_ids] - default_joint_vel[:, jnt_ids]
 
 
+def joint_torques(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Raw per-joint applied torque (post actuator clamp), same quantity as
+  ``joint_torques_l2``'s reward. No "default" to subtract, unlike
+  joint_pos_rel/joint_vel_rel -- returned as-is; obs_normalization on the
+  consuming model handles scaling."""
+  asset: Entity = env.scene[asset_cfg.name]
+  return asset.data.actuator_force[:, asset_cfg.actuator_ids]
+
+
 ##
 # Actions.
 ##

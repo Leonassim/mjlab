@@ -1,18 +1,26 @@
-"""RHPS1-specific rsl-rl extensions: held exploration noise and mirror symmetry.
+"""RHPS1-specific rsl-rl extensions: held exploration noise, mirror symmetry,
+and torque-feasibility guidance.
 
 Everything here plugs into stock rsl-rl through its string-resolved config
-hooks (``distribution_cfg.class_name`` and ``symmetry_cfg.data_augmentation_func``),
-so no rsl-rl fork is needed and upstream mjlab files are untouched.
+hooks (``distribution_cfg.class_name``, ``symmetry_cfg.data_augmentation_func``,
+``algorithm.class_name``), so no rsl-rl fork is needed and upstream mjlab
+files are untouched.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.modules.distribution import GaussianDistribution
 from tensordict import TensorDict
+
+from mjlab.rl import RslRlPpoAlgorithmCfg
 
 if TYPE_CHECKING:
   from rsl_rl.env import VecEnv
@@ -147,8 +155,22 @@ _TERM_RULES = {
   "foot_contact": ([1, 0], [1.0, 1.0]),
   # 2 feet x (fx, fy, fz): swap feet, flip y.
   "foot_contact_forces": ([3, 4, 5, 0, 1, 2], [1.0, -1.0, 1.0, 1.0, -1.0, 1.0]),
+  # [sin_L, cos_L, sin_R, cos_R]: mirroring swaps which foot is "left" --
+  # plain block swap, no extra sign flip needed since sin_R/cos_R are
+  # already the negation of sin_L/cos_L by construction (half-cycle offset).
+  "gait_phase": ([2, 3, 0, 1], [1.0, 1.0, 1.0, 1.0]),
+  # (left, right) terrain-relative heights -> swap. Height is a signed
+  # scalar about the vertical axis, which a left-right mirror leaves alone,
+  # so no sign flip.
+  "foot_height_scan": ([1, 0], [1.0, 1.0]),
 }
-_JOINT_SPACE_TERMS = ("joint_pos", "joint_vel", "actions")
+# Per-joint quantities in the robot's joint order: mirrored with the
+# left/right joint permutation and per-joint sign flips, same as joint_pos.
+# joint_torques belongs here for the same reason joint_vel does -- it is one
+# scalar per joint in that identical order (it was missing until 2026-07-25,
+# so the critic's mirrored torque history was silently left unpermuted,
+# pairing left-leg torques with right-leg states).
+_JOINT_SPACE_TERMS = ("joint_pos", "joint_vel", "actions", "joint_torques")
 
 _spec_cache: dict[int, dict] = {}
 
@@ -243,3 +265,166 @@ def rhps1_mirror(
     actions_out = torch.cat([actions, actions[..., perm] * sign], dim=0)
 
   return obs_out, actions_out
+
+
+# ---------------------------------------------------------------------------
+# Torque-feasibility guidance (direct actor-space auxiliary loss).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RhpsPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
+  """Adds the torque-guidance fields on top of the shared PPO config.
+
+  Kept as a local subclass rather than extending ``RslRlPpoAlgorithmCfg``
+  itself: that dataclass is shared by every task's rl_cfg.py (g1, go1, yam,
+  cartpole, tracking), and ``train.py`` forwards its ``asdict()`` straight
+  into ``alg_class(**cfg["algorithm"])`` with no per-task filtering. Adding
+  fields there would hand ``torque_guidance_coef`` etc. to stock
+  ``PPO.__init__`` for every other task and crash on the unexpected keyword.
+  Subclassing locally means ``asdict()`` only picks up these extra fields
+  for whichever runner config actually instantiates ``RhpsPpoAlgorithmCfg``.
+  """
+
+  torque_guidance_coef: float = 0.0
+  """Weight for the actor-space torque-feasibility auxiliary loss, once
+  warmup has fully ramped in. 0.0 disables the extra optimizer step in
+  ``TorqueGuidedPPO.update``."""
+  torque_guidance_obs_group: str = "torque_guidance"
+  """Observation group holding the per-step regression target (see
+  ``mdp.pd_action_guidance_target``)."""
+  torque_guidance_obs_term: str = "target"
+  """Term name within ``torque_guidance_obs_group`` holding the target."""
+  torque_guidance_warmup_updates: int = 0
+  """Linearly ramp the effective coefficient from 0 to ``torque_guidance_coef``
+  over this many ``update()`` calls. 0 (default) applies the full coefficient
+  from the first update. See ``TorqueGuidedPPO`` for why this matters even
+  with ``max_action_delta`` capping the target: at iteration 0 essentially
+  every env is still falling every episode (the policy hasn't learned to
+  balance yet), so without a warmup, most of the batch is still fall-instant
+  targets pulling the actor together in the same direction every single
+  update -- a consistent bias each step, not a one-off spike, so gradient
+  clipping alone does not stop it from accumulating."""
+
+
+class TorqueGuidedPPO(PPO):
+  """PPO plus a supervised auxiliary loss pulling the actor toward the
+  torque-feasible action, bypassing the critic/advantage entirely.
+
+  Context: ``mdp.pd_demand_excess`` used to enforce torque feasibility as a
+  reward term (weight ramped in by curriculum, up to -8.0). Twice, once the
+  weight got large enough to matter, the policy grew timid on the large
+  corrective actions needed to catch a stumble -- suppressing exactly the
+  recoveries that prevent falls -- and a fall's own chaotic demand then fed
+  the same penalty right back in, a runaway loop visible as the ratio metric
+  spiking in lockstep with the fall rate. A reward-routed signal has to go
+  through the return and GAE before it reaches the policy gradient, so its
+  effective strength is entangled with every other reward's scale and with
+  the value function's ability to attribute credit -- there is no way to
+  make it "just strong enough" without it also reshaping unrelated behavior.
+
+  This term instead regresses the actor's mean action directly onto
+  ``mdp.pd_action_guidance_target`` (the action that would have produced the
+  actually-applied, clamped torque instead of the unclamped demand): a
+  Huber loss, proportional to the actual wasted overshoot, that never
+  touches the critic. It runs as one extra epoch over the same rollout,
+  after the standard PPO update has already applied its optimizer step for
+  this iteration -- deliberately not fused into the surrogate-loss backward,
+  so it can't be scaled up or down by entropy/value/symmetry loss weighting
+  the way the old reward term was.
+
+  Three attempts before this one all reproduced the same failure at
+  different timescales: fell_down and this loss climbing together, only
+  slower each time a safeguard was added.
+  1. No cap, full coefficient from update 0: collapsed in ~300 iterations
+     (most envs still fall every episode that early, and unbounded fall-
+     instant targets dominated the batch).
+  2. ``max_action_delta`` capped the target, ``torque_guidance_warmup_updates``
+     delayed full coefficient to update 1000: collapsed anyway once the
+     ramp approached full strength (~iteration 900-1200) -- capping bounds
+     one sample's severity, not how many degenerate samples can pull the
+     same direction at once, and delaying when full strength arrives doesn't
+     help if the batch composition hasn't actually improved by then.
+  3. Lowered the coefficient ceiling itself (1.0 -> 0.1): same shape, just
+     slower again -- strong evidence this was never really about picking
+     the right number.
+  The actual fix is in ``_torque_guidance_step``: mask out samples with
+  non-positive advantage (a free, already-computed proxy for "state worth
+  imitating" -- a fall-bound state's return-to-go is tanked by the
+  termination penalty, so its advantage is reliably negative) and use a
+  Huber loss instead of MSE so remaining outliers among the kept samples
+  don't dominate the batch average either.
+
+  ``torque_guidance_coef=0.0`` (the default) disables the extra step
+  entirely, making this identical to stock PPO.
+  """
+
+  def __init__(
+    self,
+    *args,
+    torque_guidance_coef: float = 0.0,
+    torque_guidance_obs_group: str = "torque_guidance",
+    torque_guidance_obs_term: str = "target",
+    torque_guidance_warmup_updates: int = 0,
+    **kwargs,
+  ) -> None:
+    super().__init__(*args, **kwargs)
+    self.torque_guidance_coef = float(torque_guidance_coef)
+    self.torque_guidance_obs_group = torque_guidance_obs_group
+    self.torque_guidance_obs_term = torque_guidance_obs_term
+    self.torque_guidance_warmup_updates = int(torque_guidance_warmup_updates)
+    self._update_count = 0
+
+  def update(self) -> dict[str, float]:
+    loss_dict = super().update()
+    self._update_count += 1
+    coef = self.torque_guidance_coef
+    if self.torque_guidance_warmup_updates > 0:
+      coef *= min(1.0, self._update_count / self.torque_guidance_warmup_updates)
+    if coef > 0.0:
+      loss_dict["torque_guidance"] = self._torque_guidance_step(coef)
+    return loss_dict
+
+  def _torque_guidance_step(self, coef: float) -> float:
+    if self.actor.is_recurrent or self.critic.is_recurrent:
+      generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, 1)
+    else:
+      generator = self.storage.mini_batch_generator(self.num_mini_batches, 1)
+
+    total_loss = 0.0
+    num_batches = 0
+    for batch in generator:
+      # Advantage sign as a free, already-computed proxy for "was this state
+      # trustworthy to imitate": a state on the way to a fall carries a
+      # strongly negative advantage (the termination penalty tanks its
+      # return-to-go), so it gets excluded here rather than pulling the
+      # actor toward whatever chaotic target its q_err implies. Two
+      # coefficients (1.0, then 0.1) both eventually reproduced the same
+      # fell_down/this-loss runaway once enough of the batch was fall-
+      # adjacent -- capping the target bounds one sample's severity but not
+      # how many degenerate samples can vote the same direction at once.
+      keep = (batch.advantages.squeeze(-1) > 0.0)
+      if not bool(torch.any(keep)):
+        continue
+
+      target = batch.observations[self.torque_guidance_obs_group]
+      if isinstance(target, TensorDict):
+        target = target[self.torque_guidance_obs_term]
+      mean_action = self.actor(
+        batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[0]
+      )
+      # Huber, not MSE: even after max_action_delta clamps the target and
+      # the advantage mask drops fall-adjacent samples, remaining outliers
+      # among the "good" states shouldn't dominate the batch average the
+      # way a squared error lets them.
+      loss = coef * F.smooth_l1_loss(mean_action[keep], target[keep])
+
+      self.optimizer.zero_grad()
+      loss.backward()
+      nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+      self.optimizer.step()
+
+      total_loss += loss.item()
+      num_batches += 1
+
+    return total_loss / max(num_batches, 1)

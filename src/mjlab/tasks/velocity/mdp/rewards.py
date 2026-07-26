@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -455,7 +456,16 @@ class variable_posture:
     desired_joint_pos = self.default_joint_pos[:, asset_cfg.joint_ids]
     error_squared = torch.square(current_joint_pos - desired_joint_pos)
 
-    return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
+    # mean(exp(.)) rather than the exp(mean(.)) this used to compute. With the
+    # exponential outside, a single joint far from its target drove the whole
+    # sum into the tail and flattened every other joint's gradient with it --
+    # measured on a standing checkpoint, the term realized 0.098 of its
+    # maximum while the hips sat ~0.118 rad off nominal, i.e. it had gone
+    # nearly silent exactly where it was supposed to be pulling. Per-joint
+    # exponentials keep each joint's own gradient alive regardless of what the
+    # others are doing, and the term degrades gracefully instead of switching
+    # off.
+    return torch.mean(torch.exp(-error_squared / (std**2)), dim=1)
 
 def _split_foot_contact_tensors(
   sensor: ContactSensor,
@@ -648,6 +658,330 @@ def feet_air_time_symmetry(
   return cost
 
 
+class gait_phase_tracking:
+  """Periodic Reward Composition (Siekmann et al., "Sim-to-Real Learning of
+  All Common Bipedal Gaits via Periodic Reward Composition", Cassie): an
+  explicit per-env gait clock prescribes when each foot *should* be in
+  swing vs stance, instead of the reactive/post-hoc approach everything
+  else in this file uses (measure what happened via the contact sensor,
+  reward it after the fact). air_time/min_foot_height/stride_frequency_target
+  all stalled for thousands of iterations despite escalating weights --
+  they only ever reward an already-discovered gait, they don't tell the
+  policy what timing to try. This term does: a phase input observation
+  (see mdp.gait_phase_obs) plus a dense reward for matching it gives a much
+  more direct signal for gait *timing* specifically.
+
+  Clock: phase in [0, 1) advances by (dt / period) each step, wrapped. Left
+  foot uses phase directly; right foot is phase-shifted by 0.5 (the
+  standard symmetric-alternating-gait assumption). Frozen (does not
+  advance) while the commanded speed is below command_threshold, so
+  standing still doesn't drag the clock through a swing/stance cycle with
+  no visible effect -- standing_single_support_penalty already owns the
+  "stand still, both feet down" case.
+
+  Cadence is per-env and commanded-speed dependent, interpolating period
+  from ``period_slow`` (at command_threshold) to ``period_fast`` (at
+  ``command_ref`` and above). A fixed cadence forces step length = v*T/2 to
+  collapse with v, which is precisely the "petits pas rapides" failure this
+  whole line of work started from: at T=0.83s a 0.1 m/s command mechanically
+  cannot produce a step longer than 4cm no matter what the rewards say.
+
+  ``swing_duration`` is held roughly *constant* rather than scaling with the
+  period (swing_ratio = swing_duration / period, so the ratio falls as the
+  period grows). Scaling swing with the period instead -- i.e. a fixed
+  swing_ratio -- would demand 1.0s of single support per step at the slow
+  end, which this robot cannot balance, and is biomechanically backwards:
+  human swing duration is near-invariant across walking speeds, and it is
+  the stance/double-support fraction that stretches when you slow down.
+  Since double support = 1 - 2*swing_ratio here (two feet, half-cycle
+  apart), a shrinking swing_ratio at low speed *is* the growing double
+  support phase, which is the desired behavior rather than a side effect.
+
+  The policy is not given swing_ratio or the period directly: both are
+  deterministic functions of the commanded velocity, which is already in
+  the observation (with history). Only the phase itself needs the explicit
+  channel (see mdp.gait_phase_obs), since it is integrated state the policy
+  cannot recover from a single step's command.
+
+  Also exposes ``self.amplitude`` (0 at zero command, ramping linearly to 1
+  at command_threshold), consumed by mdp.gait_phase_obs to fade the phase
+  observation itself to flat as the command nears zero. The frozen phase
+  alone is not enough: with swing_ratio=0.5 and the 0.5 foot offset, a
+  frozen phase always shows exactly one foot mid-"swing" in the sin/cos
+  encoding, indistinguishable from an actively-cycling gait -- a policy
+  that learned "swing encoding -> lift foot" during locomotion has no
+  signal telling it that cue is stale once the clock stops (observed:
+  standing_single_support_rate saturated near 100% of standing timesteps
+  despite the reward already being gated to zero there).
+
+  Per foot: reward = exp(-force^2/force_std^2) while that foot's phase is
+  in the swing portion (phase < swing_ratio) -- rewards an unloaded,
+  airborne foot; reward = exp(-vel^2/vel_std^2) while in the stance portion
+  -- rewards a planted, non-sliding foot.
+
+  The derived swing_ratio is clamped to <= 0.5: above that, with the two
+  feet's phases a half-cycle apart, their swing windows start to overlap
+  (both feet airborne at once) -- exactly what no_double_flight_penalty
+  already exists to forbid, so this term would otherwise be pulling
+  against it.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
+    del cfg
+    self.phase: torch.Tensor | None = None
+    self.amplitude: torch.Tensor | None = None
+    self._env = env
+
+  def reset(self, env_ids: torch.Tensor) -> None:
+    if self.phase is None:
+      return
+    self.phase[env_ids] = torch.rand(len(env_ids), device=self.phase.device)
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    period_slow: float,
+    period_fast: float,
+    swing_duration: float,
+    command_ref: float,
+    force_std: float = 30.0,
+    vel_std: float = 0.15,
+    command_threshold: float = 0.1,
+  ) -> torch.Tensor:
+    if self.phase is None:
+      self.phase = torch.rand(env.num_envs, device=env.device)
+
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    linear_speed = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    total_command = linear_speed + angular_norm
+    active = total_command > command_threshold
+    self.amplitude = torch.clamp(total_command / command_threshold, 0.0, 1.0)
+
+    # Interpolate the cycle period over the *commanded* speed range, from
+    # command_threshold (where the clock starts running) to command_ref.
+    speed_frac = torch.clamp(
+      (total_command - command_threshold) / max(command_ref - command_threshold, 1e-6),
+      0.0,
+      1.0,
+    )
+    period = period_slow + (period_fast - period_slow) * speed_frac  # [B]
+    swing_ratio = torch.clamp(swing_duration / period, max=0.5)  # [B]
+
+    self.phase = torch.where(
+      active, (self.phase + env.step_dt / period) % 1.0, self.phase
+    )
+
+    phase_left = self.phase
+    phase_right = (self.phase + 0.5) % 1.0
+    phases = torch.stack([phase_left, phase_right], dim=1)  # [B, 2]
+    should_swing = phases < swing_ratio.unsqueeze(1)  # [B, 2] bool
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    force = sensor.data.force
+    if force is None or force.shape[1] < 8:
+      raise RuntimeError("gait_phase_tracking expects 8 split foot contacts.")
+    split_force = force[:, :8].view(force.shape[0], 2, 4, 3)
+    foot_force_mag = torch.norm(torch.sum(split_force, dim=2), dim=-1)  # [B, 2]
+
+    asset: Entity = env.scene[asset_cfg.name]
+    foot_vel_mag = torch.norm(
+      asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2], dim=-1
+    )  # [B, 2]
+
+    r_swing = torch.exp(-torch.square(foot_force_mag / force_std))
+    r_stance = torch.exp(-torch.square(foot_vel_mag / vel_std))
+    reward = torch.where(should_swing, r_swing, r_stance) * active.float().unsqueeze(1)
+
+    # Averaged over active (moving) envs only: standing envs hold whatever
+    # period the interpolation floor gives them, which would drag the mean
+    # toward period_slow and hide the actual commanded-speed spread.
+    active_f = active.float()
+    n_active = torch.clamp(active_f.sum(), min=1.0)
+    # air-time visibility moved here when the air_time reward was retired: the
+    # metric was logged inside that term, and it is still the clearest read on
+    # whether the clock is actually producing swings.
+    current_air = sensor.data.current_air_time
+    if current_air is not None and current_air.shape[1] >= 8:
+      split_air = current_air[:, :8].view(current_air.shape[0], 2, 4)
+      foot_in_air = 1.0 - (torch.sum(split_force.abs().sum(-1) > 0, dim=2) > 0).float()
+      foot_air_time = torch.max(split_air, dim=2).values * foot_in_air
+      n_air = torch.clamp(foot_in_air.sum(), min=1.0)
+      env.extras["log"]["Metrics/air_time_mean"] = foot_air_time.sum() / n_air
+
+    env.extras["log"]["Metrics/gait_period_mean"] = (period * active_f).sum() / n_active
+    env.extras["log"]["Metrics/gait_phase_swing_ratio"] = (
+      swing_ratio * active_f
+    ).sum() / n_active
+    env.extras["log"]["Metrics/gait_swing_duration_mean"] = (
+      swing_ratio * period * active_f
+    ).sum() / n_active
+    return torch.sum(reward, dim=1)
+
+
+def swing_hip_direction_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  asset_cfg: SceneEntityCfg,
+  command_threshold: float = 0.05,
+) -> torch.Tensor:
+  """Penalize the hip (CROTCH_P) moving opposite to the commanded
+  forward/backward direction while its foot is airborne.
+
+  Swing is hip-driven in real gait (the double-pendulum model): the hip
+  pulls the thigh toward the direction of travel, and knee flexion is a
+  passive/dynamic consequence of the shank trailing behind as the thigh
+  accelerates -- not something to shape directly. Rewarding knee flexion, or
+  penalizing any backward foot motion, would also punish that legitimate
+  passive knee-bend (the foot can drift backward briefly early in swing
+  purely from correct hip-driven dynamics). This only constrains the hip.
+
+  Direction, not a fixed sign: forward command wants the hip flexing
+  (negative CROTCH_P velocity in this robot's convention -- range
+  [-1.92, 0.61], more negative = more flexed); backward command wants the
+  opposite. cmd_vy/wz are ignored entirely (lateral/turning commands don't
+  imply a sagittal hip direction to enforce), and near-zero forward command
+  disables the term rather than picking an arbitrary direction.
+
+  One-sided: driving the hip in the commanded direction, at any speed,
+  costs nothing -- only the opposing direction is penalized.
+
+  ``asset_cfg.joint_names`` must be ``(L_CROTCH_P, R_CROTCH_P)`` in that
+  order (``preserve_order=True``), matching the split-foot sensor's
+  (left, right) column convention.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  hip_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]  # [B, 2] (left, right)
+
+  sensor: ContactSensor = env.scene[sensor_name]
+  _, foot_in_contact = _split_foot_contact_tensors(sensor)
+  foot_in_air = 1.0 - foot_in_contact  # [B, 2]
+
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  cmd_vx = command[:, 0]
+
+  wrong_direction = torch.clamp(torch.sign(cmd_vx).unsqueeze(1) * hip_vel, min=0.0)
+  cost = torch.sum(wrong_direction * foot_in_air, dim=1)
+
+  active = (torch.abs(cmd_vx) > command_threshold).float()
+  return cost * active
+
+
+class stride_frequency_target:
+  """Dense, potential-based reward for each foot's stride period (stance+
+  swing) approaching a fixed target, independent of ``air_time``.
+
+  Nothing else constrains total cycle length: ``air_time`` shapes the swing
+  phase's own duration/quality, but a policy can satisfy its window with
+  quick, small-amplitude steps just as well as slow, deliberate ones -- stance
+  duration is unconstrained. This term taxes the full cycle directly.
+
+  Fixed target, not speed-scaled: measured directly against a known-good
+  deployed checkpoint (2026-07-10_13-52-54, replayed headless with a
+  (commanded speed, period) log at every touchdown) rather than assumed.
+  Result: median period was ~0.55s essentially flat across the whole
+  0.05-0.5 m/s commanded range -- cadence barely depends on speed here (a
+  dynamic-similarity/Froude argument predicts *some* increase with speed,
+  but at these low speeds it's negligible in practice), confirming a fixed
+  target is the right shape, not a speed-dependent one.
+
+  But that ~0.55s is the *current, too-rigid* gait's cadence -- the whole
+  point of this term is to move away from it, not reproduce it, so
+  ``target_period`` should not just be set to the measured value. Picked
+  ~0.9s instead: the leg's natural pendulum half-period (pi*sqrt(L/g) for
+  this robot's 0.72m leg length) is ~0.85s, i.e. roughly the slowest swing
+  a leg can do by swinging ballistically under gravity rather than actively
+  braking against its own dynamics throughout -- going much slower than that
+  (a 3s cycle was considered) trades "supple" for "fighting the pendulum",
+  closer to tai-chi than a relaxed gait.
+
+  First version (Gaussian kernel, charged once per touchdown) stayed
+  numerically ~0 (Episode_Reward ~0.001-0.01) for 5000+ iterations: at
+  period=0.4-0.6s vs target=0.9s the normalized error is 2-3 std out, and
+  exp(-error^2) is negligible that far out, so the policy could not use it
+  to climb toward the target from where it actually starts -- only useful
+  once already close, not to get there. Two fixes:
+  1. Monotonic, one-sided potential instead of a symmetric bell curve:
+     Phi(t) = clamp(t, max=target_period) / target_period, t = time since
+     this foot's last touchdown. Real gradient everywhere below target, flat
+     (no penalty) beyond it -- same one-sided philosophy as
+     ``split_feet_min_swing_height`` ("air time is free, only a low swing
+     peak costs").
+  2. Dense, not event-based: pays dPhi/dt = 1/target_period every step
+     while t < target_period (Ng, Harada & Russell 1999), telescoping to
+     Phi(period) per completed cycle -- credit arrives every step, not once
+     per ~period/dt steps.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
+    del cfg
+    self._t_since_touchdown: torch.Tensor | None = None
+    self._env = env
+
+  def reset(self, env_ids: torch.Tensor) -> None:
+    if self._t_since_touchdown is not None:
+      self._t_since_touchdown[env_ids] = 0.0
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    command_name: str,
+    target_period: float,
+    command_threshold: float = 0.1,
+  ) -> torch.Tensor:
+    sensor: ContactSensor = env.scene[sensor_name]
+    last_air_time = sensor.data.last_air_time
+    last_contact_time = sensor.data.last_contact_time
+    if last_air_time is None or last_contact_time is None:
+      raise RuntimeError("Contact sensor must have track_air_time=True.")
+    if last_air_time.shape[1] < 8:
+      raise RuntimeError("Stride-frequency reward expects 8 contact slots.")
+
+    first_contact = sensor.compute_first_contact(dt=env.step_dt)
+    split_first = first_contact[:, :8].view(first_contact.shape[0], 2, 4)
+    landed = torch.any(split_first, dim=2)  # [B, 2] bool
+
+    if self._t_since_touchdown is None or self._t_since_touchdown.shape != landed.shape:
+      self._t_since_touchdown = torch.zeros_like(landed, dtype=torch.float)
+
+    still_ramping = (self._t_since_touchdown < target_period).float()
+    dense = (env.step_dt / target_period) * still_ramping
+
+    self._t_since_touchdown = torch.where(
+      landed, torch.zeros_like(self._t_since_touchdown), self._t_since_touchdown + env.step_dt
+    )
+
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    linear_speed = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    total_command = linear_speed + angular_norm
+    active = (total_command > command_threshold).float()
+    reward = dense * active.unsqueeze(1)
+
+    split_air = last_air_time[:, :8].view(last_air_time.shape[0], 2, 4)
+    split_contact = last_contact_time[:, :8].view(last_contact_time.shape[0], 2, 4)
+    foot_last_air = torch.max(split_air, dim=2).values
+    foot_last_contact = torch.max(split_contact, dim=2).values
+    period = foot_last_air + foot_last_contact  # [B, 2], stance+swing at touchdown
+    landed_f = landed.float()
+    num_landings = torch.sum(landed_f)
+    env.extras["log"]["Metrics/stride_period_mean"] = torch.sum(
+      period * landed_f
+    ) / torch.clamp(num_landings, min=1.0)
+    env.extras["log"]["Metrics/stride_period_target_mean"] = torch.tensor(
+      target_period, device=period.device
+    )
+    return torch.sum(reward, dim=1)
+
+
 def no_double_flight_penalty(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -671,31 +1005,88 @@ def no_double_flight_penalty(
   return no_contact
 
 
-def standing_single_support_penalty(
-  env: ManagerBasedRlEnv,
-  sensor_name: str,
-  command_name: str,
-  command_threshold: float = 0.1,
-) -> torch.Tensor:
-  """Penalize standing on a single foot when the commanded motion is near zero."""
-  sensor: ContactSensor = env.scene[sensor_name]
-  _, foot_in_contact = _split_foot_contact_tensors(sensor)  # [B, 2]
-  num_feet_in_contact = torch.sum(foot_in_contact, dim=1)
+class standing_single_support_penalty:
+  """Penalize standing on a single foot when the commanded motion is near zero.
 
-  command = env.command_manager.get_command(command_name)
-  assert command is not None
-  linear_norm = torch.norm(command[:, :2], dim=1)
-  angular_norm = torch.abs(command[:, 2])
-  total_command = linear_norm + angular_norm
-  standing = (total_command <= command_threshold).float()
+  Skips a ``grace_period`` after each transition into the standing regime.
+  Commands resample every 3-8 s (velocity_env_cfg), so an env told to stop is
+  almost always mid-stride when it happens, and it physically cannot plant
+  both feet until the current swing finishes -- charging that is charging an
+  unavoidable transition, not a fault. The cost of getting this wrong scales
+  with stride length: the conditional single-support-while-standing rate ran
+  ~44% when the gait period was a fixed 0.833 s and ~85% once the
+  speed-dependent clock stretched it to ~1.7 s, i.e. it roughly doubled with
+  the period, exactly as a fixed per-transition overhead would.
 
-  one_foot = (num_feet_in_contact == 1).float()
-  no_feet = (num_feet_in_contact == 0).float()
-  cost = (one_foot + 4.0 * no_feet) * standing
-  env.extras["log"]["Metrics/standing_single_support_rate"] = torch.mean(
-    (one_foot + no_feet) * standing
-  )
-  return cost
+  ``Metrics/standing_single_support_rate`` counts only post-grace steps, so it
+  measures what is actually charged. ``Metrics/standing_in_grace_rate`` counts
+  the transition window separately: if the grace-period explanation is right,
+  the in-grace rate should stay high while the post-grace one drops well below
+  the ~0.40 the un-graced version was pinned at.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
+    del cfg
+    self.was_standing = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    self.grace_left = torch.zeros(env.num_envs, device=env.device)
+
+  def reset(self, env_ids: torch.Tensor) -> None:
+    self.was_standing[env_ids] = False
+    self.grace_left[env_ids] = 0.0
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    command_name: str,
+    command_threshold: float = 0.1,
+    grace_period: float = 1.5,
+  ) -> torch.Tensor:
+    sensor: ContactSensor = env.scene[sensor_name]
+    _, foot_in_contact = _split_foot_contact_tensors(sensor)  # [B, 2]
+    num_feet_in_contact = torch.sum(foot_in_contact, dim=1)
+
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    total_command = linear_norm + angular_norm
+    standing = total_command <= command_threshold
+
+    newly_standing = standing & (~self.was_standing)
+    self.grace_left = torch.where(
+      newly_standing,
+      torch.full_like(self.grace_left, grace_period),
+      torch.clamp(self.grace_left - env.step_dt, min=0.0),
+    )
+    self.was_standing = standing
+    in_grace = standing & (self.grace_left > 0.0)
+    charged = (standing & (self.grace_left <= 0.0)).float()
+
+    one_foot = (num_feet_in_contact == 1).float()
+    no_feet = (num_feet_in_contact == 0).float()
+    bad = one_foot + no_feet
+
+    # A dense height term was tried here (cost scaled by how high the
+    # airborne foot is held) on the theory that the step penalty below gives
+    # no direction out of the one-legged stance. Reverted 2026-07-26: over
+    # 2000 iterations it moved standing_single_support_rate not at all (flat
+    # at ~0.91) while roughly doubling an already-large penalty on ~40% of the
+    # batch, for a behaviour the policy does not correct. fell_down tripled
+    # from 0.37 to 1.01 and the run collapsed. Whatever keeps the robot on one
+    # leg, it is not a missing gradient.
+    cost = (one_foot + 4.0 * no_feet) * charged
+
+    n_charged = torch.clamp(charged.sum(), min=1.0)
+    n_grace = torch.clamp(in_grace.float().sum(), min=1.0)
+    env.extras["log"]["Metrics/standing_single_support_rate"] = (
+      bad * charged
+    ).sum() / n_charged
+    env.extras["log"]["Metrics/standing_in_grace_rate"] = (
+      bad * in_grace.float()
+    ).sum() / n_grace
+    env.extras["log"]["Metrics/standing_charged_fraction"] = charged.mean()
+    return cost
 
 
 class pd_demand_excess:
@@ -879,7 +1270,19 @@ class split_feet_swing_height:
     self.peak_heights = torch.zeros(
       (env.num_envs, len(self.site_names)), device=env.device, dtype=torch.float32
     )
+    # Latch for edge-detecting a real landing (fully airborne -> any contact).
+    # See the note on spurious landings in split_feet_min_swing_height.
+    self.was_in_air = torch.zeros(
+      (env.num_envs, len(self.site_names)), device=env.device, dtype=torch.bool
+    )
     self.step_dt = env.step_dt
+
+  def reset(self, env_ids: torch.Tensor) -> None:
+    # Without this the peak tracker leaked across episode boundaries: a foot
+    # airborne at termination carried its peak into the next episode's first
+    # landing.
+    self.peak_heights[env_ids] = 0.0
+    self.was_in_air[env_ids] = False
 
   def getFootHeightWrtTerrain(self, env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg):
     asset: Entity = env.scene[asset_cfg.name]
@@ -975,12 +1378,24 @@ class split_feet_min_swing_height(split_feet_swing_height):
 
     split_found = found[:, :8].view(found.shape[0], 2, 4)
     foot_in_air = torch.all(split_found == 0, dim=2)
-    first_contact = torch.any(
-      contact_sensor.compute_first_contact(dt=self.step_dt)[:, :8].view(
-        found.shape[0], 2, 4
-      ),
-      dim=2,
-    )
+
+    # A landing is the fully-airborne -> any-contact *edge*, not
+    # ContactSensor.compute_first_contact. That helper fires per split slot,
+    # so torch.any over a foot's four corners reports a "landing" every time
+    # any single corner re-touches -- and a foot that lands on its heel and
+    # then rolls onto the toe does that two or three times per real step
+    # (flat_support_contacts_mean sat at ~2.4/4, i.e. rolling is the norm).
+    # Only the first of those had ever been airborne; the rest carried
+    # peak_heights == 0, because peak only accumulates while all four corners
+    # are clear and it was zeroed on the preceding spurious landing. Those
+    # zero-peak events were charged the maximum one-sided deficit
+    # (clamp(1 - 0/min_height, 0) = 1.0), a penalty no amount of extra foot
+    # lift could reduce, and they dragged Metrics/peak_height_mean below even
+    # the ~0.021 m the site sits at while merely standing. Arithmetic on that
+    # metric puts the spurious share at ~80-88% of counted landings, which is
+    # why ramping this term's weight from -25 to -200 across earlier runs
+    # never moved the peak height it was supposed to control.
+    landing = self.was_in_air & (~foot_in_air)
 
     self.peak_heights = torch.where(
       foot_in_air,
@@ -992,17 +1407,21 @@ class split_feet_min_swing_height(split_feet_swing_height):
     total_command = linear_norm + angular_norm
     active = (total_command > command_threshold).float()
     deficit = torch.clamp(1.0 - self.peak_heights / min_height, min=0.0)
-    cost = torch.sum(deficit * first_contact.float(), dim=1) * active
-    num_landings = torch.sum(first_contact.float())
-    peak_heights_at_landing = self.peak_heights * first_contact.float()
+    cost = torch.sum(deficit * landing.float(), dim=1) * active
+    num_landings = torch.sum(landing.float())
+    peak_heights_at_landing = self.peak_heights * landing.float()
     env.extras["log"]["Metrics/peak_height_mean"] = torch.sum(
       peak_heights_at_landing
     ) / torch.clamp(num_landings, min=1)
+    env.extras["log"]["Metrics/landings_per_step"] = num_landings / max(
+      found.shape[0], 1
+    )
     self.peak_heights = torch.where(
-      first_contact,
+      landing,
       torch.zeros_like(self.peak_heights),
       self.peak_heights,
     )
+    self.was_in_air = foot_in_air
     return cost
 
 
@@ -1039,38 +1458,79 @@ def feet_slip(
   return cost
 
 
-def split_feet_slip(
-  env: ManagerBasedRlEnv,
-  sensor_name: str,
-  command_name: str,
-  command_threshold: float = 0.01,
-  standing_scale: float = 2.0,
-  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-  """Split-contact version of foot-slip reward aggregated per foot."""
-  asset: Entity = env.scene[asset_cfg.name]
-  contact_sensor: ContactSensor = env.scene[sensor_name]
-  command = env.command_manager.get_command(command_name)
-  assert command is not None
-  linear_norm = torch.norm(command[:, :2], dim=1)
-  angular_norm = torch.abs(command[:, 2])
-  total_command = linear_norm + angular_norm
-  active = (total_command > command_threshold).float()
+class split_feet_slip:
+  """Penalize contact patches sliding across the ground.
 
-  _, foot_in_contact = _split_foot_contact_tensors(contact_sensor)  # [B, 2]
-  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, 2, 2]
-  vel_xy_norm = torch.norm(foot_vel_xy, dim=-1)
-  vel_xy_norm_sq = torch.square(vel_xy_norm)
-  standing = 1.0 - active
-  scale = 1.0 + standing_scale * standing
-  cost = torch.sum(vel_xy_norm_sq * foot_in_contact, dim=1) * scale
-  num_in_contact = torch.sum(foot_in_contact)
-  mean_slip_vel = torch.sum(vel_xy_norm * foot_in_contact) / torch.clamp(
-    num_in_contact, min=1
-  )
-  env.extras["log"]["Metrics/slip_velocity_mean"] = mean_slip_vel
+  Tracks the world xy position of each of the eight foot contact boxes and
+  charges the squared speed of any box that was touching on the previous step
+  and is still touching now. That is what slipping physically is: a patch in
+  contact that moves along the floor.
 
-  return cost
+  Replaces a site-velocity formulation that measured the sole centre instead.
+  A foot rolling over its heel or toe -- which happens on every single
+  touchdown and every push-off -- swings that centre through a real velocity
+  while the contact patch itself is planted, so normal gait was continuously
+  billed as slipping. Per-box tracking has no such failure mode: the pivot box
+  does not move, and the boxes that leave the ground stop being compared
+  because the persistence mask drops them. It also localizes the fault to the
+  corner that actually skidded rather than smearing it over the whole foot.
+
+  Charging only boxes in contact on *both* steps also removes the spurious
+  jump a newly-landed box would otherwise show against a stale position.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
+    asset: Entity = env.scene[cfg.params["asset_cfg"].name]
+    names = [f"{s}_foot{i}_collision" for s in ("left", "right") for i in (1, 2, 3, 4)]
+    geom_names = list(asset.geom_names)
+    missing = [n for n in names if n not in geom_names]
+    if missing:
+      raise RuntimeError(f"split_feet_slip: missing foot collision geoms {missing}")
+    # Same order as the split contact sensor's eight slots.
+    self.geom_ids = [geom_names.index(n) for n in names]
+    self.prev_xy = torch.zeros((env.num_envs, 8, 2), device=env.device)
+    self.prev_contact = torch.zeros((env.num_envs, 8), device=env.device)
+
+  def reset(self, env_ids: torch.Tensor) -> None:
+    self.prev_xy[env_ids] = 0.0
+    self.prev_contact[env_ids] = 0.0
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    command_name: str,
+    command_threshold: float = 0.01,
+    standing_scale: float = 2.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    found = contact_sensor.data.found
+    if found is None or found.shape[1] < 8:
+      raise RuntimeError("split_feet_slip expects 8 split foot contacts.")
+
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    active = (total_command > command_threshold).float()
+    scale = 1.0 + standing_scale * (1.0 - active)
+
+    xy = asset.data.geom_pos_w[:, self.geom_ids, :2]
+    contact = (found[:, :8] > 0).float()
+    persist = contact * self.prev_contact
+    slip_speed = torch.norm(xy - self.prev_xy, dim=-1) / env.step_dt  # [B, 8]
+
+    cost = torch.sum(torch.square(slip_speed) * persist, dim=1) * scale
+
+    self.prev_xy = xy
+    self.prev_contact = contact
+
+    env.extras["log"]["Metrics/slip_velocity_mean"] = torch.sum(
+      slip_speed * persist
+    ) / torch.clamp(torch.sum(persist), min=1.0)
+    env.extras["log"]["Metrics/slip_velocity_max"] = torch.max(slip_speed * persist)
+    return cost
 
 
 def stance_action_acc_l2(
@@ -1104,45 +1564,217 @@ def stance_action_acc_l2(
   return left_stance * left_acc_sq + right_stance * right_acc_sq
 
 
-def flat_support_penalty(
-  env: ManagerBasedRlEnv,
-  sensor_name: str,
-  required_contacts_per_foot: int = 4,
-) -> torch.Tensor:
-  """Enforce a strict 4-or-0 support rule for each foot.
+class action_jerk_l2:
+  """Penalize action *acceleration* -- vibration -- rather than action speed.
 
-  For each foot independently:
-  - if no split contact zone is touching, cost is zero
-  - if any split contact zone is touching, all four must be touching
+  Smooth-but-large and small-but-shaky are opposite failure modes and the
+  first difference cannot tell them apart: a clean stride ramp has a high
+  action velocity and near-zero action acceleration, while a tremor has modest
+  velocity and enormous acceleration. action_rate_l2, the term this replaces
+  (and the single largest regularizer in the objective at ~-5.5 realized),
+  penalized the first difference, so it taxed an ample stride exactly as hard
+  as a jitter -- structurally unable to ask for "soft but moving".
 
-  This is stricter than a generic edge-contact penalty and matches robots that
-  must land and support weight with a flat sole rather than rolling over heel,
-  toe, or edge.
+  Also consolidates stance_action_acc_l2, upper_body_action_acc_l2 and
+  leg_joint_acc_l2, which were three separate second-difference terms over
+  overlapping joint subsets.
+
+  Measured in physical joint units: the raw second difference is multiplied by
+  the action scale before squaring. Raw-action penalties silently change
+  meaning whenever the action scale changes -- the codebase carries several
+  comments about having to rescale weights by scale^2 to compensate, and got
+  the direction wrong at least once. In physical units a coefficient means the
+  same thing regardless, and ``coeffs`` can then express intent (keep the
+  upper body quieter than the legs) instead of correcting for units.
   """
-  sensor: ContactSensor = env.scene[sensor_name]
-  found = sensor.data.found
-  if found is None:
-    raise RuntimeError("Contact sensor must provide 'found' for flat support penalty.")
-  if found.shape[1] < 8:
-    raise RuntimeError("flat_support_penalty expects 8 split foot contacts.")
 
-  contacts = (found[:, :8] > 0).float().view(found.shape[0], 2, 4)
-  contact_count = torch.sum(contacts, dim=2)  # [B, 2]
-  in_contact = (contact_count > 0).float()
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
+    import re
 
-  required_contacts = float(required_contacts_per_foot)
-  deficit = torch.clamp(required_contacts - contact_count, min=0.0) / max(
-    required_contacts, 1.0
-  )
-  cost = torch.sum(torch.square(deficit) * in_contact, dim=1)
+    asset: Entity = env.scene[cfg.params["asset_cfg"].name]
+    term = env.action_manager.get_term(cfg.params.get("action_term_name", "joint_pos"))
+    scale = term.scale
+    n = int(env.action_manager.total_action_dim)
+    if not torch.is_tensor(scale):
+      scale = torch.full((n,), float(scale), device=env.device)
+    scale = scale.to(env.device).reshape(-1, n)[0]  # may be broadcast per-env
 
-  env.extras["log"]["Metrics/flat_support_contacts_mean"] = torch.sum(
-    contact_count * in_contact
-  ) / torch.clamp(torch.sum(in_contact), min=1.0)
-  env.extras["log"]["Metrics/stance_contacts_mean"] = torch.sum(
-    contact_count * in_contact
-  ) / torch.clamp(torch.sum(in_contact), min=1.0)
-  return cost
+    names = [asset.joint_names[i] for i in term.target_ids]
+    coeffs = cfg.params.get("coeffs", {}) or {}
+    w = []
+    for nm in names:
+      c = 1.0
+      for pattern, value in coeffs.items():
+        if re.search(pattern, nm):
+          c = float(value)
+      w.append(c)
+    self._w = torch.tensor(w, device=env.device, dtype=torch.float32) * torch.square(
+      scale
+    )
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    action_term_name: str = "joint_pos",
+    coeffs: dict | None = None,
+  ) -> torch.Tensor:
+    del asset_cfg, action_term_name, coeffs
+    jerk = (
+      env.action_manager.action
+      - 2.0 * env.action_manager.prev_action
+      + env.action_manager.prev_prev_action
+    )
+    cost = torch.sum(self._w * torch.square(jerk), dim=1)
+    env.extras["log"]["Metrics/action_jerk_mean"] = torch.sqrt(
+      torch.clamp(cost, min=0.0)
+    ).mean()
+    return cost
+
+
+class joint_torques_weighted_l2:
+  """Single per-actuator torque minimisation, with per-joint emphasis.
+
+  Replaces three overlapping terms (a flat joint_torques_l2 over every joint
+  plus a dedicated ankle_roll_torque and ankle_pitch_torque on top), which
+  double-taxed the ankles: they paid inside the global term *and* again in
+  their own. Consolidating keeps the intent -- less torque everywhere, more
+  strongly on the ankles -- while making the relative emphasis explicit and
+  tunable in one place instead of emergent from three weights.
+
+  Ankles get the larger coefficients for two reasons: they are the weakest
+  actuators on the leg (45 N.m in roll, 65 N.m in pitch, against 140 at the
+  hip), and a foot that needs a lot of ankle torque to stay down is a foot the
+  robot placed badly -- low ankle effort and flat ground contact are the same
+  good behaviour seen from two angles, so this pushes with flat_support rather
+  than against it.
+
+  ``coeffs`` maps an actuator-name regex to a multiplier; unmatched actuators
+  get 1.0, and later patterns win. Duplicate ``*_motor`` entries are skipped,
+  matching joint_torque_limit_margin_penalty.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
+    import re
+
+    asset: Entity = env.scene[cfg.params["asset_cfg"].name]
+    names = list(asset.actuator_names)
+    ids = [i for i, n in enumerate(names) if not n.endswith("_motor")]
+    if not ids:
+      ids = list(range(len(names)))
+    coeffs = cfg.params.get("coeffs", {}) or {}
+    weights = []
+    for i in ids:
+      c = 1.0
+      for pattern, value in coeffs.items():
+        if re.search(pattern, names[i]):
+          c = float(value)
+      weights.append(c)
+    self._ids = torch.tensor(ids, device=env.device, dtype=torch.long)
+    self._w = torch.tensor(weights, device=env.device, dtype=torch.float32)
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    coeffs: dict | None = None,
+  ) -> torch.Tensor:
+    del coeffs  # consumed in __init__
+    asset: Entity = env.scene[asset_cfg.name]
+    force = asset.data.actuator_force[:, self._ids]
+    sq = torch.square(force)
+    env.extras["log"]["Metrics/torque_sq_total"] = sq.sum(dim=1).mean()
+    return torch.sum(self._w * sq, dim=1)
+
+
+class flat_support_penalty:
+  """Land flat, then stay flat -- scored as two separate things.
+
+  Three components, all gated on the foot actually carrying weight
+  (``load_threshold`` newtons; the robot weighs ~560 N, so ~280 N per foot in
+  double support and ~560 N in single support, while roll-in and roll-out ramp
+  through zero). Gating on bare contact instead, as this used to, charges the
+  roll-through every normal step makes on its way down and again on its way
+  up, and also makes lift-off itself look like a fault.
+
+  1. **Level** -- ``deficit^2`` while loaded, where deficit is how far the
+     corner count sits below ``required_contacts_per_foot``. Anchors the
+     absolute standard, so landing on one corner and never improving is still
+     charged.
+  2. **Loss** -- any drop in corner count while loaded. Rolling onto an edge
+     mid-stance is exactly the failure that hurts hardware.
+  3. **Gain** -- the mirror image, credited. A foot physically cannot place
+     four corners in the same instant; it touches down on one or two and
+     settles. Penalising the level alone therefore taxes that unavoidable
+     settling, so the descent to flat is rewarded rather than merely
+     un-punished.
+
+  Gain and loss use the same coefficient, so a full down-then-up cycle nets to
+  zero and there is nothing to farm; over one loaded stance the pair telescopes
+  to the net change in corner count, i.e. "end flatter than you arrived".
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
+    del cfg
+    self.prev_count = torch.zeros((env.num_envs, 2), device=env.device)
+    self.prev_loaded = torch.zeros((env.num_envs, 2), device=env.device)
+
+  def reset(self, env_ids: torch.Tensor) -> None:
+    self.prev_count[env_ids] = 0.0
+    self.prev_loaded[env_ids] = 0.0
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    required_contacts_per_foot: int = 4,
+    load_threshold: float = 140.0,
+    change_gain: float = 1.0,
+  ) -> torch.Tensor:
+    sensor: ContactSensor = env.scene[sensor_name]
+    found = sensor.data.found
+    force = sensor.data.force
+    if found is None or force is None:
+      raise RuntimeError("Contact sensor must provide 'found' and 'force'.")
+    if found.shape[1] < 8:
+      raise RuntimeError("flat_support_penalty expects 8 split foot contacts.")
+
+    contacts = (found[:, :8] > 0).float().view(found.shape[0], 2, 4)
+    contact_count = torch.sum(contacts, dim=2)  # [B, 2]
+    in_contact = (contact_count > 0).float()
+
+    foot_load = torch.norm(
+      torch.sum(force[:, :8].view(force.shape[0], 2, 4, 3), dim=2), dim=-1
+    )
+    loaded = (foot_load > load_threshold).float()
+
+    required = float(required_contacts_per_foot)
+    deficit = torch.clamp(required - contact_count, min=0.0) / max(required, 1.0)
+    cost = torch.sum(torch.square(deficit) * loaded, dim=1)
+
+    # Only compare against a step that was itself loaded: the first loaded step
+    # of a stance has no meaningful predecessor (the foot was airborne), and
+    # crediting the 0 -> N jump there would pay for merely landing.
+    both_loaded = loaded * self.prev_loaded
+    delta = (contact_count - self.prev_count) / max(required, 1.0)
+    lost = torch.clamp(-delta, min=0.0) * both_loaded
+    gained = torch.clamp(delta, min=0.0) * both_loaded
+    cost = cost + change_gain * torch.sum(lost - gained, dim=1)
+
+    self.prev_count = contact_count
+    self.prev_loaded = loaded
+
+    env.extras["log"]["Metrics/flat_support_contacts_mean"] = torch.sum(
+      contact_count * loaded
+    ) / torch.clamp(torch.sum(loaded), min=1.0)
+    env.extras["log"]["Metrics/stance_contacts_mean"] = torch.sum(
+      contact_count * in_contact
+    ) / torch.clamp(torch.sum(in_contact), min=1.0)
+    env.extras["log"]["Metrics/flat_corners_lost"] = torch.sum(lost) / torch.clamp(
+      torch.sum(both_loaded), min=1.0
+    )
+    env.extras["log"]["Metrics/loaded_foot_fraction"] = loaded.mean()
+    return cost
 
 
 def impact_velocity(

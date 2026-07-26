@@ -124,7 +124,17 @@ def _add_rhps1_foot_features(spec: mujoco.MjSpec) -> None:
     (left_ankle, 1.0, "left"),
     (right_ankle, -1.0, "right"),
   ):
-    add_site_if_missing(body, f"{prefix}_foot", (0.0, 0.0, -0.08), (1, 0, 0, 1))
+    # z = -0.10 puts this at the actual sole plane: the split contact boxes
+    # sit at z = -0.09 with a 0.01 half-height, so their underside -- the
+    # surface the robot really walks on, carrying 100% of the load (the
+    # ankle-link mesh geom measures 0 N) -- is exactly -0.10. It used to be
+    # -0.08, i.e. 20 mm up the ankle, which silently offset every consumer:
+    # Metrics/peak_height_mean read 0.022 for a foot whose sole was 2 mm off
+    # the ground, and min_foot_height's 0.030 "target" was really asking for
+    # 10 mm of clearance. Measuring at the sole also makes foot_slip and
+    # gait_phase's stance term read the velocity of the contacting surface
+    # rather than of a point 20 mm above it.
+    add_site_if_missing(body, f"{prefix}_foot", (0.0, 0.0, -0.10), (1, 0, 0, 1))
     add_site_if_missing(
       body, f"{prefix}_foot_toes", (0.08, 0.0, -0.08), (0.5, 0.5, 0.5, 0.3)
     )
@@ -314,23 +324,21 @@ RHPS1_ACTUATOR_CROTCH_R = FiniteDifferencePdActuatorCfg(
   velocity_damper_vel_percent=0.9,
 )
 
-# effort_limit below: real per-side ELMO current-limit-derived torque bound, NOT the
-# previous flat placeholder (100.0, was ~= URDF's effort="108" for L/R_KNEE_P, rounded).
-# tau_max = eta * N * Kt * i_limit, using PL[1] (peak current, valid <= PL[2]=8s before the
-# drive derates to CL[1]) rather than the continuous CL[1] bound -- deliberately optimistic
-# for now (a training episode is assumed short enough vs. 8s); the flat clamp still can't
-# express the drive's actual derate-after-8s behavior, only its magnitude. eta=0.77 is a
-# calibrated (not measured) estimate: see RHPS1_gains/pdgains/PositionControlSimulation.ipynb
-# "eta calibration" section for the two independent cross-checks it's based on.
-#   N=210, Kt=0.101 Nm/Arms (same both sides, real, RHPS1_gains/FromRealRobot/drive_gains_map.csv)
-#   L: PL[1]=6.79A -> tau_max_peak = 0.77*210*0.101*6.79 ~= 110.9 Nm (was flat 100.0)
-#   R: PL[1]=4.24A -> tau_max_peak = 0.77*210*0.101*4.24 ~=  69.3 Nm (was flat 100.0 -- the
-#      old value EXCEEDED this joint's real peak capability, let alone its continuous one)
+# effort_limit below: flat 70.0 on both sides (was the real per-side ELMO
+# current-limit-derived bound, 110.9 L / 69.3 R -- see git history). Reverted:
+# that derivation (tau_max = eta*N*Kt*i_limit) is only valid for the real
+# robot's actual cascaded P(pos)/PI(vel)+current-saturation loop
+# (ElmoReplicaActuator), not for the flat-gain PD + MuJoCo effort clamp this
+# config actually trains with -- the two aren't the same dynamical system, so
+# a limit derived for one doesn't have a principled meaning applied to the
+# other. Until the real actuator replica is what's actually training (see
+# elmo_replica_actuator.py), 70.0 (the more conservative of the two real
+# per-side numbers) on both knees is the honest placeholder.
 RHPS1_ACTUATOR_KNEE_L = FiniteDifferencePdActuatorCfg(
   target_names_expr=(r"L_KNEE_P",),
   stiffness=20000.0,
   damping=400.0,
-  effort_limit=110.9,
+  effort_limit=70.0,
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
@@ -344,7 +352,7 @@ RHPS1_ACTUATOR_KNEE_R = FiniteDifferencePdActuatorCfg(
   target_names_expr=(r"R_KNEE_P",),
   stiffness=20000.0,
   damping=400.0,
-  effort_limit=69.3,
+  effort_limit=70.0,
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
@@ -933,7 +941,20 @@ for name in (
 # unlike reward-shaping terms, since it redefines what a raw network output
 # means mid-training. Deployment note: the controller yaml action_scale
 # must match the training that produced the deployed ONNX.
-_LEG_SCALE_MULTIPLIER = 1.5
+#
+# 1.5 -> 7.0 (2026-07-24): CROTCH_P's scale at 1.5 was only ~0.0105 rad per
+# raw-action unit, so a hip-flexion excursion in the 0.3-0.4 rad range (the
+# ample, high-knee stride the reward shaping was pushing for) needed raw
+# actions around 30-70 -- 15-35 std out from a std=2.0 policy, essentially
+# unreachable through normal gradient progress, since torque/smoothness/pose
+# penalties all pull the raw-action mean back toward 0 the whole way out.
+# 7.0 puts CROTCH_P at ~0.049 rad/unit, so that same 0.3-0.4 rad excursion
+# needs a raw action around 6-8: reachable without a multi-hundred-iteration
+# walk through penalty-dominated territory. See rewards.py's
+# action_rate_l2/stance_action_acc_l2 comment -- their weights must move
+# with scale^2 (up, not down, since scale increased) to keep the same
+# physical-space smoothness enforcement.
+_LEG_SCALE_MULTIPLIER = 7.0
 for k in list(RHPS1_ACTION_SCALE):
   if k not in [
     n

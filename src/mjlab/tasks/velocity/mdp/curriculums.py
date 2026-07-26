@@ -142,8 +142,12 @@ def air_time_target_curriculum(
   env_ids: torch.Tensor,
   reward_name: str,
   stages: list[dict],
+  gait_reward_name: str | None = None,
 ) -> torch.Tensor:
-  """Raise the air-time bonus ceiling (threshold_max) in stages.
+  """Raise the air-time bonus ceiling (threshold_max) in stages, and (if
+  ``gait_reward_name`` is given) keep the gait_phase clock's period in
+  lockstep with it, so the two never drift into the same conflict this was
+  written to fix.
 
   Unlike a naive threshold ramp starting at step 0 (tried and reverted: the
   early high-exploration phase locked onto whatever short steps saturated a
@@ -155,6 +159,24 @@ def air_time_target_curriculum(
   the ceiling without ever making current behavior suddenly unprofitable.
   overflow_threshold moves with it to keep the anti-hover guard's margin
   proportional. Same mutate-in-place mechanism as ``reward_weight``.
+
+  ``gait_reward_name``: retimes gait_phase's clock period in lockstep with
+  threshold_max at every stage (period = threshold_max / swing_ratio),
+  fixing the class of bug where the two drift out of sync (observed
+  2026-07-24 between air_time and stride_frequency_target's independently-
+  fixed period, a ~25% stance / 75% swing hop-like gait). Tried and
+  reverted 2026-07-25, though: retiming the clock's cadence mid-training --
+  even a single, modest change -- turned out to invalidate whatever the
+  actor had learned to do with a given phase observation (the sin/cos
+  value it read no longer means the same point in the cycle), which is a
+  qualitatively different kind of disruption than a reward-weight change.
+  Run 2026-07-25_18-33-25 was stable through the equivalent point with a
+  *fixed* f_gait, then entered a slow, never-recovering fell_down climb
+  starting ~600 iterations after the first coupled retiming, compounding
+  into full collapse ~1700 iterations later. Left here (unused by the
+  current env_cfgs.py registration) in case a *gradual* retime (ramped
+  over many steps rather than snapped in one) is worth trying later --
+  don't wire this back up as an instant jump.
   """
   del env_ids  # Unused.
   reward_term_cfg = env.reward_manager.get_term_cfg(reward_name)
@@ -163,7 +185,38 @@ def air_time_target_curriculum(
       reward_term_cfg.params["threshold_max"] = stage["threshold_max"]
       reward_term_cfg.params["touchdown_cost"] = stage["touchdown_cost"]
       reward_term_cfg.params["overflow_threshold"] = stage["overflow_threshold"]
+  if gait_reward_name is not None:
+    gait_term_cfg = env.reward_manager.get_term_cfg(gait_reward_name)
+    swing_ratio = gait_term_cfg.params["swing_ratio"]
+    period = reward_term_cfg.params["threshold_max"] / swing_ratio
+    gait_term_cfg.params["f_gait"] = 1.0 / period
   return torch.tensor([reward_term_cfg.params["threshold_max"]])
+
+
+def min_foot_height_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  reward_name: str,
+  stages: list[dict],
+) -> torch.Tensor:
+  """Raise both the min_foot_height weight and its min_height target together.
+
+  Fixing min_height at the final target (0.08m) from the start and only
+  ramping the weight (tried first) plateaued Metrics/peak_height_mean at
+  ~0.006-0.009m for 5000+ iterations regardless of weight: the target was
+  simply out of reach the whole time, so a bigger weight just meant a bigger
+  constant penalty, not a closer target to actually climb toward. Same
+  break-even idea as ``air_time_target_curriculum``: each stage's target
+  should be within reach of the previous stage's converged behavior, not
+  fixed far ahead of it from step 0.
+  """
+  del env_ids  # Unused.
+  reward_term_cfg = env.reward_manager.get_term_cfg(reward_name)
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      reward_term_cfg.weight = stage["weight"]
+      reward_term_cfg.params["min_height"] = stage["min_height"]
+  return torch.tensor([reward_term_cfg.params["min_height"]])
 
 
 def velocity_damper_progress(
