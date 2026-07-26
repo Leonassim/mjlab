@@ -32,6 +32,7 @@ def foot_height(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
 def foot_height_per_foot_scan(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  scan_sensor_names: tuple[str, ...] = ("left_foot_scan", "right_foot_scan"),
 ) -> torch.Tensor:
   """Per-foot height above the terrain directly beneath that foot, [B, F].
 
@@ -41,6 +42,11 @@ def foot_height_per_foot_scan(
   Distinct from ``foot_height`` above, which reads a single whole-body
   TerrainHeightSensor ("foot_height_scan") that the RHPS1 scene does not
   instantiate -- it uses one RayCastSensor per foot instead.
+
+  ``scan_sensor_names`` is an explicit parameter rather than derived from the
+  site names at call time, so play.py's --fast sensor pruning can see the
+  dependency: it keeps only sensors whose names appear in observation params,
+  and a name built at runtime is invisible to it.
 
   Intended as a critic-only (privileged) observation: it needs terrain
   raycasts that do not exist on hardware, so it must never reach the actor.
@@ -59,9 +65,14 @@ def foot_height_per_foot_scan(
   if isinstance(site_names, str):
     site_names = (site_names,)
 
+  if len(scan_sensor_names) != len(site_names):
+    raise RuntimeError(
+      f"foot_height_per_foot_scan: {len(scan_sensor_names)} scan sensors for "
+      f"{len(site_names)} sites"
+    )
   foot_heights = asset.data.site_pos_w[:, asset_cfg.site_ids, 2].clone()
-  for i, name in enumerate(site_names):
-    sensor = env.scene[f"{name}_scan"]
+  for i, sensor_name in enumerate(scan_sensor_names):
+    sensor = env.scene[sensor_name]
     assert isinstance(sensor, RayCastSensor)
     foot_heights[:, i] -= sensor.data.hit_pos_w[..., 2].mean(dim=-1)
   return foot_heights

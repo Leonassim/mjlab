@@ -83,7 +83,6 @@ def run_play(task_id: str, cfg: PlayConfig):
     print("[INFO]: Terminations disabled")
 
   if cfg.fast:
-    env_cfg.rewards = {}
     env_cfg.curriculum = {}
     env_cfg.events = {
       name: term for name, term in env_cfg.events.items() if term.mode == "reset"
@@ -93,18 +92,49 @@ def run_play(task_id: str, cfg: PlayConfig):
     # Sensors are only kept if an observation or termination term references
     # them by name; the rest (typically reward-only sensors) are dropped.
     used_names: set[str] = set()
+
+    def _collect(value) -> None:
+      # Also descends into tuples/lists: a term that depends on several
+      # sensors naturally declares them as a sequence, and only scanning
+      # top-level strings silently dropped those sensors -- the failure then
+      # surfaces as a KeyError deep in observation setup, far from here.
+      if isinstance(value, str):
+        used_names.add(value)
+      elif isinstance(value, (tuple, list, set)):
+        for item in value:
+          _collect(item)
+
     for group in env_cfg.observations.values():
       for term in group.terms.values():
-        used_names.update(v for v in term.params.values() if isinstance(v, str))
+        for v in term.params.values():
+          _collect(v)
     for term_cfg in env_cfg.terminations.values():
-      used_names.update(v for v in term_cfg.params.values() if isinstance(v, str))
+      for v in term_cfg.params.values():
+        _collect(v)
+    # Rewards are dropped *except* those an observation names: some carry
+    # state the policy actually consumes at inference. mdp.gait_phase_tracking
+    # owns the gait clock and mdp.gait_phase_obs reads its phase, so clearing
+    # rewards wholesale froze the clock at zero and fed the actor a standing
+    # cue forever -- a silent behaviour change, not a crash.
+    kept_rewards = {
+      name: term for name, term in env_cfg.rewards.items() if name in used_names
+    }
+    num_rewards = len(env_cfg.rewards)
+    env_cfg.rewards = kept_rewards
+    # A kept reward brings its own sensor dependencies with it, so fold its
+    # params in before pruning sensors -- otherwise gait_phase survives only to
+    # fail on the contact sensor it reads.
+    for term_cfg in kept_rewards.values():
+      for v in term_cfg.params.values():
+        _collect(v)
     num_sensors = len(env_cfg.scene.sensors)
     env_cfg.scene.sensors = tuple(
       s for s in env_cfg.scene.sensors if s.name in used_names
     )
     print(
-      "[INFO]: Fast mode: removed rewards, curriculum, domain randomization, "
-      f"observation noise, and {num_sensors - len(env_cfg.scene.sensors)}/"
+      "[INFO]: Fast mode: removed curriculum, domain randomization, "
+      f"observation noise, {num_rewards - len(kept_rewards)}/{num_rewards} "
+      f"rewards, and {num_sensors - len(env_cfg.scene.sensors)}/"
       f"{num_sensors} scene sensors."
     )
 

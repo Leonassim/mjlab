@@ -241,7 +241,13 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Explicit gait clock (see mdp.gait_phase_tracking / rewards["gait_phase"]
   # below): the policy needs to perceive the prescribed swing/stance timing
   # to act on it, not just be rewarded for matching it by chance.
-  new_terms["gait_phase"] = ObservationTermCfg(func=mdp.gait_phase_obs)
+  # reward_name passed explicitly (not left to the function default) so
+  # play.py --fast can see that this observation depends on the gait_phase
+  # reward term: the clock lives in that term, and fast mode drops any reward
+  # nothing references. A default argument is invisible to that scan.
+  new_terms["gait_phase"] = ObservationTermCfg(
+    func=mdp.gait_phase_obs, params={"reward_name": "gait_phase"}
+  )
   cfg.observations[actor_group_name].terms = new_terms
 
   if "actor_history" in cfg.observations:
@@ -262,7 +268,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       )
     }
     ah_new.update(ah_terms)
-    ah_new["gait_phase"] = ObservationTermCfg(func=mdp.gait_phase_obs)
+    ah_new["gait_phase"] = ObservationTermCfg(
+      func=mdp.gait_phase_obs, params={"reward_name": "gait_phase"}
+    )
     cfg.observations["actor_history"].terms = ah_new
 
   if "critic" in cfg.observations:
@@ -286,7 +294,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       flatten_history_dim=True,
     )
     cfg.observations["critic"].terms["gait_phase"] = ObservationTermCfg(
-      func=mdp.gait_phase_obs
+      func=mdp.gait_phase_obs, params={"reward_name": "gait_phase"}
     )
     # Critic-only (privileged, needs terrain raycasts absent on hardware):
     # terrain-relative height of each foot, with history. min_foot_height
@@ -299,7 +307,13 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # RHPS1 scene does not instantiate, popped just below).
     cfg.observations["critic"].terms["foot_height_scan"] = ObservationTermCfg(
       func=mdp.foot_height_per_foot_scan,
-      params={"asset_cfg": SceneEntityCfg("robot", site_names=site_names)},
+      params={
+        "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
+        "scan_sensor_names": (
+          left_foot_raycast_cfg.name,
+          right_foot_raycast_cfg.name,
+        ),
+      },
       history_length=history_len,
       flatten_history_dim=True,
     )
