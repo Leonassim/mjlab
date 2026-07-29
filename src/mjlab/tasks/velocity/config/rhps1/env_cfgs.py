@@ -435,25 +435,23 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # rather than sharpening a gradient. Base weight -25 / min_height 0.030
     # stays; see the note on swing-height shaping in the air_time block for
     # why the foot skims rather than lifts.
-    # Contact-safety pressure grows in lockstep with air_time/min_foot_height
-    # ambition, not lagging behind it. Staggered off 144k/216k/288k
-    # (2026-07-25) -- see air_time_weight above.
-    cfg.curriculum["impact_vel_weight"] = CurriculumTermCfg(
-      func=mdp.reward_weight,
-      params={
-        "reward_name": "impact_vel",
-        "weight_stages": [
-          {"step": 170_000, "weight": -1.0},
-          {"step": 240_000, "weight": -1.3},
-          {"step": 310_000, "weight": -1.6},
-        ],
-      },
-    )
+    # impact_vel_weight curriculum removed (2026-07-27): base weight set
+    # directly to -2.0 (safety-priority budget bump, see impact_vel
+    # registration), already above every stage this used to ramp through
+    # (-1.0 -> -1.3 -> -1.6). Left wired up, the first stage firing at step
+    # 170k would have *downgraded* the weight back to -1.0. Same reasoning
+    # as the flat_support_weight removal directly below.
     # flat_support_weight curriculum removed (2026-07-26), same reasoning as
     # air_time_target and min_foot_height_weight before it: it ramped -18 ->
     # -30 on a metric that had not moved across three runs (2.0 -> 2.5 of 4,
     # flat through a -9 -> -18 base change). Ramping was never going to fix a
     # term whose obstacle is a competing penalty, not insufficient pressure.
+    #
+    # Every curriculum that used to live in this block has now been removed
+    # (see comments above) -- velocity_damper, air_time_weight,
+    # min_foot_height_weight, impact_vel_weight, flat_support_weight. Nothing
+    # left to register here.
+    pass
   if cfg.curriculum is not None and "command_vel" in cfg.curriculum:
     cfg.curriculum["command_vel"].params["velocity_stages"] = [
       {
@@ -513,7 +511,15 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards.pop("soft_landing", None)
   cfg.rewards["impact_vel"] = RewardTermCfg(
     func=mdp.impact_velocity,
-    weight=-0.7,
+    # -2.0 (was -0.7, 2026-07-27): realized only -0.27 of a -17.1 budget --
+    # essentially unpenalized despite being one of the four explicit safety
+    # priorities (low impact velocity, don't break knees). Cheap headroom,
+    # same budget-ratio reasoning as flat_support above. Skips the existing
+    # impact_vel_weight curriculum's slow ramp to -1.6 by iter ~4500; that
+    # ramp was ambition-paced (matched to how fast air_time/flat_support grew
+    # harder to reach), not safety-paced, and this term does not need to
+    # wait on it.
+    weight=-2.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "limit": 0.15,
@@ -681,7 +687,15 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # penalty back in. A constant small weight gives a gradient toward
     # feasibility without ever outbidding a recovery, and is more legible
     # than the late curriculum the original comment suggested.
-    weight=-1e-4,
+    # -1e-3 (was -1e-4, 2026-07-28). At -1e-4 the realized value was -0.001,
+    # i.e. 0.01% of the penalty budget -- inert, while
+    # Metrics/pd_demand_ratio_mean sits at 5.6 (max 350): the policy asks for
+    # ~5.6x the torque the actuator can deliver and nothing pushes back.
+    # Still deliberately small: the history above is real, a large weight
+    # here made the policy timid on stumble recoveries twice. The heavy
+    # lifting is meant to come from torque_guidance_coef (rl_cfg.py), which
+    # bypasses the advantage entirely and therefore cannot form that loop.
+    weight=-1e-3,
     params={
       "soft_ratio": 1.0,  # no margin above the real effort limit
       "cap": 1.0,
@@ -691,7 +705,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["torque_limit_margin"] = RewardTermCfg(
     func=mdp.joint_torque_limit_margin_penalty,
-    weight=-0.08,
+    # -0.032 (was -0.08, 2026-07-27): uniform penalty rescale, see action_jerk.
+    weight=-0.032,
     params={
       "soft_ratio": 0.8,
       "power": 2.0,
@@ -727,7 +742,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # cut in the same commit; this now clearly outweighs them.
   cfg.rewards["flat_support"] = RewardTermCfg(
     func=mdp.flat_support_penalty,
-    weight=-15.0,
+    # -11 (was -7, then -15 before that, 2026-07-27): budget-ratio framework
+    # replaces per-term isolation. TOTAL-/TOTAL+ realized ratio measured
+    # ~2:1 at -7 (survived) vs ~4:1 at pre-rescale weights (collapsed) --
+    # 2.5:1 is the working safety ceiling. flat_support's realized share was
+    # only -2.94 of -17.1, cheap headroom to buy more of exactly what the
+    # user's safety priorities call out (foot flat at every contact). The
+    # escape closure it carries is unchanged.
+    weight=-11.0,
     params={
       # Stays at 4: all four corners genuinely can touch at once. The four
       # contact boxes are exactly coplanar at the nominal keyframe (world
@@ -746,6 +768,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       # an out-of-reach level no longer silences the whole term the way the
       # old absolute-only version did.
       "sensor_name": feet_ground_split_cfg.name,
+      "command_name": "twist",
       "required_contacts_per_foot": 4,
     },
   )
@@ -760,6 +783,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # briefly doubled. Halved so it still expresses the preference without
   # dominating, pending an actual explanation. standing_joint_vel now covers
   # the "hold still" half of the intent with a dense signal.
+  # Back to -12 (2026-07-26, same pass that closed flat_support's escape
+  # hatch). Halving it was the wrong call: the term was not weak, it was being
+  # cancelled -- lifting a foot saved 5.86 on flat_support against this
+  # penalty's 6.0. With that saving now turned into a 9.14 *extra* charge, the
+  # gap between one foot and two at zero command is ~21 per step instead of
+  # 0.14, which is the large, unambiguous shift the behaviour needs.
   cfg.rewards["standing_single_support"] = RewardTermCfg(
     func=mdp.standing_single_support_penalty,
     weight=-6.0,
@@ -771,7 +800,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["joint_torque_rate_l2"] = RewardTermCfg(
     func=mdp.joint_torque_rate_l2,
-    weight=-4e-5,
+    # -1.6e-5 (was -4e-5, 2026-07-27): uniform penalty rescale, see action_jerk.
+    weight=-1.6e-5,
     params={
       "asset_cfg": SceneEntityCfg(
         "robot",
@@ -862,10 +892,21 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # largest term in the whole objective.
   cfg.rewards["joint_torques_l2"] = RewardTermCfg(
     func=mdp.joint_torques_weighted_l2,
-    weight=-3e-5,
+    # -1.2e-5 (was -3e-5, 2026-07-27): uniform penalty rescale, see action_jerk.
+    weight=-1.2e-5,
     params={
       "asset_cfg": SceneEntityCfg("robot"),
-      "coeffs": {r"ANKLE_R": 4.0, r"ANKLE_P": 2.0},
+      # ANKLE_R 4.0 -> 1.5 (2026-07-28). flat_support has been stuck at
+      # ~2.67/4 contacts for thousands of iterations, and its own comment
+      # explains why the policy never learns the fix: holding the sole flat
+      # against the ~3.4 deg ankle-roll droop needs *sustained ankle-roll
+      # torque*, and that comment assumed the conflict was gone once
+      # ankle_roll_torque/ankle_pitch_torque were deleted. It wasn't -- this
+      # 4x coefficient reproduces the same tax in reduced form, on exactly
+      # the joint whose torque buys flat contact. Raising flat_support
+      # instead would be pushing harder on an already-dominant term (-3.56,
+      # the largest single penalty) against a cost it cannot outbid.
+      "coeffs": {r"ANKLE_R": 1.5, r"ANKLE_P": 2.0},
     },
   )
   # ankle_roll_torque / ankle_pitch_torque removed (2026-07-26). Three terms
@@ -926,7 +967,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # counts a rolling foot as sliding), so the inherited weight left the term
   # realizing -0.002 -- entirely inert, for a failure mode that causes falls.
   # -20 restores it to ~-0.13 at current behaviour and scales with real slip.
-  cfg.rewards["foot_slip"].weight = -20.0
+  # -28 (was -20, 2026-07-27): realized only -0.33 of -17.1 budget, cheap
+  # headroom -- same budget-ratio reasoning as flat_support/impact_vel above.
+  cfg.rewards["foot_slip"].weight = -28.0
   # Smoothness pressure lives in joint (physical) space; action-space
   # rate/acc terms tax exploration noise itself and are kept small to avoid
   # premature std collapse. They use an L2-squared kernel on raw actions
@@ -968,9 +1011,39 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # here -- it is what those two weights already implied once the action
   # scales are divided out, i.e. the old config was asking for a far stiffer
   # upper body than legs and simply expressing it through units.
+
+  # action_jerk restored at -150 (2026-07-27). Briefly blamed for a collapse
+  # and removed; that was wrong. Run 2026-07-26_20-47-53 ran this exact weight
+  # and produced the best numbers of the session (flat contacts 2.91/4, sole
+  # clearance 15.3 mm, fell_down 0.17). Removing it made things far worse
+  # (fell_down 28.7 by iteration 3000), so it is load-bearing. The collapse it
+  # was blamed for began with the standing changes below, not here -- the jerk
+  # rising before fell_down was correlation, both being driven by the same
+  # underlying instability.
   cfg.rewards["action_jerk"] = RewardTermCfg(
     func=mdp.action_jerk_l2,
-    weight=-150.0,
+    # -45 (was -150, 2026-07-27). Not a re-run of the earlier "blame the jerk"
+    # mistake -- this is a whole-objective rescale, not a targeted cut. At iter
+    # 1596 the realized budget was TOTAL+ 6.03 against TOTAL- 23.69, i.e. the
+    # sum of penalties was ~4x the sum of task rewards, and action_jerk alone
+    # (-9.77) outweighed every positive term combined. With a net-negative
+    # per-step return, terminating early dominates surviving: the episode
+    # sheds the whole remaining penalty stream and pays termination_penalty
+    # once. fell_down climbing 0.73 -> 1.29 while *every* penalty magnitude
+    # shrank and *every* task reward fell is exactly that signature. The five
+    # dominant penalties are cut ~2.5x together (see flat_support,
+    # joint_torques_l2, joint_torque_rate_l2, torque_limit_margin,
+    # standing_joint_vel) to bring TOTAL- to roughly TOTAL+. Their ratios to
+    # each other are unchanged, so this does not re-litigate any of the
+    # relative-weight decisions above.
+    # -90 (was -45, 2026-07-28): the robot still visibly vibrates. -45 came
+    # from the whole-objective rescale, not from evidence that -45 is right;
+    # -150 ran earlier this session with the best contact metrics of the
+    # whole session and no collapse, so -90 is well inside proven-survivable
+    # territory. Note this term is a *second* difference, so it targets
+    # tremor specifically and is structurally blind to the slow sway --
+    # that one is standing_base_motion's job, not a bigger weight here.
+    weight=-90.0,
     params={
       "asset_cfg": SceneEntityCfg("robot"),
       "coeffs": {r"CHEST|HEAD|SHOULDER|ELBOW|WRIST": 25.0},
@@ -978,10 +1051,29 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["standing_joint_vel"] = RewardTermCfg(
     func=mdp.standing_joint_vel_l2,
-    weight=-0.5,
+    # -0.7 (was -0.2, itself down from -0.5 in the 2026-07-27 uniform
+    # rescale). Realized only -0.29 at -0.2, i.e. ~2.6% of the penalty
+    # budget, while the robot visibly vibrates at standstill. Being an L2 sum
+    # this only ever bites on *fast* residual motion -- the slow whole-body
+    # sway is standing_base_motion's job below, not this one's.
+    weight=-0.7,
     params={
       "command_name": "twist",
       "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot"),
+    },
+  )
+  # New (2026-07-28): nothing penalized base translation at zero command, and
+  # both terms that could have (track_linear_velocity's wide 0.40 kernel,
+  # standing_joint_vel's squared norm) go soft exactly in the slow-drift
+  # regime -- see the function docstring for the arithmetic. L1 by design.
+  cfg.rewards["standing_base_motion"] = RewardTermCfg(
+    func=mdp.standing_base_motion,
+    weight=-1.5,
+    params={
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "ang_weight": 0.5,
       "asset_cfg": SceneEntityCfg("robot"),
     },
   )

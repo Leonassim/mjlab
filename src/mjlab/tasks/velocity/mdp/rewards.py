@@ -1190,6 +1190,53 @@ def standing_joint_vel_l2(
   return joint_vel_sq * standing
 
 
+def standing_base_motion(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  ang_weight: float = 0.5,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize whole-body drift of the base when the command is near zero.
+
+  Complements ``standing_joint_vel_l2``, which is *not* enough on its own for
+  the observed failure: a slow whole-body sway at standstill is essentially
+  free under the current objective, for three separate reasons.
+
+    1. ``track_linear_velocity``'s kernel is deliberately wide (std 0.40, see
+       its registration comment: a tight one punishes the COM oscillation a
+       long stride naturally causes). At zero command a 0.1 m/s sway costs
+       ``1 - exp(-0.01/0.16)`` ~= 6% of that term -- about 0.15 out of ~2.5.
+    2. ``standing_joint_vel_l2`` squares the joint velocities, so slow motion
+       is quadratically discounted: it catches fast tremor, not slow drift.
+    3. Nothing penalized base *translation* at all. ``body_ang_vel`` and
+       ``angular_momentum`` only cover rotation.
+
+  So this is deliberately an L1 (not L2) norm: the whole point is to keep the
+  cost proportional at small velocities instead of vanishing quadratically,
+  which is precisely where the existing terms stop biting. Linear and angular
+  parts are summed with ``ang_weight`` scaling the angular contribution
+  (rad/s and m/s are not comparable units; the default keeps a ~0.5 rad/s
+  wobble worth about the same as a 0.25 m/s drift).
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  lin_speed = torch.norm(asset.data.root_link_lin_vel_b, dim=1)
+  ang_speed = torch.norm(asset.data.root_link_ang_vel_b, dim=1)
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  standing = (total_command <= command_threshold).float()
+  cost = (lin_speed + ang_weight * ang_speed) * standing
+  n_standing = standing.sum().clamp(min=1.0)
+  env.extras["log"]["Metrics/standing_base_lin_speed"] = (
+    lin_speed * standing
+  ).sum() / n_standing
+  env.extras["log"]["Metrics/standing_base_ang_speed"] = (
+    ang_speed * standing
+  ).sum() / n_standing
+  return cost
+
+
 def foot_flat_orientation(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -1727,9 +1774,11 @@ class flat_support_penalty:
     self,
     env: ManagerBasedRlEnv,
     sensor_name: str,
+    command_name: str,
     required_contacts_per_foot: int = 4,
     load_threshold: float = 140.0,
     change_gain: float = 1.0,
+    standing_threshold: float = 0.1,
   ) -> torch.Tensor:
     sensor: ContactSensor = env.scene[sensor_name]
     found = sensor.data.found
@@ -1750,7 +1799,28 @@ class flat_support_penalty:
 
     required = float(required_contacts_per_foot)
     deficit = torch.clamp(required - contact_count, min=0.0) / max(required, 1.0)
-    cost = torch.sum(torch.square(deficit) * loaded, dim=1)
+
+    # Charging only loaded feet is right while walking -- a swing foot has no
+    # business being flat -- but at zero command it hands the policy a way to
+    # *avoid* this penalty by lifting a foot instead of fixing it. Measured on
+    # a standing robot: both feet down costs 11.72 per step (only ~1.5 of 4
+    # corners land passively), lifting one drops that to 5.86. That 5.86
+    # saving all but cancelled standing_single_support's 6.0, leaving a net
+    # 0.14 -- noise next to track_linear_velocity's 2.8, so the robot was
+    # effectively indifferent between one foot and two. So when the command is
+    # ~zero, an unloaded foot is charged the *full* deficit rather than
+    # nothing: it should be down, and not being down is the worst possible
+    # contact, not the absence of one. Standing on one foot now costs more
+    # than standing badly on two, which is the ordering we actually want.
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    standing = (total_command <= standing_threshold).float().unsqueeze(1)
+    charge_mask = torch.clamp(loaded + standing * (1.0 - loaded), max=1.0)
+    effective_deficit = torch.where(
+      (standing > 0) & (loaded == 0), torch.ones_like(deficit), deficit
+    )
+    cost = torch.sum(torch.square(effective_deficit) * charge_mask, dim=1)
 
     # Only compare against a step that was itself loaded: the first loaded step
     # of a stance has no meaningful predecessor (the foot was airborne), and
