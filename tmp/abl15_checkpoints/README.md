@@ -13,7 +13,11 @@ un dépôt public.
 |---|---|---|
 | `model_10050.pt` | 10050 | **candidat principal** — meilleur compromis couple/stabilité |
 | `model_14999.pt` | 14999 | final, pour comparer |
-| `2026-08-05_11-17-44.onnx` | 14999 | export ONNX du **final** uniquement, pas du 10050 |
+| `model_10050.onnx` | 10050 | export ONNX du candidat, pour mc_rtc (slot 1) |
+| `2026-08-05_11-17-44.onnx` | 14999 | export ONNX du final (celui que l'entraînement écrit) |
+
+Pour exporter l'ONNX d'un autre checkpoint :
+`uv run python scripts/tools/export_onnx.py 2026-08-05_11-17-44 model_XXXX.pt`
 
 ## Comment
 
