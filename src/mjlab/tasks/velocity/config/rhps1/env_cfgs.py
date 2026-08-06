@@ -248,6 +248,94 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   new_terms["gait_phase"] = ObservationTermCfg(
     func=mdp.gait_phase_obs, params={"reward_name": "gait_phase"}
   )
+  # Feed back the action as *executed*, not as requested. The actuator projects
+  # any command whose PD demand exceeds the effort limit back onto the
+  # executable set, so on those steps mdp.last_action reports an intent the
+  # plant never carried out, and the policy's own history misdescribes the
+  # dynamics it is trying to model (18% of steps early in the 2026-07-29 run).
+  #
+  # This is not about torque saturation, which is normal for high-gain position
+  # control and costs nothing -- kp=20000 against a 140 N.m hip has a 0.4 deg
+  # linear range, the real robot rides its limit constantly. It is about two
+  # different commands producing one identical execution: the policy cannot
+  # notice that if it only ever observes what it asked for.
+  #
+  # Applied to the actor group and to actor_history below; they must agree, or
+  # the history says something different from the current step about the same
+  # quantity.
+  # executed_action again: the projection is back on for the combination run
+  # (_TORQUE_FEASIBILITY_RATIO = 1.0), so the raw action and the executed one
+  # diverge on every step where the projection bites -- which is most of them,
+  # the feasible half-window is 0.143 action units against a 1.0-unit scale.
+  # Feeding back intent instead of execution would put the hidden state straight
+  # back in, and this pairs with the history below rather than replacing it.
+  #
+  # history_length 5 on actions (Leo, 2026-08-01), treated as a base change and
+  # not as an ablation. Rationale: with the velocity-target EMA at alpha=0.8,
+  # qd* depends on the whole history of position targets and nothing in the
+  # observation carried it -- the actuator was non-Markovian from the policy's
+  # point of view. Five frames recover 1 - 0.8^5 = 67% of that state. Costs 120
+  # observation dimensions.
+  if "actions" in new_terms:
+    new_terms["actions"] = ObservationTermCfg(
+      func=mdp.executed_action, history_length=history_len, flatten_history_dim=True
+    )
+  # gait_phase history: asked for in the same breath. Less defensible on its own
+  # -- the phase is a deterministic clock, so the current frame already
+  # determines every past one -- but it is 16 dimensions and it makes the two
+  # history-bearing term families consistent.
+  if "gait_phase" in new_terms:
+    new_terms["gait_phase"] = ObservationTermCfg(
+      func=mdp.gait_phase_obs,
+      params={"reward_name": "gait_phase"},
+      history_length=history_len,
+      flatten_history_dim=True,
+    )
+  # Peak raw torque of the last policy step, per joint, normalised by the effort
+  # limit (Leo, 2026-08-04). The critic already had joint_torques, but post-clamp:
+  # past the limit every command reports the same number, so it cannot say how far
+  # past. The actor had nothing and inferred saturation from joint_pos/joint_vel.
+  #
+  # A longer window than history_len (5), because that is the point *here* -- a
+  # saturation builds over tens of milliseconds and the policy needs to see it
+  # coming -- while on command, which changes on a 3-8 s resample, it would be
+  # dimensions of nothing. Kept local for that reason: at 20 across every block
+  # the observation goes 266 -> 1466 dims; local, it is 566, and the C++ side has
+  # one new block to build instead of five to resize.
+  #
+  # 20, and local rather than raising history_len for every block: a saturation
+  # builds over tens of milliseconds and the policy needs to see it coming, while
+  # on command -- which changes on a 3-8 s resample -- the same window would be 45
+  # dimensions of nothing. At history_len 20 everywhere the observation would go
+  # 266 -> 1466 dims and the C++ deployment would have five blocks to resize
+  # instead of one to add. Local, it is 866.
+  #
+  # 10 (566-dim actor obs), not the 20 first asked for. Measured grid on an 11.3 GB
+  # card, all failures being "Warp CUDA error 2: out of memory" in
+  # wp.capture_launch at iteration 0:
+  #
+  #   history  video  expandable_segments   result
+  #      20     yes          no             OOM
+  #      20     no           no             OOM
+  #      10     yes          no             OOM
+  #      10     no           no             OK  (10.16 GB)
+  #       5     yes          yes            OK  (10.31 GB)
+  #      20     yes          yes            OOM
+  #      10     yes          yes            OK  (10.66 GB)   <- this
+  #
+  # Two lessons. Most of those failures were fragmentation, not capacity: running
+  # the trainer under PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True is what
+  # makes video and a 566-dim observation coexist, and it must be tried before
+  # shrinking anything -- four restarts were spent cutting history and dropping
+  # video to work around an allocator setting. But it is not unlimited: at 866 dims
+  # the run OOMs even with it, so 20 is genuinely out of reach here.
+  #
+  # THE TRAINER MUST BE LAUNCHED WITH THAT ENV VAR. Without it this config OOMs.
+  new_terms["raw_torque"] = ObservationTermCfg(
+    func=mdp.raw_torque_ratio,
+    history_length=10,
+    flatten_history_dim=True,
+  )
   cfg.observations[actor_group_name].terms = new_terms
 
   if "actor_history" in cfg.observations:
@@ -271,6 +359,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     ah_new["gait_phase"] = ObservationTermCfg(
       func=mdp.gait_phase_obs, params={"reward_name": "gait_phase"}
     )
+    # Inert: there is no actor_history group in this configuration (the actor
+    # carries its own per-term history_length instead). Kept for the variants
+    # that do define one; they must agree with the actor above.
+    if "actions" in ah_new:
+      ah_new["actions"] = ObservationTermCfg(func=mdp.last_action)
     cfg.observations["actor_history"].terms = ah_new
 
   if "critic" in cfg.observations:
@@ -367,6 +460,22 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   twist_cmd.ranges.heading = None
   twist_cmd.rel_heading_envs = 0.0
   twist_cmd.rel_standing_envs = 0.4
+  # vel_ramp_rate left at None (teleporting command) -- UNTESTED, not rejected.
+  #
+  # Setting it to 0.5 to match NewRLQPController's ramp would put the walk-to-stand
+  # transition, the regime the deployed robot spends ~0.6 s in on every stop, into
+  # the training distribution; today it is never sampled at all, because the command
+  # teleports at every resample. That argument still stands.
+  #
+  # Two runs on 2026-08-03 appeared to reject it. They are void: both trained with
+  # `num_envs` at its default of 1 instead of 4096 (the launch command omitted
+  # --env.scene.num-envs), so PPO saw 48 samples per iteration instead of 196608 and
+  # no configuration could have learned. Check the "Number of environments" line the
+  # trainer prints at startup before trusting any comparison.
+  #
+  # The one thing measured off-run and still valid: scratch/cmd_band.py shows the
+  # ramp does NOT starve gait_phase -- it leaves slightly more time above the 0.1
+  # gate, not less.
   twist_cmd.viz.z_offset = 1.0
   twist_cmd.ranges.lin_vel_x = (-0.1, 0.1)
   twist_cmd.ranges.lin_vel_y = (-0.15, 0.15)
@@ -449,8 +558,23 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     #
     # Every curriculum that used to live in this block has now been removed
     # (see comments above) -- velocity_damper, air_time_weight,
-    # min_foot_height_weight, impact_vel_weight, flat_support_weight. Nothing
-    # left to register here.
+    # min_foot_height_weight, impact_vel_weight, flat_support_weight.
+    #
+    # No torque_feasibility curriculum either, and this one is worth stating
+    # rather than leaving as an absence, because a ramp 3.0 -> 1.0 was drafted
+    # here first (2026-07-29) and then dropped as pointless.
+    #
+    # The projection is set at ratio 1.0 constantly in rhps1_constants.py. At
+    # 1.0 it delivers exactly the torque MuJoCo's effort clamp already
+    # delivered -- tau is affine and increasing in q*, so clamping tau and
+    # projecting q* onto tau's preimage are the same operation. Same dynamics,
+    # same return, so there is no adaptation for a curriculum to ease: a ramp
+    # would interpolate between two settings with *identical* physics, buying
+    # nothing while re-admitting un-executable commands early on. That is the
+    # opposite of the point.
+    #
+    # ``curriculums.torque_feasibility_progress`` still exists as an escape
+    # hatch, unregistered. Wire it only if a run somehow argues for it.
     pass
   if cfg.curriculum is not None and "command_vel" in cfg.curriculum:
     cfg.curriculum["command_vel"].params["velocity_stages"] = [
@@ -619,6 +743,32 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "command_threshold": 0.1,
     },
   )
+  # Ablation 2 (2026-07-31), on top of the min_foot_height fix. Every other
+  # term that touches single-support balance is a verdict -- flat_support,
+  # standing_single_support and the torque family all say "that was bad"
+  # without saying which way to move. This one names the next action: before
+  # the clock says foot i swings, get the load off foot i. It rides
+  # gait_phase's own clock, so it stays meaningful as the period and duty
+  # cycle change with speed.
+  #
+  # +1.0, not gait_phase's 2.0: the term is bounded by 1 per foot and active
+  # ~30% of the time (two feet x a 0.15 window), so ~0.2 realized. It is meant
+  # to be directional, not dominant -- abl1 just bought swing_height 0.0069 ->
+  # 0.0137 at the cost of ~15% of foot_vel_max, and a term strong enough to
+  # reshape the gait could spend that gain back.
+  cfg.rewards["preswing_transfer"] = RewardTermCfg(
+    func=mdp.preswing_weight_transfer,
+    weight=1.0,
+    params={
+      "sensor_name": feet_ground_split_cfg.name,
+      "reward_name": "gait_phase",
+      "window": 0.15,
+      # 57.64 kg -> 565 N. Only sets where `support` saturates, so it needs to
+      # be the real weight and not a round number: too low and flight stops
+      # being distinguishable from stance.
+      "body_weight": 565.0,
+    },
+  )
   # stride_frequency_target (reactive, post-hoc period measurement) is no
   # longer registered here: gait_phase already prescribes the same period
   # up front, continuously, and the actor can see it coming via
@@ -695,10 +845,75 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # here made the policy timid on stumble recoveries twice. The heavy
     # lifting is meant to come from torque_guidance_coef (rl_cfg.py), which
     # bypasses the advantage entirely and therefore cannot form that loop.
-    weight=-1e-3,
+    # -0.05 (was -1e-3, 2026-07-29), and re-banded. Its job changed: the hard
+    # cap is now structural (FiniteDifferencePdActuator's
+    # torque_feasibility_ratio = 3.0 projects the position target, so the demand
+    # cannot exceed 3x the limit by construction), and this term only has to
+    # supply a *gradient before the wall* so the policy prefers the interior
+    # rather than riding the projection -- riding it would recreate exactly the
+    # flat plateau the projection exists to remove, just at ratio 3 instead of
+    # infinity.
+    #
+    # That is why the two earlier collapses at large weights (up to -8.0, both
+    # producing a policy too timid to catch a stumble, whose falls then fed the
+    # penalty back in) do not argue against -0.05 here: with the projection in
+    # place a big corrective action is still *executed*, merely projected onto
+    # the feasible set, so the recovery is not suppressed -- only its infeasible
+    # component is. Budget check: excess is capped at 1.5 per joint and
+    # realistically only the leg joints pay, so the realized term should land
+    # around -0.15 to -0.3, a few percent of the penalty budget, nowhere near
+    # the ~2.5:1 TOTAL-/TOTAL+ working ceiling. Watch it on the first run.
+    #
+    # -0.02 (was -0.05 the same day), after measuring the live budget on run
+    # 2026-07-29_01-13-36 at iter 9096 rather than estimating it. Realized
+    # there was -0.0085 at weight -1e-3, i.e. sum(excess) ~ 8.6 at
+    # soft_ratio 1.0 / cap 1.0; re-banded to 0.7 / 4.0 that sum lands around
+    # 40-50, so -0.05 would have realized ~-2.0 -- third-largest penalty in the
+    # run, and it would have pushed the torque family (this +
+    # torque_limit_margin -0.57 + joint_torques_l2 -1.03 +
+    # joint_torque_rate_l2 -0.75) to ~35% of a 10.3 penalty budget against an
+    # 11.1 task budget. That concentration is how the two earlier collapses
+    # started. -0.02 realizes ~-0.8, keeps the family near 28%, and is still
+    # 20x the inert level it replaces.
+    #
+    # It does not need to be large: with the projection active, an infeasible
+    # command no longer *buys* anything (it produces the same torque as its
+    # projection), so this term only has to break a tie, not win an argument.
+    # -0.02 and the 0.7/4.0 band, finally applied (2026-08-01): every comment
+    # above described them, the code was still at -0.001 / 1.0 / 1.0. Same
+    # comment-ahead-of-code gap as the velocity filter had.
+    #
+    # Caveat this run carries, stated because the reasoning above assumes
+    # otherwise: the band and the weight were derived *with the projection
+    # active* ("0.7, i.e. below the projection's ratio of 1.0", "with the
+    # projection in place a big corrective action is still executed, merely
+    # projected, so the recovery is not suppressed"). Here the projection is
+    # OFF, so this term is alone against the two collapses documented above --
+    # a policy too timid to catch a stumble, whose falls then feed the penalty
+    # back in. Those were at weights up to -8.0, i.e. 400x this one, and the
+    # realized value here should land near -0.8. Watch Episode_Termination/
+    # fell_down against the realized Episode_Reward/pd_demand_excess: if falls
+    # climb while the term grows, that is the loop restarting.
+    weight=-0.02,
     params={
-      "soft_ratio": 1.0,  # no margin above the real effort limit
-      "cap": 1.0,
+      # 0.7, i.e. *below* the projection's ratio of 1.0, not above it. This
+      # term is the only thing that moves the raw action into the window: the
+      # projection is local to the actuator's compute, so
+      # ``data.joint_pos_target`` (what this reads) keeps the raw target and
+      # the measured ratio stays honest -- but a projection supplies no
+      # gradient of its own, it just discards the excess. A soft_ratio of 1.0
+      # or more would only start paying once the command is already
+      # infeasible, and riding the projection is itself a flat region; 0.7
+      # gives a pull that begins inside the feasible set.
+      #
+      # cap 4.0, not 2.0: the cap is a clamp, so every joint past it pays the
+      # same and the gradient there is exactly zero -- capping at 2.0 with the
+      # live ratio at 3.26 (run 2026-07-29_01-13-36, iter 9096) would have put
+      # most leg joints in a second flat region, which is the same mistake this
+      # whole change is undoing. 4.0 keeps the observed range on the sloped
+      # part while still bounding the tail (the ratio max has hit 350).
+      "soft_ratio": 0.7,
+      "cap": 4.0,
       "ema_dt": 0.04,
       "asset_cfg": SceneEntityCfg("robot"),
     },
@@ -770,6 +985,25 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "sensor_name": feet_ground_split_cfg.name,
       "command_name": "twist",
       "required_contacts_per_foot": 4,
+      # Ablation 3 (2026-07-31). Counts a corner as down when it sits within
+      # 1 mm of the *lowest* corner of the same foot, instead of waiting for
+      # the contact sensor to fire. Relative z, not an absolute plane: the
+      # four patches share one rigid body, so differences between their centre
+      # heights equal differences between their lowest corners and tilt
+      # cancels without needing the orientation. Comparing centres to the
+      # ground does not work -- at a 0.0525 m half-length, 0.01 rad of tilt
+      # moves the lowest corner by 525 um.
+      #
+      # 1 mm is deliberately small, and the sensitivity is the reason: it is
+      # 0.44 deg across the 130 mm sole, against the 3.4 deg ankle droop this
+      # term exists to remove. So it forgives sensor-threshold noise and the
+      # irregularity the real robot will have, without forgiving a tilted
+      # stance. Measured effect on a settled robot: 2.15 -> 3.87 corners.
+      #
+      # This replaces the geom margin+gap route, which is unavailable here:
+      # mujoco_warp raises NotImplementedError for a non-zero margin on
+      # box-box pairs under MULTICCD.
+      "corner_tolerance": 0.001,
     },
   )
   # -12 -> -6 (2026-07-26). At -12 this had become the largest single term in
@@ -945,9 +1179,39 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards.pop("foot_swing_height", None)
   # Charged once per landing, not per airborne step: air time is free, only
   # landing with a low swing peak costs.
+  #
+  # Landing-triggered -> clock-gated (2026-07-30). The comment above describes
+  # the defect without naming it: "air time is free, only landing with a low
+  # swing peak costs" also means *never leaving the ground costs nothing*. A
+  # landing is the transition from fully airborne to any contact, so a robot
+  # that keeps a toe down never triggers one and never pays.
+  #
+  # Measured by perturbation on model_450: multiplying the deterministic
+  # policy's action by 3 made it move 7x faster (0.0072 -> 0.0545 m/s) with
+  # zero terminations, and this term alone went -0.51 -> -12.64 -- half of the
+  # total reward lost. At weight -100 and a 5 mm peak against a 15 mm floor,
+  # every attempted step cost ~67 while standing still cost 0. The term whose
+  # only purpose is to make the robot lift its foot was the largest single
+  # penalty on lifting it.
+  #
+  # That also explains what env_cfgs recorded as an unexplained plateau:
+  # peak_height_mean "never responded to the weight anywhere" from -25 to -200
+  # across two curricula. It could not -- more weight makes attempting a step
+  # more expensive, so each escalation deepened the trap.
+  #
+  # mdp.clock_swing_height_deficit charges the shortfall over the *prescribed*
+  # swing window instead, whether or not the foot actually left the ground:
+  # standing through a swing pays full, 5 mm pays a little less, 15 mm pays
+  # nothing. Monotone in height, impossible to dodge by staying planted, and no
+  # per-landing bonus to farm with a chopped cadence.
+  #
+  # -100 -> -5: it now fires on ~25% of steps per foot instead of ~0.05
+  # landings per step, roughly a 10x higher rate. -5 puts a fully planted robot
+  # at ~2.4 per step from this term, comparable to flat_support, rather than
+  # crushing everything else.
   cfg.rewards["min_foot_height"] = RewardTermCfg(
-    func=mdp.split_feet_min_swing_height,
-    weight=-100.0,
+    func=mdp.clock_swing_height_deficit,
+    weight=-5.0,
     params={
       # In TRUE sole clearance since the left/right_foot sites moved to the
       # sole plane (rhps1_constants.py, 2026-07-26). The old 0.030 was read
@@ -955,9 +1219,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       # real clearance -- and the robot delivered 2-4 mm because the reward
       # was mismeasuring landings anyway. 0.015 is a genuine 15 mm floor.
       "min_height": 0.015,
-      "sensor_name": feet_ground_split_cfg.name,
-      "command_name": "twist",
-      "command_threshold": 0.1,
+      # sensor_name / command_name / command_threshold are gone: the window is
+      # the gait clock's, and the clock's own amplitude does the command gating.
+      "reward_name": "gait_phase",
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
     },
   )
@@ -1049,6 +1313,36 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "coeffs": {r"CHEST|HEAD|SHOULDER|ELBOW|WRIST": 25.0},
     },
   )
+  # New (2026-08-03): nothing with any leverage forced the stance back to nominal
+  # at zero command, which is why the robot settles duck-footed -- pose's per-joint
+  # exponential divided by 30 joints caps a 20 deg hip-yaw error at 0.05 reward.
+  # Legs only: hip yaw and roll set where the feet point and how wide they sit,
+  # ankle roll sets whether they end up flat. Hip/knee pitch are deliberately out,
+  # so the term prescribes a stance without prescribing a squat depth.
+  # -40 (was -4.0, 2026-08-04). The cost is 4 * error^2 where error is
+  # Metrics/standing_pose_error, so the weight has to be set against the deviation
+  # the robot actually reaches, not against the one it would reach if the term
+  # already worked. Measured over 9 milestones of 2026-08-04_00-48-22, the error
+  # climbs 0.043 -> 0.088 rad across 4500 iterations and decelerates: at -4.0 the
+  # term realized -0.014 against standing_joint_vel's -0.47, i.e. 30x too quiet to
+  # influence anything, and extrapolating its own trend it would have needed
+  # ~17000 more iterations to reach the 0.28 rad where it starts to bite. At -40
+  # it reaches 0.4 per step at 0.10 rad -- the level of the rest of the standing
+  # family, without dominating it. That run is also the control proving this
+  # config reproduces abl7 (9 milestones within 4%), so the comparison baseline
+  # for judging this change is either run.
+  cfg.rewards["standing_pose"] = RewardTermCfg(
+    func=mdp.standing_pose_penalty,
+    weight=-40.0,
+    params={
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=(r".*CROTCH_Y.*", r".*CROTCH_R.*", r".*ANKLE_R.*"),
+      ),
+    },
+  )
   cfg.rewards["standing_joint_vel"] = RewardTermCfg(
     func=mdp.standing_joint_vel_l2,
     # -0.7 (was -0.2, itself down from -0.5 in the 2026-07-27 uniform
@@ -1114,7 +1408,74 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.events["foot_friction"].params["ranges"] = (0.5, 0.9)
   cfg.events.pop("push_robot", None)
+
+  # --- Raw-torque peak: one observable, gradient-carrying term replacing the
+  # magnitude family (Leo, 2026-08-04) ------------------------------------------
+  #
+  # The three terms popped below all charge torque *magnitude* by different
+  # proxies, none of which the actor can see. Realized at iteration 3500 of
+  # 2026-08-04_09-27-15: pd_demand_excess -0.38, torque_limit_margin -0.51,
+  # joint_torques_l2 -0.92, i.e. -1.81 together. That is the budget the new term
+  # has to take over, and the number to calibrate its weight against.
+  #
+  # NOT popped, on purpose: joint_torque_rate_l2 (-0.99 realized) charges
+  # d(tau)/dt, not |tau|. It is the only thing standing between the joints and
+  # chatter, and action_jerk does not cover it -- action_jerk acts on the position
+  # target, and at a frozen target a moving robot still swings its torque through
+  # the kd term. Removing it was proposed and rejected.
+  #
+  # The definitions above are left in place rather than deleted: they carry the
+  # history of two collapses and several regrades, and popping keeps this trivially
+  # reversible.
+  for _dead in ("pd_demand_excess", "torque_limit_margin", "joint_torques_l2"):
+    cfg.rewards.pop(_dead, None)
+
+  cfg.rewards["raw_torque_peak"] = RewardTermCfg(
+    func=mdp.raw_torque_peak_penalty,
+    # Start almost silent and let the curriculum below raise it. Sizing this a
+    # priori is not possible: the cost is sum_j clamp(peak_j - 0.7, 0, 4) and
+    # nothing yet measures that sum. Read Episode_Reward/raw_torque_peak at the
+    # first milestones and re-grade against the -1.81 the popped terms realized.
+    # Re-graded for the log1p shape at threshold 1.0 (2026-08-05): the previous
+    # schedule was calibrated against clamp(excess, 0, 4) at threshold 0.7, a
+    # different cost scale entirely, so its numbers do not carry over. Read
+    # Episode_Reward/raw_torque_peak at the first milestones and re-grade again.
+    weight=-0.05,
+    params={
+      # 1.0, the effort limit itself: charge exactly what the motor cannot deliver.
+      # No cap -- log1p bounds the growth instead, see the term's docstring.
+      "soft_ratio": 1.0,
+      "asset_cfg": SceneEntityCfg("robot"),
+    },
+  )
+
   assert cfg.curriculum is not None
+
+  # Progressive, as asked: the term is nearly silent while the gait forms, then
+  # takes over the magnitude budget. Ramped over 6000 iterations because a torque
+  # penalty applied early is the documented way to make this policy timid -- it
+  # suppresses the large corrective actions that catch a stumble, whose own
+  # chaotic demand then feeds the penalty. Steps are in env steps: iteration x 48.
+  cfg.curriculum["raw_torque_peak_weight"] = CurriculumTermCfg(
+    func=mdp.reward_weight,
+    params={
+      "reward_name": "raw_torque_peak",
+      # Pushed further than the previous schedule stopped. Measured on
+      # 2026-08-04_22-xx: nothing moved at all until -0.40, at which point the
+      # demand fell hard (peak_mean 3.35 -> 1.93, over_limit 0.62 -> 0.49) with
+      # zero falls and upright at its best -- so -0.60 was a ceiling set by caution,
+      # not by evidence. The brief spike in falls at -0.20 (0.11-0.13 around
+      # iteration 3500-4000) was transitional and cleared by itself.
+      "weight_stages": [
+        {"step": 0, "weight": -0.05},
+        {"step": 1000 * 48, "weight": -0.15},
+        {"step": 2500 * 48, "weight": -0.35},
+        {"step": 4000 * 48, "weight": -0.65},
+        {"step": 6000 * 48, "weight": -1.00},
+        {"step": 8000 * 48, "weight": -1.50},
+      ],
+    },
+  )
 
   # standing_envs is a constant 0.4, set directly on the command term above --
   # it stopped being a curriculum when the decay was removed (both prior runs

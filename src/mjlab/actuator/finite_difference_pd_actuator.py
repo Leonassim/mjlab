@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from mjlab.actuator.actuator import ActuatorCmd
-from mjlab.actuator.pd_actuator import IdealPdActuator, IdealPdActuatorCfg
+from mjlab.actuator.pd_actuator import IdealPdActuator, IdealPdActuatorCfg, pd_torque
 
 if TYPE_CHECKING:
   from mjlab.entity import Entity
@@ -55,6 +55,56 @@ class FiniteDifferencePdActuatorCfg(IdealPdActuatorCfg):
   If ``None`` and ``velocity_damper_di > 0``, the damper position projection is
   applied without a velocity clamping stage."""
 
+  torque_feasibility_ratio: float | None = None
+  """Cap on ``|kp*(q*-q) + kd*(qd*-qd)| / effort_limit``, enforced by projecting
+  the position target. ``None`` disables the projection.
+
+  Why this exists: without it the PD demand is clamped *silently* by the
+  effort limit, so every action that asks for more than the limit produces the
+  exact same torque, the exact same dynamics and the exact same reward. PPO is
+  model-free -- no gradient crosses that clamp -- so the whole saturated region
+  is one flat plateau in the return, the policy mean random-walks inside it,
+  and the exploration noise is invisible there too (entropy becomes free, std
+  runs away, the executed torque degenerates into bang-bang). Projecting the
+  target instead keeps every commanded action executable, which is what makes
+  the reward landscape informative near the limit and what makes a
+  position-controlled deployment faithful to training.
+
+  Set this together with the leg ``action_scale``: the projection window is
+  ``ratio * effort_limit / stiffness``, which is exactly ``ratio`` raw action
+  units when the scale equals the actuator's own ``effort_limit / stiffness``
+  (``_LEG_SCALE_MULTIPLIER = 1.0``). At a 7x leg scale the same window is 1/7
+  of an action unit, i.e. nearly every action lands on the projection and the
+  plateau comes straight back -- worse than no projection at all.
+
+  Use ``1.0``, always, and do not ramp it. At ``1.0`` this projection is not a
+  new constraint on the physics at all -- it delivers *exactly* the torque
+  MuJoCo's effort clamp already delivered:
+
+      tau(q*) = kp*(q* - q) + kd*(qd* - qd)  is affine and increasing in q*,
+      so clamping tau to [-e, e] and projecting q* onto tau's preimage of
+      [-e, e] are the same operation. Above the window both give +e, below it
+      both give -e, inside it neither changes anything.
+
+  So it cannot strangle a gait, cap a joint velocity, or alter a reward: same
+  applied torque, same dynamics, same return. What it changes is the *record*:
+  the target that leaves this actuator is now one a plain PD with no clamp
+  downstream would execute identically. That is the entire point -- mc_rtc in
+  position/QP mode has no torque clamp, so a policy whose commanded target only
+  works because something clips it does not transfer, while one whose target is
+  already inside the window transfers exactly.
+
+  Any ratio above 1.0 gives the identical physics too (MuJoCo clamps the
+  residual), and buys nothing: it just re-admits the un-executable commands
+  this exists to remove. There is no trade-off to tune, hence no curriculum.
+
+  Note this projection is local to ``compute``: ``data.joint_pos_target`` keeps
+  the raw, un-projected target, so ``pd_demand_excess`` and
+  ``Metrics/pd_demand_ratio_*`` still measure how far the policy's *command*
+  is from feasible. That is deliberate -- it is the gradient that moves the raw
+  action into the window, which the projection alone cannot supply.
+  """
+
   def build(
     self, entity: Entity, target_ids: list[int], target_names: list[str]
   ) -> FiniteDifferencePdActuator:
@@ -86,6 +136,46 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     self._v_max: torch.Tensor | None = None
     # Curriculum progress [0, 1]: 0 = no damper, 1 = full mc_rtc QP constraints.
     self.velocity_damper_progress: float = 0.0
+    # Curriculum progress (0, 1]: the effective ratio is
+    # ``torque_feasibility_ratio / progress``, so 1 = the configured ratio and
+    # values below 1 loosen it (0 = disabled). Unlike the damper this defaults
+    # to fully active: it is a structural constraint on the action space, not a
+    # penalty routed through the advantage, so there is no timidity loop to ramp
+    # around -- the entire point is that exploration never leaves the feasible
+    # set. Drop it below 1 for the early iterations only if a gait fails to form
+    # at all.
+    self.torque_feasibility_progress: float = 1.0
+    # The position target as actually executed, recorded on the substep where a
+    # new command arrives. Fed back to the policy in place of its raw action:
+    # what a policy observes about its own past has to be what happened, not
+    # what it asked for, or the dynamics look inconsistent on exactly the steps
+    # where the projection bit. Same class of defect as the EMA hidden state
+    # this actuator no longer carries.
+    self._executed_position_target: torch.Tensor | None = None
+    # Peak |tau_raw| / effort_limit over the physics substeps of one policy step,
+    # where tau_raw is the PD sum BEFORE MuJoCo's effort clamp. Two reasons this
+    # is the pre-clamp value and not data.actuator_force:
+    #   - post-clamp, every command past the limit reports the same torque, so
+    #     the quantity carries no information about how far past it went;
+    #   - the peak is what sizes the hardware, and it lives inside the decimation
+    #     window, invisible to anything sampled at the policy rate.
+    # Fed to the actor as an observation and charged by a reward term, which is
+    # what gives PPO a gradient across the clamp -- the job the target projection
+    # was doing structurally.
+    self._raw_torque_peak: torch.Tensor | None = None
+    # Same peak-hold, on each half of the PD sum separately: kp*(q*-q) and
+    # kd*(qd*-qdot). Diagnostic only, and note these are peak-held independently,
+    # so they do not add up to _raw_torque_peak -- each answers "how big does this
+    # half get", not "what was the other half worth at the peak instant".
+    #
+    # Why it matters: a ratio of 75 on CROTCH_Y (35 N.m, kp 20000, kd 400, action
+    # scale 7*e/kp) needs either q*-q = 0.131 rad, i.e. 10.7 raw action units,
+    # which the policy never emits -- or qd*-qdot = 6.6 rad/s, which is ordinary
+    # for a swinging leg. If the kd half dominates, a penalty on the total is
+    # really asking the policy to move its joints more slowly, which fights the
+    # gait, rather than to stop commanding impossible targets.
+    self._raw_torque_peak_kp: torch.Tensor | None = None
+    self._raw_torque_peak_kd: torch.Tensor | None = None
 
   def initialize(self, mj_model, model, data, device: str) -> None:
     super().initialize(mj_model, model, data, device)
@@ -128,6 +218,18 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
           ],
           device=device,
         )
+    # Allocated here, not lazily in compute(). compute() runs under
+    # torch.inference_mode() during rollouts, so a buffer created there is an
+    # inference tensor and reset() may not write to it from outside that mode --
+    # training happens to survive (its resets are called from inside the rollout)
+    # but play and any offline evaluation raise. Same pattern as the buffers
+    # below, which is what it should have been from the start.
+    self._executed_position_target = torch.zeros(
+      shape, device=device, dtype=torch.float
+    )
+    self._raw_torque_peak = torch.zeros(shape, device=device, dtype=torch.float)
+    self._raw_torque_peak_kp = torch.zeros(shape, device=device, dtype=torch.float)
+    self._raw_torque_peak_kd = torch.zeros(shape, device=device, dtype=torch.float)
     self._last_position_target = torch.zeros(shape, device=device, dtype=torch.float)
     self._filtered_position_target = torch.zeros(
       shape, device=device, dtype=torch.float
@@ -206,8 +308,32 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
         self._elapsed_since_target_update,
       )
 
+    # Captured BEFORE the damper and the feasibility projection. Everything below
+    # this line bends the target back inside the actuator's budget, so a torque
+    # computed from the result is capped at exactly the effort limit by
+    # construction -- measured, it reads 1.0000 on every joint, which looks like a
+    # perfectly saturated robot and is really just the projection reporting itself.
+    # The quantity worth observing and charging is the one the policy *asked* for.
+    pre_projection_target = filtered_position_target
+
+    # Damper first, feasibility last. The order matters for a specific reason:
+    # applied last, the feasibility projection makes the delivered torque
+    # *provably identical* to what MuJoCo's effort clamp would have produced
+    # from the un-projected target -- clamping tau and projecting q* onto the
+    # preimage of that clamp are the same operation, since tau is affine and
+    # increasing in q*. Anything applied after it would break that identity.
     filtered_position_target = self._apply_velocity_damper(
       filtered_position_target, cmd.pos, cmd.vel
+    )
+    filtered_position_target = self._apply_torque_feasibility(
+      filtered_position_target, cmd.pos, cmd.vel
+    )
+
+    # Record on the substep that carries a fresh command. Later substeps
+    # re-project against evolved state, so they answer a different question --
+    # this one is "what did the decision I just made actually become".
+    self._executed_position_target = torch.where(
+      changed | uninitialized, filtered_position_target, self._executed_position_target
     )
 
     pd_cmd = ActuatorCmd(
@@ -217,7 +343,84 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
       pos=cmd.pos,
       vel=cmd.vel,
     )
+
+    # Peak-hold over the decimation window. `changed` marks the substep carrying a
+    # fresh command, i.e. the start of a policy step, so the peak resets there and
+    # accumulates over the substeps that follow. Same boundary the executed target
+    # is recorded on, so the two always describe the same decision.
+    assert self.stiffness is not None
+    assert self.damping is not None
+    assert self.force_limit is not None
+    assert self._raw_torque_peak is not None
+    raw_cmd = ActuatorCmd(
+      position_target=pre_projection_target,
+      velocity_target=self._desired_velocity_target,
+      effort_target=cmd.effort_target,
+      pos=cmd.pos,
+      vel=cmd.vel,
+    )
+    raw_ratio = torch.abs(pd_torque(self.stiffness, self.damping, raw_cmd)) / torch.clamp(
+      self.force_limit, min=1e-6
+    )
+    start = changed | uninitialized
+    self._raw_torque_peak = torch.where(
+      start, raw_ratio, torch.maximum(self._raw_torque_peak, raw_ratio)
+    )
+
+    assert self._raw_torque_peak_kp is not None
+    assert self._raw_torque_peak_kd is not None
+    inv_lim = 1.0 / torch.clamp(self.force_limit, min=1e-6)
+    kp_ratio = torch.abs(self.stiffness * (pre_projection_target - cmd.pos)) * inv_lim
+    kd_ratio = (
+      torch.abs(self.damping * (self._desired_velocity_target - cmd.vel)) * inv_lim
+    )
+    self._raw_torque_peak_kp = torch.where(
+      start, kp_ratio, torch.maximum(self._raw_torque_peak_kp, kp_ratio)
+    )
+    self._raw_torque_peak_kd = torch.where(
+      start, kd_ratio, torch.maximum(self._raw_torque_peak_kd, kd_ratio)
+    )
+
     return super().compute(pd_cmd)
+
+  def _apply_torque_feasibility(
+    self,
+    q_target: torch.Tensor,
+    q: torch.Tensor,
+    qdot: torch.Tensor,
+  ) -> torch.Tensor:
+    """Project the position target so the PD demand stays inside the budget.
+
+    The demand ``tau = kp*(q* - q) + kd*(qd* - qd)`` is affine in ``q*``, so
+    ``|tau| <= budget`` is a closed interval on ``q*``:
+
+        q* in q + [(-budget - kd*v_err) / kp, (budget - kd*v_err) / kp]
+
+    The interval is always non-empty (its width is ``2*budget/kp > 0``); the
+    velocity term only shifts it. When the velocity error alone would already
+    blow the budget the interval sits entirely on one side of ``q``, i.e. the
+    projection commands the joint *back* -- which is exactly what the effort
+    clamp was doing implicitly, except now the policy can see it in the return.
+
+    ``qd*`` is the finite-difference estimate computed just above, so this runs
+    after velocity estimation and reuses it rather than re-deriving it.
+    """
+    ratio = self.cfg.torque_feasibility_ratio
+    p = self.torque_feasibility_progress
+    if ratio is None or p <= 0.0:
+      return q_target
+    assert self.stiffness is not None
+    assert self.damping is not None
+    assert self.force_limit is not None
+    assert self._desired_velocity_target is not None
+
+    # progress < 1 loosens the cap (progress -> 0 gives an unbounded budget).
+    budget = (ratio / p) * self.force_limit
+    v_term = self.damping * (self._desired_velocity_target - qdot)
+    kp = torch.clamp(self.stiffness, min=1e-6)
+    q_lo = q + (-budget - v_term) / kp
+    q_hi = q + (budget - v_term) / kp
+    return torch.clamp(q_target, q_lo, q_hi)
 
   def _apply_velocity_damper(
     self,
@@ -279,6 +482,15 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     assert self._desired_velocity_target is not None
     assert self._elapsed_since_target_update is not None
     assert self._initialized is not None
+    if self._executed_position_target is not None:
+      self._executed_position_target[env_ids] = 0.0
+    for _buf in (
+      self._raw_torque_peak,
+      self._raw_torque_peak_kp,
+      self._raw_torque_peak_kd,
+    ):
+      if _buf is not None:
+        _buf[env_ids] = 0.0
     self._last_position_target[env_ids] = 0.0
     self._filtered_position_target[env_ids] = 0.0
     self._desired_velocity_target[env_ids] = 0.0

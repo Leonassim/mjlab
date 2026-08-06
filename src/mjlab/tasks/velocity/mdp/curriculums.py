@@ -245,6 +245,40 @@ def velocity_damper_progress(
   return torch.tensor([progress])
 
 
+def torque_feasibility_progress(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  start_step: int,
+  end_step: int,
+  start_progress: float = 0.25,
+  asset_cfg: SceneEntityCfg = _DEFAULT_SCENE_CFG,
+) -> torch.Tensor:
+  """Tighten the torque-feasibility projection from loose to full.
+
+  The actuator's effective cap is ``torque_feasibility_ratio / progress``, so
+  ``start_progress=0.25`` begins at 4x the configured ratio and ``1.0`` reaches
+  it exactly.
+
+  Registering this is *optional* and deliberately not wired by default. The
+  projection is a constraint on the action space, not a penalty routed through
+  the advantage, so it cannot produce the timidity loop that forced every
+  pd_demand_excess ramp -- and the whole premise is that exploration should
+  never leave the feasible set, which a ramp partially defeats. Wire it only if
+  a first run at full projection fails to form a gait at all, i.e. if the
+  projection turns out to cap swing velocity before the policy has found a
+  stride worth swinging.
+  """
+  del env_ids  # Unused -- progress is global, not per-env.
+  step = env.common_step_counter
+  frac = min(1.0, max(0.0, (step - start_step) / max(end_step - start_step, 1)))
+  progress = float(start_progress + (1.0 - start_progress) * frac)
+  robot: Entity = env.scene[asset_cfg.name]
+  for act in robot.actuators:
+    if isinstance(act, FiniteDifferencePdActuator):
+      act.torque_feasibility_progress = progress
+  return torch.tensor([progress])
+
+
 class PushStage(TypedDict):
   step: int
   scale: float

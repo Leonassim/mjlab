@@ -750,6 +750,7 @@ class gait_phase_tracking:
     force_std: float = 30.0,
     vel_std: float = 0.15,
     command_threshold: float = 0.1,
+    stance_weight: float = 1.0,
   ) -> torch.Tensor:
     if self.phase is None:
       self.phase = torch.rand(env.num_envs, device=env.device)
@@ -771,6 +772,9 @@ class gait_phase_tracking:
     )
     period = period_slow + (period_fast - period_slow) * speed_frac  # [B]
     swing_ratio = torch.clamp(swing_duration / period, max=0.5)  # [B]
+    # Exposed so other terms can gate on the *prescribed* swing window rather
+    # than on measured contact. See clock_swing_height_deficit.
+    self.swing_ratio = swing_ratio
 
     self.phase = torch.where(
       active, (self.phase + env.step_dt / period) % 1.0, self.phase
@@ -795,7 +799,16 @@ class gait_phase_tracking:
 
     r_swing = torch.exp(-torch.square(foot_force_mag / force_std))
     r_stance = torch.exp(-torch.square(foot_vel_mag / vel_std))
-    reward = torch.where(should_swing, r_swing, r_stance) * active.float().unsqueeze(1)
+    # stance_weight discounts the planted half of the cycle. A motionless robot
+    # maximises r_stance (zero foot velocity) and scores zero on r_swing (both
+    # feet loaded), so at equal weight the clock pays 1 - swing_ratio ~ 0.76 for
+    # not walking at all -- measured at 1.65 of 2.0 on run v8's statue, its third
+    # largest income. The term meant to prescribe a gait was among the reasons
+    # not to have one. Discounting stance leaves the swing half, which a
+    # motionless robot cannot collect, as the part worth having.
+    reward = torch.where(
+      should_swing, r_swing, stance_weight * r_stance
+    ) * active.float().unsqueeze(1)
 
     # Averaged over active (moving) envs only: standing envs hold whatever
     # period the interpolation floor gives them, which would drag the mean
@@ -1005,24 +1018,119 @@ def no_double_flight_penalty(
   return no_contact
 
 
+# StandingEngagement (a shared 0->1 ramp modulating the standing family over a
+# grace window) lived here on 2026-08-03 and was removed the same day. It was NOT
+# shown to be harmful -- the three runs that seemed to condemn it are void, see
+# below -- so this note records an open question, not a verdict.
+#
+# The problem it addressed is real and still unfixed: the grace period applies to
+# standing_single_support alone, so for 1.5 s after every stop the reward says
+# "your velocities must be zero NOW" (standing_joint_vel and standing_base_motion
+# at full weight) while "hopping on one foot is free" (single-support graced). The
+# cheapest answer to that pairing is a violent stop, which is what the robot does
+# in mc_mujoco: arms and legs thrown out, foot skidding, then a splayed stance.
+#
+# Runs 2026-08-03_19-42-43, _21-10-01 and _22-30-30 all trained with `num_envs` at
+# its default of 1 instead of 4096, because the launch command omitted
+# --env.scene.num-envs. 48 samples per PPO iteration instead of 196608: nothing
+# could have learned, and every conclusion drawn from them is worthless. Check the
+# "Number of environments" line printed at startup before trusting a comparison.
+#
+# One design caution that survives independently of those runs: a ramp keyed on
+# time-since-the-command-dropped is hidden state. It modulates the reward scale
+# while appearing nowhere in the observation, so the policy cannot tell a step
+# that costs 0.1x from one that costs 1.0x. That is an argument for exposing the
+# clock in the observation if the ramp is retried, not an experimental result.
+#
+# Sizing note for the "decelerate" penalty that was considered instead: measured
+# on the abl7 checkpoint standing at zero command (scratch/rollout_det.py), the
+# per-step positive speed increment sums to 13.4 over 8 s in its linear form and
+# 0.37 squared -- against standing_joint_vel realizing -0.47. A robot holding its
+# balance already generates that, so penalizing any increase in speed taxes
+# balance recovery itself. That measurement is off-run and stands.
+
+
+class standing_pose_penalty:
+  """Pull selected joints back to the default posture at near-zero command.
+
+  Why a separate term when ``pose`` already has a ``std_standing`` regime: that
+  term cannot carry this. It returns ``mean(exp(-err^2/std^2))`` over all 30
+  joints, so one joint far from nominal moves the mean by at most 1/30. At weight
+  1.5 a hip yaw sitting 20 deg off nominal costs ``1.5/30 = 0.05`` -- against a
+  penalty budget in the tens. That is why the splayed, duck-footed stance is free
+  today: nothing that could forbid it has any leverage. Same failure mode as the
+  ``feet_distance`` term realizing -0.0009 against a -10.36 budget.
+
+  So this is a plain L2 on a *chosen* subset of joints rather than an exponential
+  over all of them: the cost stays proportional to the error instead of saturating,
+  and restricting the subset keeps the arms and the torso out of it (they have
+  their own terms, and a stance is defined by the legs).
+
+  Gated exactly like the rest of the standing family: a plain binary mask on the
+  command, no grace window and no ramp. An earlier version scaled it by a 0->1
+  clock so as not to demand the final stance mid-stride; that clock is hidden from
+  the policy, which is an argument against it, but it has never been tested at a
+  usable num_envs (see the StandingEngagement note above).
+
+  Sizing: with both hips 20 deg (0.35 rad) off nominal the raw cost is
+  ``2 * 0.35^2 = 0.245``, so a weight of -4 makes that stance worth about -1.0 per
+  step. That is a first estimate and has never been checked on a valid run: verify
+  ``Episode_Reward/standing_pose`` against the other standing terms once the robot
+  walks. The -0.0008 seen on 2026-08-03 means nothing (num_envs=1, no gait).
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
+    asset: Entity = env.scene[cfg.params["asset_cfg"].name]
+    default_joint_pos = asset.data.default_joint_pos
+    assert default_joint_pos is not None
+    self.default_joint_pos = default_joint_pos
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    ids = asset_cfg.joint_ids
+    err = asset.data.joint_pos[:, ids] - self.default_joint_pos[:, ids]
+    cost = torch.sum(torch.square(err), dim=1)
+
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    standing = (total_command <= command_threshold).float()
+
+    n_standing = standing.sum().clamp(min=1.0)
+    env.extras["log"]["Metrics/standing_pose_error"] = (
+      torch.sqrt(cost) * standing
+    ).sum() / n_standing
+    return cost * standing
+
+
 class standing_single_support_penalty:
   """Penalize standing on a single foot when the commanded motion is near zero.
 
   Skips a ``grace_period`` after each transition into the standing regime.
   Commands resample every 3-8 s (velocity_env_cfg), so an env told to stop is
-  almost always mid-stride when it happens, and it physically cannot plant
-  both feet until the current swing finishes -- charging that is charging an
-  unavoidable transition, not a fault. The cost of getting this wrong scales
-  with stride length: the conditional single-support-while-standing rate ran
-  ~44% when the gait period was a fixed 0.833 s and ~85% once the
-  speed-dependent clock stretched it to ~1.7 s, i.e. it roughly doubled with
-  the period, exactly as a fixed per-transition overhead would.
+  almost always mid-stride when it happens, and it physically cannot plant both
+  feet until the current swing finishes -- charging that is charging an
+  unavoidable transition, not a fault.
+
+  The exemption is a hard switch. Fading it in over the window was tried on
+  2026-08-03 and looked catastrophic, but those runs are void (num_envs=1); the
+  question is open. See the StandingEngagement note above.
+
+  The cost of getting this wrong scales with stride length: the conditional
+  single-support-while-standing rate ran ~44% when the gait period was a fixed
+  0.833 s and ~85% once the speed-dependent clock stretched it to ~1.7 s, i.e. it
+  roughly doubled with the period, exactly as a fixed per-transition overhead
+  would.
 
   ``Metrics/standing_single_support_rate`` counts only post-grace steps, so it
-  measures what is actually charged. ``Metrics/standing_in_grace_rate`` counts
-  the transition window separately: if the grace-period explanation is right,
-  the in-grace rate should stay high while the post-grace one drops well below
-  the ~0.40 the un-graced version was pinned at.
+  measures what is actually charged. ``Metrics/standing_in_grace_rate`` counts the
+  transition window separately.
   """
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
@@ -1048,9 +1156,7 @@ class standing_single_support_penalty:
 
     command = env.command_manager.get_command(command_name)
     assert command is not None
-    linear_norm = torch.norm(command[:, :2], dim=1)
-    angular_norm = torch.abs(command[:, 2])
-    total_command = linear_norm + angular_norm
+    total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
     standing = total_command <= command_threshold
 
     newly_standing = standing & (~self.was_standing)
@@ -1077,6 +1183,8 @@ class standing_single_support_penalty:
     # leg, it is not a missing gradient.
     cost = (one_foot + 4.0 * no_feet) * charged
 
+    # Rate over charged steps only, i.e. what is actually paid for -- identical in
+    # meaning to the pre-2026-08-03 metric, so the two are directly comparable.
     n_charged = torch.clamp(charged.sum(), min=1.0)
     n_grace = torch.clamp(in_grace.float().sum(), min=1.0)
     env.extras["log"]["Metrics/standing_single_support_rate"] = (
@@ -1165,6 +1273,53 @@ class pd_demand_excess:
     excess = torch.clamp(ratio - soft_ratio, min=0.0, max=cap)
     env.extras["log"]["Metrics/pd_demand_ratio_max"] = ratio.max()
     env.extras["log"]["Metrics/pd_demand_ratio_mean"] = ratio.mean()
+
+    # Fraction of joint-steps whose commanded target is *not executable*: the
+    # demand exceeds the effort limit, so what the plant does is the clamp's
+    # decision rather than the policy's.
+    #
+    # Named for the command, not for the torque, because torque saturation is
+    # not by itself a defect here. This is high-gain position control: kp=20000
+    # against a 140 N.m hip is a linear range of 0.007 rad (0.4 deg), so the
+    # real robot rides its limit constantly and that is normal operation.
+    # Spending 100% of the available torque is fine.
+    #
+    # What is not fine is commanding outside the executable set, and it is a
+    # *learning* defect before it is a hardware one: every command beyond the
+    # window produces the same execution, so the policy cannot tell them apart,
+    # and the mapping it learns is not the one that will hold at deployment
+    # (mc_rtc in position/QP mode has no clamp downstream of the PD). Measured
+    # deterministically on the previous run's checkpoint, five of six leg joints
+    # were outside the window 88-96% of the time -- a bang-bang controller whose
+    # commands carried almost no information.
+    #
+    # Watch this rather than pd_demand_ratio_mean, which is EMA-smoothed across
+    # substeps and read 3.34 on that same policy whose deterministic demand was
+    # 8.45x the limit.
+    instantaneous_ratio = torch.abs(demand) / torch.clamp(limit, min=1e-6)
+    env.extras["log"]["Metrics/command_infeasible_fraction"] = (
+      (instantaneous_ratio > 1.0).float().mean()
+    )
+    env.extras["log"]["Metrics/torque_demand_ratio_inst_max"] = instantaneous_ratio.max()
+
+    # Actual forward/lateral speed of the base, ungated by command. Trivial to
+    # compute and the single most decisive number this task has: on the
+    # 2026-07-29 run every aggregate looked healthy (tracking error better than
+    # the previous run's final, impact 2.7x lower, zero falls) while the robot
+    # was translating at 0.0005 m/s against a 0.25 m/s command. It was standing
+    # still, and nothing logged said so -- error_vel_xy hid it because the
+    # tracking kernel was wider than the whole command range. Log the thing
+    # itself, not a kernel's opinion of it.
+    env.extras["log"]["Metrics/root_speed_mean"] = torch.norm(
+      data.root_link_lin_vel_b[:, :2], dim=1
+    ).mean()
+
+    # Raw-action magnitude, in action units. With the scale set to the
+    # actuator's own effort_limit/stiffness, one unit is one feasibility window
+    # at ratio 1, so this reads directly against torque_feasibility_ratio.
+    action = env.action_manager.action
+    env.extras["log"]["Metrics/action_abs_mean"] = action.abs().mean()
+    env.extras["log"]["Metrics/action_abs_max"] = action.abs().max()
     return torch.sum(excess, dim=1)
 
 
@@ -1178,6 +1333,10 @@ def standing_joint_vel_l2(
 
   At zero command the robot should hold still; this taxes the residual
   oscillation directly in joint space without touching the walking gait.
+
+  Binary gate. Fading it in over a grace window (2026-08-03) is the obvious fix
+  for "be stopped NOW" and remains untested -- the runs that seemed to reject it
+  had num_envs=1. See the StandingEngagement note above.
   """
   asset: Entity = env.scene[asset_cfg.name]
   joint_vel_sq = torch.sum(
@@ -1218,6 +1377,9 @@ def standing_base_motion(
   parts are summed with ``ang_weight`` scaling the angular contribution
   (rad/s and m/s are not comparable units; the default keeps a ~0.5 rad/s
   wobble worth about the same as a 0.25 m/s drift).
+
+  Binary gate, same as ``standing_joint_vel_l2``: the grace-window fade tried on
+  2026-08-03 is untested, its runs having had num_envs=1.
   """
   asset: Entity = env.scene[asset_cfg.name]
   lin_speed = torch.norm(asset.data.root_link_lin_vel_b, dim=1)
@@ -1762,7 +1924,13 @@ class flat_support_penalty:
   """
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
-    del cfg
+    self.asset_name = cfg.params.get("asset_cfg", _DEFAULT_ASSET_CFG).name
+    asset: Entity = env.scene[self.asset_name]
+    names = [
+      f"{side}_foot{i}_collision" for side in ("left", "right") for i in (1, 2, 3, 4)
+    ]
+    geom_names = list(asset.geom_names)
+    self.geom_ids = [geom_names.index(n) for n in names]
     self.prev_count = torch.zeros((env.num_envs, 2), device=env.device)
     self.prev_loaded = torch.zeros((env.num_envs, 2), device=env.device)
 
@@ -1777,6 +1945,7 @@ class flat_support_penalty:
     command_name: str,
     required_contacts_per_foot: int = 4,
     load_threshold: float = 140.0,
+    corner_tolerance: float = 0.0,
     change_gain: float = 1.0,
     standing_threshold: float = 0.1,
   ) -> torch.Tensor:
@@ -1788,7 +1957,33 @@ class flat_support_penalty:
     if found.shape[1] < 8:
       raise RuntimeError("flat_support_penalty expects 8 split foot contacts.")
 
-    contacts = (found[:, :8] > 0).float().view(found.shape[0], 2, 4)
+    # Corner count by *relative* height, not by contact detection.
+    #
+    # A binary contact test is unusable at this scale: the sole is parallel to
+    # the ground in the default pose to within 16 um, yet only 2.15 of 4 corners
+    # per loaded foot registered, because 130 um of toe-versus-heel offset per
+    # milliradian of ankle pitch is enough to lift two of them clear of the
+    # solver's threshold. flat_support is the largest single term in the
+    # objective, and it was measuring solver luck.
+    #
+    # A 1 mm geom margin fixed the count but changed what *every* contact
+    # consumer sees -- impact_vel fired a millimetre early (which at a 0.1 m/s
+    # touchdown halves the reading), standing_single_support stopped firing,
+    # foot_slip charged near-ground swing. Scoping the tolerance here instead
+    # leaves all of them on the baseline's behaviour.
+    #
+    # The four patches sit on one rigid body and therefore share a rotation, so
+    # the difference between their *centre* heights equals the difference
+    # between their lowest corners -- the tilt cancels and no orientation is
+    # needed. Take the lowest patch of a foot as the floor reference and count
+    # every patch within tolerance of it.
+    asset: Entity = env.scene[self.asset_name]
+    if corner_tolerance > 0.0:
+      z = asset.data.geom_pos_w[:, self.geom_ids, 2].view(found.shape[0], 2, 4)
+      ref = z.min(dim=2, keepdim=True).values
+      contacts = ((z - ref) < corner_tolerance).float()
+    else:
+      contacts = (found[:, :8] > 0).float().view(found.shape[0], 2, 4)
     contact_count = torch.sum(contacts, dim=2)  # [B, 2]
     in_contact = (contact_count > 0).float()
 
@@ -2030,3 +2225,244 @@ def impact_velocity(
 
   return cost
 
+
+
+class preswing_weight_transfer:
+  """Reward unloading the foot that is about to swing, onto the other one.
+
+  Human gait shifts the body over the stance leg *before* the other leg leaves
+  the ground. Without that transfer, lifting a foot means starting to fall
+  toward the side it just left, so a policy that has not learned the transfer
+  cannot lift at all -- it can only shuffle. That is exactly what the
+  2026-07-29 diagnostic found: root speed 0.0005 m/s against a 0.25 m/s
+  command, 1.5 deg of commanded joint amplitude, torque demand at 13% of limit
+  and 0.5-1.9 rad of margin to every joint limit. Nothing physical was in the
+  way; the robot had no reason and no route to unload a foot.
+
+  This is a *directional* term, which is the point. Almost everything else
+  about standing is a verdict -- flat_support, standing_single_support and the
+  torque family all say "that was bad" without saying which way to move.
+  ``pose`` was the only exception. This one names the next action: before the
+  clock says foot i swings, get the load off foot i.
+
+  It rides the gait clock rather than introducing a second timing source. The
+  pre-swing window is the phase interval immediately before swing onset, and
+  since ``gait_phase_tracking`` puts swing at phase < swing_ratio, that window
+  is simply ``phase >= 1 - window``. No dependence on swing_ratio, so the term
+  keeps its meaning as the clock's period and duty cycle change with speed.
+
+  Gaming guards:
+    - Normalised load *share*, not absolute force, so pressing harder with the
+      stance foot is not itself rewarded.
+    - Multiplied by ``support``, the total vertical load as a fraction of body
+      weight. Unloading both feet at once (a hop) drives share toward 0.5 and
+      support toward 0, so flight earns nothing. Without this the term would
+      pay maximum during ballistic flight, which is the obvious exploit.
+    - Gated by the clock's ``amplitude``, zero at zero command, so it never
+      asks a standing robot to rock side to side.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    del cfg, env
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    reward_name: str = "gait_phase",
+    window: float = 0.15,
+    body_weight: float = 560.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    del asset_cfg
+    gait = env.reward_manager.get_term_cfg(reward_name).func
+    phase = getattr(gait, "phase", None)
+    amplitude = getattr(gait, "amplitude", None)
+    if phase is None or amplitude is None:
+      return torch.zeros(env.num_envs, device=env.device)
+
+    phases = torch.stack([phase, (phase + 0.5) % 1.0], dim=1)  # [B, 2]
+    preswing = (phases >= (1.0 - window)).float()
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    force = sensor.data.force
+    if force is None or force.shape[1] < 8:
+      raise RuntimeError("preswing_weight_transfer expects 8 split foot contacts.")
+    foot_force = torch.norm(
+      torch.sum(force[:, :8].view(force.shape[0], 2, 4, 3), dim=2), dim=-1
+    )  # [B, 2]
+
+    total = foot_force.sum(dim=1, keepdim=True)
+    share = foot_force / torch.clamp(total, min=1.0)
+    support = torch.clamp(total.squeeze(1) / body_weight, max=1.0)
+
+    # Baseline-subtracted. ``1 - 2*share`` is 0 at an even 50/50 split, 1 when
+    # the pre-swing foot is fully unloaded, and clamps to 0 if that foot is
+    # carrying *more* than half. Plain ``1 - share`` would have paid 0.5 for
+    # standing still on two feet -- which is exactly the defect that produced
+    # the statue optimum (five terms each handing out most of their value for
+    # doing nothing). A term added to fix that must not reproduce it.
+    transfer = (
+      torch.sum(torch.clamp(1.0 - 2.0 * share, min=0.0) * preswing, dim=1)
+      * support
+      * amplitude
+    )
+
+    n_pre = torch.clamp(preswing.sum(), min=1.0)
+    env.extras["log"]["Metrics/preswing_load_share"] = (
+      (share * preswing).sum() / n_pre
+    )
+    return transfer
+
+
+class clock_swing_height_deficit(split_feet_swing_height):
+  """Charge foot-clearance shortfall over the *prescribed* swing window.
+
+  Replaces split_feet_min_swing_height, which charged
+  ``clamp(1 - peak/min_height, 0)`` once per landing, a landing being the
+  transition from fully airborne to any contact. That made the penalty
+  avoidable by never becoming airborne, and the 2026-07-29 perturbation test
+  measured the consequence exactly: amplifying the policy's action 3x made it
+  move 7x faster with zero falls, and min_foot_height alone went -0.51 ->
+  -12.64, half the total reward lost. Standing still paid zero; every attempted
+  step cost ~94 points at weight -100 and a 5 mm peak.
+
+  So the term whose entire purpose was to make the robot lift its foot was the
+  single largest penalty on lifting it, and raising its weight -- tried from -25
+  to -200, plus two curricula -- dug the trap deeper each time. That is why
+  Metrics/peak_height_mean "never responded to the weight anywhere", recorded in
+  env_cfgs.py as an unexplained plateau across many runs.
+
+  Here the window comes from the gait clock, not from contact. A foot is charged
+  whenever its prescribed phase says swing, whether or not it actually left the
+  ground, so:
+
+    - standing through a prescribed swing pays the full deficit,
+    - lifting 5 mm pays slightly less,
+    - lifting to min_height pays nothing.
+
+  Monotone in height and impossible to dodge by staying planted. It also removes
+  the cadence exploit of the obvious alternative (paying a bonus per landing),
+  since the charge follows the clock rather than the number of touchdowns.
+
+  Gated by the clock's ``amplitude``, so a robot commanded to stand still is
+  never asked to lift anything.
+
+  Note the weight must shrink by roughly an order of magnitude relative to the
+  landing-triggered version: this fires on ~25% of steps per foot instead of
+  ~0.05 landings per step.
+  """
+
+  # Only getFootHeightWrtTerrain is inherited. The base class's peak tracker and
+  # landing latch exist to detect touchdowns -- exactly the mechanism being
+  # replaced -- so its __init__ (which demands a contact sensor) and its reset
+  # are neutralised here rather than carried along as dead state.
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    del cfg, env
+
+  def reset(self, env_ids: torch.Tensor) -> None:
+    del env_ids
+
+  def __call__(  # type: ignore[override]
+    self,
+    env: ManagerBasedRlEnv,
+    min_height: float,
+    reward_name: str = "gait_phase",
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    gait = env.reward_manager.get_term_cfg(reward_name).func
+    phase = getattr(gait, "phase", None)
+    amplitude = getattr(gait, "amplitude", None)
+    swing_ratio = getattr(gait, "swing_ratio", None)
+    if phase is None or amplitude is None or swing_ratio is None:
+      return torch.zeros(env.num_envs, device=env.device)
+
+    phases = torch.stack([phase, (phase + 0.5) % 1.0], dim=1)  # [B, 2]
+    in_swing = (phases < swing_ratio.unsqueeze(1)).float()
+
+    heights = self.getFootHeightWrtTerrain(env, asset_cfg)  # [B, 2]
+    deficit = torch.clamp(1.0 - heights / min_height, min=0.0)
+
+    cost = torch.sum(deficit * in_swing, dim=1) * amplitude
+
+    n_swing = torch.clamp(in_swing.sum(), min=1.0)
+    env.extras["log"]["Metrics/swing_height_mean"] = (heights * in_swing).sum() / n_swing
+    return cost
+
+
+def raw_torque_peak_penalty(
+  env: ManagerBasedRlEnv,
+  soft_ratio: float = 1.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Charge the peak raw PD torque of each policy step, above a band.
+
+  ``tau_raw`` is the PD sum before MuJoCo's effort clamp, peak-held across the
+  decimation window (see FiniteDifferencePdActuator._raw_torque_peak). The cost is
+  ``sum_j log1p(max(0, peak_j - soft_ratio))`` on the ratio to the effort limit.
+
+  Four deliberate choices:
+
+  - **Peak, not mean.** What sizes an actuator is the worst instant, and with
+    decimation 2 that instant can sit between two policy steps where nothing
+    sampled at the policy rate would ever see it.
+  - **Threshold at 1.0, the limit itself** (Leo, 2026-08-05). It was 0.7,
+    inherited from pd_demand_excess where it served as an early-warning band; here
+    it was an unjustified magic number. At 1.0 the threshold means something the
+    hardware understands -- the motor cannot deliver this -- and the only knob left
+    is the weight.
+  - **log1p, not a cap.** The first version clamped the excess at 4.0, which made
+    a joint at 5x and one at 128x pay exactly the same: no gradient at all on the
+    peak, the same flat plateau the feasibility projection exists to remove. It
+    showed up directly in the logs -- across iterations 3000-5000 of
+    2026-08-04_22-xx the mean ratio fell 3.35 -> 1.93 while the max climbed
+    79 -> 128. log1p keeps a gradient everywhere (5x -> 1.4, 20x -> 3.0,
+    128x -> 4.8) while bounding growth, so one extreme step cannot swamp an
+    episode. Two arbitrary constants removed.
+  - **Summed per joint, not the max over joints.** A max would hand the gradient
+    to one joint per step and leave the other 29 blind. The reported max is a
+    metric, not the objective.
+
+  Not yet done, deliberately kept for a later run so this stays one variable:
+  splitting the sum into legs / arms / torso. The cost is already additive per
+  joint, so no joint is arithmetically drowned -- but PPO sees one scalar return,
+  so cost carried by a 13 N.m head motor adds variance to the credit assigned to
+  the leg actions. Worth separating, once this shape is validated.
+
+  Replaces the magnitude family (pd_demand_excess, torque_limit_margin,
+  joint_torques_l2), which together realized about -1.81 at iteration 3500 of
+  2026-08-04_09-27-15 -- that is the number to size this against. It does NOT
+  replace joint_torque_rate_l2: that one charges d(tau)/dt, a different quantity,
+  and it is what keeps the joints from chattering. action_jerk is not a substitute
+  either, since it acts on the position target -- at a frozen action a moving
+  robot still swings its torque through the kd term.
+  """
+  from mjlab.tasks.velocity.mdp.observations import gather_raw_torque_peak
+
+  robot: Entity = env.scene[asset_cfg.name]
+  peak = gather_raw_torque_peak(robot)
+  if peak is None:
+    raise RuntimeError(
+      "raw_torque_peak_penalty: no actuator records _raw_torque_peak. Returning "
+      "zero here would look like a satisfied constraint."
+    )
+  peak = peak[:, asset_cfg.joint_ids]
+  excess = torch.log1p(torch.clamp(peak - soft_ratio, min=0.0))
+
+  env.extras["log"]["Metrics/raw_torque_peak_mean"] = peak.mean()
+  env.extras["log"]["Metrics/raw_torque_peak_max"] = peak.max()
+  env.extras["log"]["Metrics/raw_torque_over_limit_fraction"] = (
+    (peak > 1.0).float().mean()
+  )
+  # Which half of the PD sum carries the peak. Peak-held independently, so they do
+  # not add to the total -- read them as "how big does each half get". If kd
+  # dominates, this penalty is asking for slower joints, not for feasible targets.
+  for _suffix, _attr in (("kp", "_raw_torque_peak_kp"), ("kd", "_raw_torque_peak_kd")):
+    _parts = [
+      getattr(a, _attr) for a in robot.actuators if getattr(a, _attr, None) is not None
+    ]
+    if _parts:
+      env.extras["log"][f"Metrics/raw_torque_peak_{_suffix}_mean"] = torch.cat(
+        _parts, dim=1
+      ).mean()
+  return torch.sum(excess, dim=1)

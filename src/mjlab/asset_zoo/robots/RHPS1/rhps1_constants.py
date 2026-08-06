@@ -210,6 +210,7 @@ def get_spec() -> mujoco.MjSpec:
     if frozenset((exclude.bodyname1, exclude.bodyname2)) in _qp_monitored:
       spec.delete(exclude)
   _add_rhps1_foot_features(spec)
+
   existing_sensor_names = {sensor.name for sensor in spec.sensors}
 
   def add_sensor_if_missing(**kwargs) -> None:
@@ -893,11 +894,161 @@ def get_rhps1_robot_cfg() -> EntityCfg:
   )
 
 
+# Structural torque feasibility: project the position target so the PD demand
+# stays inside ratio * effort_limit, instead of letting MuJoCo clamp it
+# silently. See FiniteDifferencePdActuatorCfg.torque_feasibility_ratio and the
+# _LEG_SCALE_MULTIPLIER comment below for why this and the scale change are one
+# decision.
+#
+# 1.0, constant, no curriculum. Strict feasibility: the commanded demand never
+# exceeds what the actuator delivers, so the MuJoCo effort clamp becomes a
+# no-op and the policy stops relying on saturation.
+#
+# It is free to do this from step 0 because at ratio 1.0 the projection is not
+# a new constraint on the physics -- it delivers exactly the torque the effort
+# clamp already delivered. tau is affine and increasing in q*, so clamping tau
+# to [-e, e] and projecting q* onto tau's preimage of that interval are the
+# same operation. Same applied torque, same dynamics, same return. Nothing to
+# ease the policy into, hence nothing to ramp.
+#
+# Two earlier arguments in this comment were wrong and are recorded so they do
+# not get re-derived:
+#   - "1.0 would cap hip velocity around 1.4 rad/s". No: the window is centred
+#     on the *current* q, so it travels with the joint. It bounds the tracking
+#     lag, i.e. the torque, not the velocity.
+#   - "1.0 from step 0 is hostile because the EMA-lagged qd* estimate spends
+#     the budget on its own". The premise is true (kd=400 against 140 N.m means
+#     0.35 rad/s of velocity error is the whole budget) but the conclusion is
+#     not: when the kd term alone exceeds the budget the projection shifts the
+#     window to one side of q and commands full torque in the direction of
+#     motion -- which is precisely what the effort clamp was already doing.
+#
+# What ratio 1.0 actually buys is deployment: mc_rtc in position/QP mode has no
+# torque clamp downstream of the PD, so a target that only works because
+# something clips it does not transfer, while a target inside the window
+# transfers exactly. Any ratio above 1.0 yields the same physics (MuJoCo clamps
+# the residual) while re-admitting exactly the un-executable commands this
+# exists to remove.
+#
+# kp cannot be lowered to widen the window: it is the real robot's low-level
+# position gain, not a simulation knob.
+#
+# 1.0, not the 3.0 that rl_cfg.py:32 still mentions -- that comment predates the
+# argument above and is stale.
+#
+# Ablated at 1.0 (with executed_action) and **KEPT on its merits**, run
+# 2026-08-01_01-08-41, nine milestones: falls -41%, pd_demand_ratio_mean -20%,
+# reward +13%, flat_support +2.5%, for swing_height -16% and foot_vel_max -3%.
+# The half-window is e/kp, which is 0.143 action units on *every* joint (the
+# action scale is 7*e/kp on the legs), so one action unit is 7x the window and
+# one sigma of exploration is 3x -- the projection bites on nearly every step by
+# construction, not occasionally. Do not judge it at iteration 500: it read
+# swing_height -93% there and had fully recovered by 1000.
+#
+# Tested at None to isolate pd_demand_excess (abl6, run 2026-08-01_11-42-13).
+# That answered its question: a reward gradient alone DOES hold the raw command
+# flat -- pd_demand_ratio_mean 0.62 across five milestones while abl3 climbed
+# 0.74 -> 1.23 -- but it leaves 34% of commands infeasible with a 35x tail, and
+# it costs 29% of root speed.
+#
+# Back to 1.0 for the combination (2026-08-01), which is the configuration the
+# comments in env_cfgs.py describe and neither half realises alone: the
+# projection bounds the worst case the gradient cannot reach, and the gradient
+# removes the policy's incentive to ride the projection -- riding it is itself a
+# flat region, the very thing the projection exists to remove. soft_ratio 0.7 is
+# deliberately *below* this 1.0 so the pull starts inside the feasible set.
+_TORQUE_FEASIBILITY_RATIO = 1.0
+
+# Control period: one policy step. Must equal the env's step_dt
+# (sim.mujoco.timestep * decimation = 0.0025 * 2). env_cfgs.py asserts this
+# rather than trusting the comment -- the action scale below is derived from it,
+# so a silent mismatch would mis-scale every joint.
+_CONTROL_DT = 0.005
+
+# Velocity-target EMA. 0.0 removes it: qd* becomes the plain finite difference
+# of the position target, exactly as the name of the actuator says. 0.8 is the
+# ablation baseline (the reference run and everything up to corner tolerance).
+#
+# Why the EMA was there: differentiating the target over one control step
+# amplifies the per-step exploration noise by 1/dt = 200, and with kd=400
+# against a 140 N.m hip that noise alone demanded ~19x the effort limit. At
+# alpha=0.8 it demanded ~5.5x. The filter was buying exploration amplitude --
+# 3.5x more joint motion per unit of torque budget than no filter at all.
+#
+# Why it goes anyway: it is hidden state. qd* under an EMA depends on the entire
+# history of targets, and nothing in the observation vector carries it, so the
+# map from action to torque is not a function of anything the policy can see --
+# the actuator is quietly non-Markovian. With alpha=0, qd* = (q*_k - q*_{k-1})/dt
+# and the policy observes ``last_action``, hence q*_{k-1} exactly: the action ->
+# torque map becomes a deterministic function of observed quantities plus the
+# current action. That is worth more than the 3.5x, because the 3.5x was mostly
+# being spent on exploration the effort clamp discarded anyway.
+#
+# The C++ controller must follow (mc_rtc yaml key vel_target_filter_alpha, no
+# recompile); training and deployment have to agree on this or the deployed qd*
+# is a different signal.
+#
+# Note what changes underneath RHPS1_ACTION_SCALE below: that scale is derived
+# from (kp + kd/dt), which is the instantaneous response only when alpha is 0.
+# At alpha=0.8 the instantaneous kd term is (1-alpha)*kd/dt, so one action unit
+# demands 36000*dq at the hip instead of 100000*dq -- barely a third of the
+# effort limit. Setting this to 0.0 therefore makes every action ~2.8x more
+# potent in torque terms without touching a single scale value.
+#
+# Ablated at 0.0 and REJECTED (2026-08-01, run 2026-07-31_22-29-47, three
+# milestones). The prediction that demand would drop was backwards: removing the
+# filter *raises* it, because qd* differentiates the per-step exploration noise
+# and multiplies it by 1/dt = 200 -- the 19x vs 5.5x already stated above.
+# Measured against abl3 at equal iteration: pd_demand_ratio 2.93 -> 4.15 (+283%),
+# command_infeasible_fraction pinned at 0.77-0.79 (+91%, it does NOT fall as the
+# policy learns), torque_limit_ratio 0.91 vs 0.69, falls 7-13x worse.
+#
+# Kept at 0.8 because of what it costs, not because 0.0 is wrong in principle:
+# 0.0 bought swing_height +47% and foot_vel_max +34%, i.e. exactly the motion
+# corner_tolerance had taken away. The open problem is how to keep that without
+# the torque bill. Held noise is NOT the answer -- it breaks PPO's per-timestep
+# log_prob independence, and it has failed twice in practice.
+_VELOCITY_TARGET_FILTER_ALPHA = 0.8
+
+for a in RHPS1_ARTICULATION.actuators:
+  assert isinstance(a, FiniteDifferencePdActuatorCfg)
+  a.torque_feasibility_ratio = _TORQUE_FEASIBILITY_RATIO
+  a.velocity_target_filter_alpha = _VELOCITY_TARGET_FILTER_ALPHA
+
+# One raw action unit = the instantaneous change in position target that, on its
+# own, produces exactly the effort limit:
+#
+#     tau = kp*(q* - q) + kd*(qd* - qd),  qd* = (q*_k - q*_{k-1}) / dt
+#
+# so a one-step jump of dq in the target, from a settled joint, demands
+# (kp + kd/dt)*dq. Setting that to the effort limit gives
+#
+#     scale = effort_limit / (kp + kd/dt)
+#
+# This replaces effort_limit/stiffness, which only accounted for the kp term and
+# therefore ignored the *dominant* one: kd/dt is 80000 against kp=20000 at the
+# hip and 60000 against 10000 at the ankle, i.e. 4x to 6x larger. The old
+# formula overstated the usable range by that factor, and unevenly across joints
+# -- the ankles were getting ~30% more authority relative to the hips than their
+# actuators justify, purely as an artifact of which term was counted.
+#
+# The statistically exact version for iid exploration noise (the target is
+# first-differenced, so consecutive noise samples anticorrelate) is
+# e / sqrt((kp + kd/dt)^2 + (kd/dt)^2), uniformly 1.28-1.32x tighter than this.
+# Not used: it says the same thing about relative per-joint weighting, the
+# absolute factor is absorbed by init_std anyway, and a bound on a single action
+# ("one unit saturates") is easier to reason about and to reproduce in the
+# controller than a statement about a noise distribution.
+#
+# Depends on dt, so it depends on the EMA being off -- with a filter the
+# instantaneous kd response is (1-alpha)*kd/dt instead, and this formula would
+# understate the range by ~2x. See velocity_target_filter_alpha above.
 RHPS1_ACTION_SCALE: dict[str, float] = {}
 for a in RHPS1_ARTICULATION.actuators:
   assert isinstance(a, FiniteDifferencePdActuatorCfg)
   e = a.effort_limit
   s = a.stiffness
+  d = a.damping
   names = a.target_names_expr
   assert e is not None
   for n in names:
@@ -915,24 +1066,11 @@ for k in upper_keys:
   RHPS1_ACTION_SCALE.pop(k, None)
 
 for name in (
-  "CHEST_Y",
-  "CHEST_P",
-  "HEAD_Y",
-  "HEAD_P",
-  "L_SHOULDER_P",
-  "L_SHOULDER_R",
-  "L_SHOULDER_Y",
-  "L_ELBOW_P",
-  "L_ELBOW_Y",
-  "L_WRIST_R",
-  "L_WRIST_Y",
-  "R_SHOULDER_P",
-  "R_SHOULDER_R",
-  "R_SHOULDER_Y",
-  "R_ELBOW_P",
-  "R_ELBOW_Y",
-  "R_WRIST_R",
-  "R_WRIST_Y",
+  "CHEST_Y", "CHEST_P", "HEAD_Y", "HEAD_P",
+  "L_SHOULDER_P", "L_SHOULDER_R", "L_SHOULDER_Y", "L_ELBOW_P", "L_ELBOW_Y",
+  "L_WRIST_R", "L_WRIST_Y",
+  "R_SHOULDER_P", "R_SHOULDER_R", "R_SHOULDER_Y", "R_ELBOW_P", "R_ELBOW_Y",
+  "R_WRIST_R", "R_WRIST_Y",
 ):
   RHPS1_ACTION_SCALE[name] = upper_scale
 
@@ -954,13 +1092,70 @@ for name in (
 # action_rate_l2/stance_action_acc_l2 comment -- their weights must move
 # with scale^2 (up, not down, since scale increased) to keep the same
 # physical-space smoothness enforcement.
+#
+# 7.0 -> 1.0 (2026-07-29), paired with the torque_feasibility_ratio set on
+# every leg actuator below -- neither change is useful without the other.
+#
+# What 7.0 cost: the PD demand is clamped silently at the effort limit, so
+# every action asking for more than the limit gives the same torque, the same
+# dynamics and the same reward. PPO is model-free, nothing differentiates
+# through that clamp, so the whole saturated region is one flat plateau in the
+# return. Measured consequence: Metrics/pd_demand_ratio_mean 2.7-5.6 (max 350),
+# i.e. the policy routinely asked for several times the deliverable torque; the
+# mean random-walks freely inside the plateau, and exploration noise is
+# invisible there too -- entropy becomes free, std ran away 0.43 -> 3.73, and
+# the executed torque degenerates into bang-bang. That is the vibration, and
+# the instant backward fall seen in mc_mujoco position mode.
+#
+# Why 1.0 specifically: at 1.0 one raw action unit is exactly this actuator's
+# effort_limit/stiffness, which is also the half-width of the feasibility
+# window at ratio 1. So the projection window is ``ratio`` action units wide
+# and comparable to the exploration std -- the policy explores mostly-feasible
+# actions and sees a real gradient at the boundary. At 7.0 the same window is
+# 1/7 of an action unit: the projection would bite on nearly every sample and
+# bring the plateau straight back, worse than no projection at all.
+#
+# Reachability, the reason 7.0 was picked in the first place, is handled by
+# init_std, not by the scale: PPO moves the policy mean at a rate proportional
+# to sigma in raw-action space, while the excursion to reach in raw units is
+# proportional to 1/scale, so time-to-reach goes as 1/(sigma * scale).
+# 0.4286 * 7.0 = 3.0, so init_std = 3.0 at scale 1.0 reproduces the drift rate
+# that made 7.0 work -- and lands on the same 0.021 rad 1-sigma physical design
+# target this file has carried across every previous rescale. See rl_cfg.py.
+#
+# No reward weight moves with this change: action_rate_l2 and
+# stance_action_acc_l2 (the two whose weights had to track scale^2) are popped
+# in env_cfgs.py, and their replacement action_jerk_l2 multiplies by scale^2
+# internally, so it is already in physical units.
+# Global gains on top of the formula. These are pure reparametrisations -- a
+# common factor on the scale with init_std divided by the same factor leaves
+# every physical quantity identical (exploration amplitude, drift rate, torque)
+# and changes only the numeric range the network's output layer has to reach.
+# That range is not free: this file already records that at scale 0.0105 the raw
+# actions needed for a 0.3-0.4 rad hip excursion were 30-70 and "essentially
+# unreachable through normal gradient progress". The bare formula puts a modest
+# 0.2 rad hip excursion at 143 raw units -- deeper into the regime that was
+# measured to fail. The gain exists to avoid re-running that experiment.
+#
+# 35.0 is not tuned, it is read off the run that works (2026-07-29_01-13-36,
+# leg scale 7 * effort_limit/stiffness): 35 * e/(kp + kd/dt) reproduces its hip,
+# knee and crotch scales to 1.00, because kd/dt is exactly 4*kp on those
+# actuators. So the network's output range is unchanged from a configuration
+# known to train, and the only substantive move is the ankles at 0.71 -- the
+# correction this formula exists for, since they were the joints the old
+# effort/stiffness form over-credited (kd/dt is 6*kp there, not 4).
+# Back to 7.0 (2026-07-30). Run 2026-07-29_01-13-36 is the only configuration of
+# this robot observed to walk, and its leg scale was 7 * effort_limit/stiffness.
+# Everything this session did to the scale was either inert (35 * e/(kp+kd/dt) is
+# identically 7 * e/kp, since kd/dt = 4*kp on the legs) or a deviation from the
+# one baseline that works. The measured defect of that run was not its scale: it
+# was that 88-96% of its leg commands sat outside the executable set, which the
+# feasibility projection addresses without touching the action space.
 _LEG_SCALE_MULTIPLIER = 7.0
 for k in list(RHPS1_ACTION_SCALE):
-  if k not in [
-    n
-    for n in RHPS1_ACTION_SCALE
-    if any(tok in k for tok in ("CHEST", "SHOULDER", "ELBOW", "WRIST", "HAND", "HEAD"))
-  ]:
+  if not any(
+    tok in k for tok in ("CHEST", "SHOULDER", "ELBOW", "WRIST", "HAND", "HEAD")
+  ):
     RHPS1_ACTION_SCALE[k] *= _LEG_SCALE_MULTIPLIER
 
 if __name__ == "__main__":

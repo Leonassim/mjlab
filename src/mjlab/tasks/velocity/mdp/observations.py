@@ -227,3 +227,98 @@ def gait_phase_obs(
     ],
     dim=-1,
   )
+
+
+def executed_action(
+  env: ManagerBasedRlEnv,
+  action_name: str = "joint_pos",
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """The policy's previous action as actually executed, in action units.
+
+  Replaces ``mdp.last_action`` for RHPS1. ``last_action`` returns the raw output
+  of the network, but the actuator projects any command whose PD demand exceeds
+  the effort limit back onto the executable set (see
+  ``FiniteDifferencePdActuator.torque_feasibility_ratio``). On the steps where
+  that projection bites -- 18% of them early in the 2026-07-29 run -- the raw
+  action is a record of intent, not of what happened, so the policy's own
+  history misrepresents the dynamics it is trying to model.
+
+  This matters here even though torque saturation itself does not. High-gain
+  position control rides its limit as a matter of course, and spending the whole
+  torque budget is normal. The defect is that two different commands beyond the
+  window produce identical execution: the policy cannot tell them apart, and
+  feeding back the intent rather than the execution hides that from it entirely.
+  Feeding back the clipped action is the standard fix wherever actions are
+  clipped; the projection is just a state-dependent clip.
+
+  Falls back to the raw action for any actuator that does not record an executed
+  target (i.e. any actuator without the feasibility projection enabled).
+  """
+  term = env.action_manager.get_term(action_name)
+  raw = env.action_manager.action
+  robot: Entity = env.scene[asset_cfg.name]
+
+  q_exec = robot.data.joint_pos.clone()
+  found = False
+  for act in robot.actuators:
+    executed = getattr(act, "_executed_position_target", None)
+    if executed is None:
+      continue
+    q_exec[:, act.target_ids] = executed
+    found = True
+  if not found:
+    return raw
+
+  return (q_exec[:, term.target_ids] - term._offset) / term._scale
+
+
+def gather_raw_torque_peak(
+  robot: Entity, num_joints: int | None = None
+) -> torch.Tensor | None:
+  """Per-joint peak ``|tau_raw| / effort_limit`` over the last policy step.
+
+  ``tau_raw`` is the PD sum *before* MuJoCo's effort clamp, peak-held across the
+  decimation window by FiniteDifferencePdActuator. Returns None if no actuator
+  records it, so callers can fail loudly rather than silently observe zeros.
+
+  Normalised by the effort limit on purpose: the per-joint limits span 13 N.m
+  (head) to 140 (hip pitch), so raw newton-metres would hand the network ten
+  different scales for the same physical quantity. 1.0 is the limit, whatever the
+  joint.
+  """
+  n = num_joints if num_joints is not None else robot.data.joint_pos.shape[1]
+  out = torch.zeros(
+    (robot.data.joint_pos.shape[0], n),
+    device=robot.data.joint_pos.device,
+    dtype=torch.float,
+  )
+  found = False
+  for act in robot.actuators:
+    peak = getattr(act, "_raw_torque_peak", None)
+    if peak is None:
+      continue
+    out[:, act.target_ids] = peak
+    found = True
+  return out if found else None
+
+
+def raw_torque_ratio(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+) -> torch.Tensor:
+  """Actor observation: the peak raw-torque ratio of the last policy step.
+
+  The critic already sees ``joint_torques``, but that is *post* clamp: past the
+  limit every command reports the same value, so it cannot say how far past. The
+  actor saw nothing at all and had to infer saturation from joint_pos/joint_vel.
+  This closes that loop, and it is what makes a penalty on the raw torque
+  learnable rather than a tax the policy cannot attribute.
+  """
+  robot: Entity = env.scene[asset_cfg.name]
+  peak = gather_raw_torque_peak(robot)
+  if peak is None:
+    raise RuntimeError(
+      "raw_torque_ratio: no actuator records _raw_torque_peak. This observation "
+      "requires FiniteDifferencePdActuator; observing zeros would be silent."
+    )
+  return peak[:, asset_cfg.joint_ids]

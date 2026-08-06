@@ -35,7 +35,18 @@ class UniformVelocityCommand(CommandTerm):
 
     self.robot: Entity = env.scene[cfg.entity_name]
 
+    # vel_command_b is the *target*: everything below (resampling, heading
+    # tracking, world-frame rotation, the standing mask, the gamepad) keeps
+    # writing it exactly as before. vel_command_out is what the policy and the
+    # rewards actually see, and it slews toward the target when vel_ramp_rate is
+    # set. With the ramp disabled the two are equal at every step.
     self.vel_command_b = torch.zeros(self.num_envs, 3, device=self.device)
+    self.vel_command_out = torch.zeros(self.num_envs, 3, device=self.device)
+    # Set on reset so the first _update_command after a fresh episode snaps
+    # instead of slewing in from the dead episode's command.
+    self._snap_command = torch.ones(
+      self.num_envs, dtype=torch.bool, device=self.device
+    )
     self.vel_command_w = torch.zeros(self.num_envs, 3, device=self.device)
     self.heading_target = torch.zeros(self.num_envs, device=self.device)
     self.heading_error = torch.zeros(self.num_envs, device=self.device)
@@ -62,19 +73,31 @@ class UniformVelocityCommand(CommandTerm):
 
   @property
   def command(self) -> torch.Tensor:
-    return self.vel_command_b
+    return self.vel_command_out
+
+  def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    extras = super().reset(env_ids)
+    # Snap rather than slew across an episode boundary: the previous episode's
+    # command has no bearing on this one. Deferred to _update_command so the
+    # snap target is the one the standing mask has already zeroed.
+    self._snap_command[env_ids] = True
+    return extras
 
   def _update_metrics(self) -> None:
+    # Against the emitted command, not the target: the tracking rewards are
+    # computed on what the policy was shown, so the metric has to agree with
+    # them or it reads as tracking error during every ramp.
     max_command_time = self.cfg.resampling_time_range[1]
     max_command_step = max_command_time / self._env.step_dt
     self.metrics["error_vel_xy"] += (
       torch.norm(
-        self.vel_command_b[:, :2] - self.robot.data.root_link_lin_vel_b[:, :2], dim=-1
+        self.vel_command_out[:, :2] - self.robot.data.root_link_lin_vel_b[:, :2],
+        dim=-1,
       )
       / max_command_step
     )
     self.metrics["error_vel_yaw"] += (
-      torch.abs(self.vel_command_b[:, 2] - self.robot.data.root_link_ang_vel_b[:, 2])
+      torch.abs(self.vel_command_out[:, 2] - self.robot.data.root_link_ang_vel_b[:, 2])
       / max_command_step
     )
 
@@ -145,6 +168,30 @@ class UniformVelocityCommand(CommandTerm):
 
     if self.use_gamepad:
       self.vel_command_b[0] = self.get_gamepad_command()
+
+    self._emit_command()
+
+  def _emit_command(self) -> None:
+    """Slew vel_command_out toward the target computed by _update_command."""
+    rate = self.cfg.vel_ramp_rate
+    if rate is None:
+      self.vel_command_out.copy_(self.vel_command_b)
+      self._snap_command.fill_(False)
+      return
+
+    # Per component, exactly like mc_rtc: clamp each of vx, vy, wz to the same
+    # rate * dt. Not a clamp on the norm -- the deployed controller does not do
+    # that, and the point of this whole term is to match it.
+    max_delta = rate * self._env.step_dt
+    delta = torch.clamp(self.vel_command_b - self.vel_command_out, -max_delta, max_delta)
+    self.vel_command_out.copy_(
+      torch.where(
+        self._snap_command.unsqueeze(1),
+        self.vel_command_b,
+        self.vel_command_out + delta,
+      )
+    )
+    self._snap_command.fill_(False)
 
   def get_gamepad_command(self) -> torch.Tensor:
     """Map gamepad joystick positions to a velocity command for env 0."""
@@ -320,6 +367,24 @@ class UniformVelocityCommandCfg(CommandTermCfg):
   lin_vel_x, zero lin_vel_y and ang_vel_z). Increases training coverage for
   straight-line walking, which is important for stair climbing."""
   init_velocity_prob: float = 0.0
+  vel_ramp_rate: float | None = None
+  """Max per-component change of the emitted command, in units/s. ``None`` keeps
+  the historical behaviour: the command teleports to its new value at every
+  resample.
+
+  Why this exists: with a teleporting command the policy never once observes a
+  *decreasing* command, so the entire walk-to-stand transition is off-distribution
+  at deployment, where mc_rtc's ``vel_ramp_rate`` sweeps the command down
+  continuously over ~0.6 s. Worse, a step command makes the violent stop optimal:
+  the standing penalties all read the *current* velocity, so every timestep spent
+  still moving is charged, while the impulse used to kill that motion costs only
+  ``joint_torques_l2`` at -1.2e-5 -- five orders of magnitude less. Ramping here
+  puts the deployed regime back in the training distribution and gives the policy
+  the time to decelerate that the objective otherwise refuses to pay for.
+
+  Applied per component, matching mc_rtc's NewRLQPController exactly (same
+  ``rate * dt`` clamp on each of vx, vy, wz), so 0.5 here is 0.5 there.
+  """
   use_gamepad: bool = False
   """Drive env 0's command from a physical gamepad (left stick: lin vel,
   right stick X: yaw). Requires the `inputs` package and a connected pad."""
