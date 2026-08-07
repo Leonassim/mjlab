@@ -1188,40 +1188,26 @@ for name in (
 # one baseline that works. The measured defect of that run was not its scale: it
 # was that 88-96% of its leg commands sat outside the executable set, which the
 # feasibility projection addresses without touching the action space.
-# 2026-08-07: back to the action scale of run 2026-07-10_20-59-17 -- the policy
-# that actually walked on the real robot. Set as absolute values, not as a
-# multiplier, because the multiplier no longer reproduces them: that run had the
-# knee at effort_limit 100, later lowered to 70, so 1.5 * e/kp now yields 0.00525
-# on the knee instead of its 0.0075. Hard-coding the six numbers keeps the
-# network's output range exactly what the deployed policy learned on, whatever
-# the effort limits become.
+# 2026-08-07: retour a 1.5, le multiplicateur du run 2026-07-10_20-59-17 -- la
+# policy qui a effectivement marche sur le robot reel.
+#
+# Le multiplicateur, pas les valeurs absolues de ce run : l'invariant de la
+# policy 0 est "une unite d'action = 1.5 fois la saturation", et il doit suivre
+# effort_limit. Le genou y etait a 100 et vaut 70 depuis, donc son echelle passe
+# de 0.0075 a 0.00525 -- c'est le comportement voulu, pas une derive. Les cinq
+# autres articulations de jambe sont inchangees, leurs limites n'ont pas bouge.
 #
 # Why go back at all: on hardware this scale is what "conservative" means. It is
 # also the reason the raw-torque penalty existed -- the campaign that built it
 # started by raising the scale 4.67x. Taking the small scale means the torque
 # problem is much smaller to begin with, and raw_torque_peak is not needed with
 # it.
-_POLICY0_LEG_SCALE = {
-  ".*_CROTCH_Y": 0.002625,
-  ".*_CROTCH_R": 0.0075,
-  ".*_CROTCH_P": 0.0105,
-  # Les genoux sont deux actionneurs distincts depuis abl15 (ils l'etaient sous
-  # un seul `.*_KNEE_P` du temps de la policy 0) ; meme valeur pour les deux.
-  "L_KNEE_P": 0.0075,
-  "R_KNEE_P": 0.0075,
-  ".*_ANKLE_R": 0.00675,
-  ".*_ANKLE_P": 0.00975,
-}
+_LEG_SCALE_MULTIPLIER = 1.5
 for k in list(RHPS1_ACTION_SCALE):
   if not any(
     tok in k for tok in ("CHEST", "SHOULDER", "ELBOW", "WRIST", "HAND", "HEAD")
   ):
-    if k not in _POLICY0_LEG_SCALE:
-      raise KeyError(
-        f"leg actuator {k!r} has no policy-0 action scale; add it to "
-        "_POLICY0_LEG_SCALE rather than letting it keep e/kp"
-      )
-    RHPS1_ACTION_SCALE[k] = _POLICY0_LEG_SCALE[k]
+    RHPS1_ACTION_SCALE[k] *= _LEG_SCALE_MULTIPLIER
 
 if __name__ == "__main__":
   from mjlab.entity.entity import Entity
