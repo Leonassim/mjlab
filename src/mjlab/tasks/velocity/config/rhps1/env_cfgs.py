@@ -1562,24 +1562,8 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.curriculum.pop("raw_torque_peak_weight", None)
 
   # --- termes de la policy 0 qui n'ont pas de successeur -----------------
-  # air_time: en retirant gait_phase on retire la seule chose qui prescrivait
-  # une duree de vol. Sans lui, plus rien ne demande de lever le pied et le
-  # robot converge vers le trainage. La policy 0 le portait a +2.
-  # Parametres repris tels quels du run 2026-07-10_20-59-17, pas re-inventes.
-  cfg.rewards["air_time"] = RewardTermCfg(
-    func=mdp.split_feet_air_time,
-    weight=2.0,
-    params={
-      "sensor_name": _SPLIT_SENSOR,
-      "command_name": "twist",
-      "threshold_min": 0.01,
-      "threshold_max": 0.2,
-      "command_threshold": 0.1,
-      "overflow_threshold": 2.0,
-      "power": 2.0,
-      "touchdown_cost": 0.15,
-    },
-  )
+  # air_time est plus bas, en version dense : sa forme evenementielle avait le
+  # meme defaut que foot_swing_height.
   # torque_limit_margin: raw_torque_peak partant, il ne resterait aucune
   # penalite de couple. C'est celle que la policy 0 portait, a -0.16.
   cfg.rewards["torque_limit_margin"] = RewardTermCfg(
@@ -1591,34 +1575,67 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
     func=mdp.joint_torques_l2, weight=-1e-5
   )
 
-  # min_foot_height doit partir avec gait_phase : clock_swing_height_deficit lit
-  # la phase de l'horloge, et sans elle il leve au premier pas. Il n'y aurait
-  # alors plus rien du tout sur la hauteur de pied. On remet les deux termes que
-  # la policy 0 portait a sa place -- ce sont eux qui ont marche sur le robot.
+  # --- hauteur de pied : aucun terme conditionne sur un evenement ------
   #
-  # A garder en tete pour la suite : le piege documente de min_foot_height (il
-  # punissait la tentative de pas et payait zero pour rester debout) portait sur
-  # CETTE forme-la, pas sur celles-ci.
+  # min_foot_height part avec gait_phase (il lit la phase de l'horloge). Mais on
+  # ne remet PAS foot_swing_height a sa place, contrairement a ce que "repartir
+  # de la policy 0" suggerait : split_feet_swing_height charge
+  # `square(peak/target - 1) * first_contact`, donc UNIQUEMENT a l'atterrissage.
+  # Un robot qui garde un orteil au sol ne declenche jamais d'atterrissage et
+  # paie exactement zero ; toute tentative de pas paie. C'est le piege documente
+  # le 2026-07-30 -- split_feet_min_swing_height, la cause racine identifiee a
+  # l'epoque, est litteralement une sous-classe de celui-ci et partage son
+  # declenchement. La policy 0 le portait deja, et sa demarche trainante a 0.5 mm
+  # de levee en est vraisemblablement la consequence.
+  #
+  # La lecon generale : une penalite conditionnee sur un evenement mesure que la
+  # politique controle peut toujours etre evitee en ne produisant pas
+  # l'evenement. Le correctif valide passait par l'horloge de gait ; Leo ne veut
+  # pas dependre d'un cycle, donc on s'appuie sur la seule forme saine
+  # disponible, qui ne depend d'aucun evenement.
   cfg.rewards.pop("min_foot_height", None)
-  cfg.rewards["foot_swing_height"] = RewardTermCfg(
-    func=mdp.split_feet_swing_height,
-    weight=-5.0,
-    params={
-      "sensor_name": _SPLIT_SENSOR,
-      "target_height": 0.15,
-      "command_name": "twist",
-      "command_threshold": 0.1,
-      "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
-    },
-  )
+  cfg.rewards.pop("foot_swing_height", None)
+
+  # feet_clearance_velocity_weighted : continu, pondere par la vitesse
+  # horizontale du pied. Un pied qui glisse bas et vite paie -- c'est exactement
+  # le trainage, et rien ne permet de l'esquiver puisqu'il n'y a pas d'evenement.
+  #
+  # La cible descend de 0.15 a 0.03 m. A 0.15 contre 1 cm reellement atteint,
+  # delta = |z - cible| valait 0.14 quoi que fasse le robot : le terme degenerait
+  # en "penalise la vitesse horizontale du pied", donc il taxait la marche au
+  # lieu de faconner la hauteur. A 0.03 il varie reellement entre 0.005 et 0.03
+  # et redevient un gradient en hauteur.
+  #
+  # Le poids monte de -4 a -25 pour compenser le facteur ~7 perdu sur delta.
+  # C'est une premiere estimation, pas une valeur mesuree : a surveiller sur
+  # Episode_Reward/foot_clearance au premier jalon.
   cfg.rewards["foot_clearance"] = RewardTermCfg(
     func=mdp.feet_clearance_velocity_weighted,
-    weight=-4.0,
+    weight=-25.0,
     params={
-      "target_height": 0.15,
+      "target_height": 0.03,
       "command_name": "twist",
       "command_threshold": 0.05,
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
+    },
+  )
+
+  # air_time en version dense (potential-based, Ng/Harada/Russell) plutot qu'a
+  # l'atterrissage : meme somme sur un vol complet, mais payee en continu. Et
+  # touchdown_cost passe de 0.15 a 0, car il rendait un pas court NET NEGATIF --
+  # une recompense de levee qui punit les petites levees.
+  cfg.rewards["air_time"] = RewardTermCfg(
+    func=mdp.split_feet_air_time_dense,
+    weight=2.0,
+    params={
+      "sensor_name": _SPLIT_SENSOR,
+      "command_name": "twist",
+      "threshold_min": 0.01,
+      "threshold_max": 0.2,
+      "command_threshold": 0.1,
+      "overflow_threshold": 2.0,
+      "power": 2.0,
+      "touchdown_cost": 0.0,
     },
   )
 
