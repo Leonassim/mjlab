@@ -322,3 +322,68 @@ def raw_torque_ratio(
       "requires FiniteDifferencePdActuator; observing zeros would be silent."
     )
   return peak[:, asset_cfg.joint_ids]
+
+
+def joint_vel_encoder_finite_difference(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  encoder_noise: float = 0.01,
+) -> torch.Tensor:
+  """Vitesse articulaire telle que le robot reel la fabrique, pas telle que le
+  simulateur la connait.
+
+  Sur RHPS1, mc_rtc ne recoit **aucune** vitesse articulaire : verifie de bout
+  en bout le 2026-08-06, les drives la mesurent (PDO 0x6069), l'IOB la range
+  dans ``state.speed[]`` et ``RobotHardware`` la publie sur son port ``dq``,
+  mais ``nocnoid.py`` ne connecte jamais ce port a ``alphaIn``. Le
+  ``EncoderObserver`` retombe donc sur ``encoderFiniteDifferences`` et derive
+  les positions.
+
+  Ce que l'entrainement faisait jusqu'ici -- verite MuJoCo plus un bruit blanc
+  de +/-1.5 rad/s -- a la bonne amplitude par accident, mais pas la bonne
+  structure. Une derivee de positions bruitees est **anti-correlee** d'un pas au
+  suivant (le meme echantillon de position apparait avec un + puis un -), ce
+  qu'une politique peut apprendre a filtrer ; un bruit blanc, non.
+
+  D'ou : on bruite la position AVANT de deriver, dans le terme, parce que le
+  bruit d'observation de mjlab s'applique apres la fonction et donnerait une
+  derivee propre suivie d'un bruit blanc -- exactement ce qu'on veut quitter.
+
+  ``encoder_noise`` est la demi-largeur du bruit uniforme sur la position, en
+  radians, a garder egale a celle du terme ``joint_pos`` (0.01 par defaut).
+  L'amplitude qui en sort, 0.01/sqrt(3) * sqrt(2) / 0.005 ~ 1.6 rad/s d'ecart
+  type, tombe pres du +/-1.5 blanc qu'elle remplace : le changement porte sur la
+  correlation, pas sur le niveau.
+
+  Le biais d'encodeur n'entre pas ici : constant, il disparait dans la
+  difference. C'est ``joint_pos`` qui le porte.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  jnt_ids = asset_cfg.joint_ids
+  q = asset.data.joint_pos_biased[:, jnt_ids]
+  if encoder_noise > 0.0:
+    q = q + (torch.rand_like(q) * 2.0 - 1.0) * encoder_noise
+
+  # Un cache par pas, pas seulement un etat : ce terme est dans le groupe actor
+  # ET dans le critic, donc il est appele deux fois par pas. Sans le cache, le
+  # deuxieme appel derive q contre lui-meme et rend zero -- un des deux reseaux
+  # observerait une vitesse identiquement nulle, en silence. La cle est
+  # (common_step_counter, forme), le tirage de bruit est donc partage par les
+  # deux groupes, ce qui est correct : c'est le meme capteur.
+  key = (int(env.common_step_counter), tuple(q.shape))
+  cached = getattr(env, "_encoder_fd_cache", None)
+  if cached is not None and cached[0] == key:
+    return cached[1]
+
+  prev = getattr(env, "_encoder_fd_prev_q", None)
+  if prev is None or prev.shape != q.shape:
+    prev = q.clone()
+
+  # Au premier pas d'un episode la difference n'a pas de passe : la mettre a
+  # zero plutot que de deriver contre l'etat d'avant la reinitialisation, qui
+  # produirait une pointe de vitesse a chaque reset.
+  fresh = (env.episode_length_buf == 0).unsqueeze(-1)
+  vel = torch.where(fresh, torch.zeros_like(q), (q - prev) / env.step_dt)
+  env._encoder_fd_prev_q = q  # type: ignore[attr-defined]
+  env._encoder_fd_cache = (key, vel)  # type: ignore[attr-defined]
+  return vel

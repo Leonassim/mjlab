@@ -288,7 +288,10 @@ RHPS1_ACTUATOR_CROTCH_Y = FiniteDifferencePdActuatorCfg(
   stiffness=20000.0,
   damping=400.0,
   effort_limit=35.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.06252,
   position_target_filter_alpha=0.0,
   velocity_target_limit=8.0,
   velocity_limits=8.0,
@@ -340,7 +343,10 @@ RHPS1_ACTUATOR_KNEE_L = FiniteDifferencePdActuatorCfg(
   stiffness=20000.0,
   damping=400.0,
   effort_limit=70.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.10672,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
   velocity_limits=10.0,
@@ -354,7 +360,10 @@ RHPS1_ACTUATOR_KNEE_R = FiniteDifferencePdActuatorCfg(
   stiffness=20000.0,
   damping=400.0,
   effort_limit=70.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.10672,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
   velocity_limits=10.0,
@@ -396,7 +405,10 @@ RHPS1_ACTUATOR_TORSO = FiniteDifferencePdActuatorCfg(
   stiffness=44000.0,
   damping=440.0,
   effort_limit=120.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.19251,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -410,7 +422,10 @@ RHPS1_ACTUATOR_SHOULDER_Y = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=50.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.02556,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -424,7 +439,10 @@ RHPS1_ACTUATOR_SHOULDER_P = FiniteDifferencePdActuatorCfg(
   stiffness=15000.0,
   damping=240.0,
   effort_limit=50.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.1504,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -438,7 +456,10 @@ RHPS1_ACTUATOR_SHOULDER_R = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=50.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.02556,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -452,7 +473,10 @@ RHPS1_ACTUATOR_ELBOW_P = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=40.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.0264,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -466,7 +490,10 @@ RHPS1_ACTUATOR_ELBOW_Y = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=40.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.0264,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -480,7 +507,10 @@ RHPS1_ACTUATOR_WRIST = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=30.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.01485,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -508,7 +538,10 @@ RHPS1_ACTUATOR_HEAD = FiniteDifferencePdActuatorCfg(
   stiffness=2000.0,
   damping=50.0,
   effort_limit=13.0,
-  armature=1.0,
+  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
+  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
+  # l'inertie rotor du genou.
+  armature=0.00331,
   position_target_filter_alpha=0.0,
   velocity_target_limit=4.0,
   velocity_limits=4.0,
@@ -776,20 +809,24 @@ RHPS1_REF_JOINT_ORDER = [
 # zero) and hip-to-ankle offset unchanged, so this is a pure redistribution
 # of flexion, not a change in standing height or forward lean.
 RHPS1_INIT_STATE = EntityCfg.InitialStateCfg(
-  pos=(0.0, 0.0, 0.850698),
+  # 0.837656, pas 0.850698 : la hauteur de base va avec le keyframe. Celui-ci est
+  # celui de la policy 0 (genou 0.622), plus flechi que le keyframe a genou droit
+  # du 2026-07-15, donc le bassin est 1.3 cm plus bas. Les deux doivent bouger
+  # ensemble, sinon le robot demarre en interpenetration ou en chute libre.
+  pos=(0.0, 0.0, 0.837656),
   joint_pos={
     "R_CROTCH_Y": 0.010533,
     "R_CROTCH_R": -0.028787,
-    "R_CROTCH_P": -0.196399,
-    "R_KNEE_P": 0.487266,
+    "R_CROTCH_P": -0.271191,
+    "R_KNEE_P": 0.622021,
     "R_ANKLE_R": 0.030652,
-    "R_ANKLE_P": -0.290867,
+    "R_ANKLE_P": -0.350679,
     "L_CROTCH_Y": -0.010533,
     "L_CROTCH_R": 0.028787,
-    "L_CROTCH_P": -0.196399,
-    "L_KNEE_P": 0.487266,
+    "L_CROTCH_P": -0.271191,
+    "L_KNEE_P": 0.622021,
     "L_ANKLE_R": -0.030652,
-    "L_ANKLE_P": -0.290867,
+    "L_ANKLE_P": -0.350679,
     "CHEST_Y": 0.0,
     "CHEST_P": 0.0,
     "HEAD_Y": 0.0,
@@ -1151,12 +1188,40 @@ for name in (
 # one baseline that works. The measured defect of that run was not its scale: it
 # was that 88-96% of its leg commands sat outside the executable set, which the
 # feasibility projection addresses without touching the action space.
-_LEG_SCALE_MULTIPLIER = 7.0
+# 2026-08-07: back to the action scale of run 2026-07-10_20-59-17 -- the policy
+# that actually walked on the real robot. Set as absolute values, not as a
+# multiplier, because the multiplier no longer reproduces them: that run had the
+# knee at effort_limit 100, later lowered to 70, so 1.5 * e/kp now yields 0.00525
+# on the knee instead of its 0.0075. Hard-coding the six numbers keeps the
+# network's output range exactly what the deployed policy learned on, whatever
+# the effort limits become.
+#
+# Why go back at all: on hardware this scale is what "conservative" means. It is
+# also the reason the raw-torque penalty existed -- the campaign that built it
+# started by raising the scale 4.67x. Taking the small scale means the torque
+# problem is much smaller to begin with, and raw_torque_peak is not needed with
+# it.
+_POLICY0_LEG_SCALE = {
+  ".*_CROTCH_Y": 0.002625,
+  ".*_CROTCH_R": 0.0075,
+  ".*_CROTCH_P": 0.0105,
+  # Les genoux sont deux actionneurs distincts depuis abl15 (ils l'etaient sous
+  # un seul `.*_KNEE_P` du temps de la policy 0) ; meme valeur pour les deux.
+  "L_KNEE_P": 0.0075,
+  "R_KNEE_P": 0.0075,
+  ".*_ANKLE_R": 0.00675,
+  ".*_ANKLE_P": 0.00975,
+}
 for k in list(RHPS1_ACTION_SCALE):
   if not any(
     tok in k for tok in ("CHEST", "SHOULDER", "ELBOW", "WRIST", "HAND", "HEAD")
   ):
-    RHPS1_ACTION_SCALE[k] *= _LEG_SCALE_MULTIPLIER
+    if k not in _POLICY0_LEG_SCALE:
+      raise KeyError(
+        f"leg actuator {k!r} has no policy-0 action scale; add it to "
+        "_POLICY0_LEG_SCALE rather than letting it keep e/kp"
+      )
+    RHPS1_ACTION_SCALE[k] = _POLICY0_LEG_SCALE[k]
 
 if __name__ == "__main__":
   from mjlab.entity.entity import Entity

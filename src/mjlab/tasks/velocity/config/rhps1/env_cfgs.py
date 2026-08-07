@@ -1504,7 +1504,169 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.scene.terrain.terrain_generator.num_rows = 5
         cfg.scene.terrain.terrain_generator.border_width = 10.0
 
+  _apply_policy0_baseline(cfg)
   return cfg
+
+
+def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
+  """Ramene la configuration a la policy 0, plus les ameliorations retenues.
+
+  Decide avec Leo le 2026-08-07. La policy 0 (run 2026-07-10_20-59-17) est la
+  seule qui ait marche sur le robot reel ; tout ce qui a ete ajoute depuis a ete
+  valide en simulation, jamais sur du materiel. Plutot que de defaire trente
+  reglages disperses dans ce fichier, la bascule est ici, en un seul bloc
+  lisible d'un coup.
+
+  Ce qui est REPRIS d'abl15 :
+    - armatures reelles (rhps1_constants, hors joints a verins)
+    - standing_pose -40, le seul terme nouveau valide isolement
+    - flat_support corrige et impact_vel renforce : les deux defauts que Leo
+      avait releves en jouant les checkpoints (deroule talon-pointe, vitesse
+      d'impact)
+    - les six termes de proximite : demande explicite, c'est de la securite
+    - action_jerk, qui remplace action_rate_l2 / stance_action_acc_l2 /
+      upper_body_action_acc_l2
+    - mirror loss
+
+  Ce qui est REPOUSSE :
+    - l'echelle d'action x4.67 (voir _POLICY0_LEG_SCALE) et donc raw_torque_peak
+      avec elle : cette penalite n'a existe que parce que l'echelle avait
+      grossi. Petite echelle, petit probleme de couple.
+    - gait_phase, air_time_symmetry, preswing_transfer, swing_hip_direction :
+      jamais isoles, et gait_phase agrandit l'observation.
+    - l'observation V5 (566) et V4 (266).
+
+  L'effet le plus concret est la derniere ligne : l'observation redevient
+  EXACTEMENT la V3 a 126 dimensions, celle que `utils.cpp` case 0 sait deja
+  construire. Aucun travail C++ pour deployer ce run.
+  """
+  # Le capteur par pied est cree dans rhps1_rough_env_cfg, hors de portee ici.
+  # Verifie plutot que devine : un nom faux donnerait une recompense muette.
+  _SPLIT_SENSOR = "feet_ground_contact_split"
+  # Idem : local a rhps1_rough_env_cfg. Ce sont les sites plantes dans le plan de
+  # la semelle depuis le 2026-07-26, pas les anciens 20 mm plus haut.
+  site_names = ("left_foot", "right_foot")
+  assert any(getattr(s, "name", None) == _SPLIT_SENSOR for s in cfg.scene.sensors), (
+    f"capteur {_SPLIT_SENSOR!r} absent de la scene"
+  )
+
+  # --- termes qui partent ------------------------------------------------
+  for name in (
+    "raw_torque_peak",
+    "gait_phase",
+    "air_time_symmetry",
+    "preswing_transfer",
+    "swing_hip_direction",
+  ):
+    cfg.rewards.pop(name, None)
+  cfg.curriculum.pop("raw_torque_peak_weight", None)
+
+  # --- termes de la policy 0 qui n'ont pas de successeur -----------------
+  # air_time: en retirant gait_phase on retire la seule chose qui prescrivait
+  # une duree de vol. Sans lui, plus rien ne demande de lever le pied et le
+  # robot converge vers le trainage. La policy 0 le portait a +2.
+  # Parametres repris tels quels du run 2026-07-10_20-59-17, pas re-inventes.
+  cfg.rewards["air_time"] = RewardTermCfg(
+    func=mdp.split_feet_air_time,
+    weight=2.0,
+    params={
+      "sensor_name": _SPLIT_SENSOR,
+      "command_name": "twist",
+      "threshold_min": 0.01,
+      "threshold_max": 0.2,
+      "command_threshold": 0.1,
+      "overflow_threshold": 2.0,
+      "power": 2.0,
+      "touchdown_cost": 0.15,
+    },
+  )
+  # torque_limit_margin: raw_torque_peak partant, il ne resterait aucune
+  # penalite de couple. C'est celle que la policy 0 portait, a -0.16.
+  cfg.rewards["torque_limit_margin"] = RewardTermCfg(
+    func=mdp.joint_torque_limit_margin_penalty,
+    weight=-0.16,
+    params={"soft_ratio": 0.8, "power": 2.0},
+  )
+  cfg.rewards["joint_torques_l2"] = RewardTermCfg(
+    func=mdp.joint_torques_l2, weight=-1e-5
+  )
+
+  # min_foot_height doit partir avec gait_phase : clock_swing_height_deficit lit
+  # la phase de l'horloge, et sans elle il leve au premier pas. Il n'y aurait
+  # alors plus rien du tout sur la hauteur de pied. On remet les deux termes que
+  # la policy 0 portait a sa place -- ce sont eux qui ont marche sur le robot.
+  #
+  # A garder en tete pour la suite : le piege documente de min_foot_height (il
+  # punissait la tentative de pas et payait zero pour rester debout) portait sur
+  # CETTE forme-la, pas sur celles-ci.
+  cfg.rewards.pop("min_foot_height", None)
+  cfg.rewards["foot_swing_height"] = RewardTermCfg(
+    func=mdp.split_feet_swing_height,
+    weight=-5.0,
+    params={
+      "sensor_name": _SPLIT_SENSOR,
+      "target_height": 0.15,
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
+    },
+  )
+  cfg.rewards["foot_clearance"] = RewardTermCfg(
+    func=mdp.feet_clearance_velocity_weighted,
+    weight=-4.0,
+    params={
+      "target_height": 0.15,
+      "command_name": "twist",
+      "command_threshold": 0.05,
+      "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
+    },
+  )
+
+  # --- observation : retour a la V3, 126 dimensions ----------------------
+  actor = cfg.observations["actor"].terms
+  for name in ("gait_phase", "raw_torque"):
+    actor.pop(name, None)
+  # actions AVEC historique 5, comme les dernieres politiques. Deux raisons, pas
+  # une : l'actionneur porte une EMA sur la cible de vitesse (alpha 0.8) dont
+  # rien d'autre dans l'observation ne revele l'etat, et la projection de
+  # faisabilite fait que plusieurs actions brutes donnent la meme execution --
+  # une politique qui ne voit que ce qu'elle a demande ne peut pas les
+  # distinguer. Les deux mecanismes sont actifs dans ce run.
+  #
+  # Cout au deploiement : l'observation passe de 126 a 246 dimensions. Ce n'est
+  # ni la V3 ni la V4 (266, qui ajoute gait_phase), donc il faut un cas de plus
+  # dans utils.cpp -- mais c'est le corps de case 2 sans sa derniere ligne.
+  if "actions" in actor:
+    actor["actions"].history_length = 5
+
+  # joint_vel par difference finie, comme le robot reel. Voir la docstring de
+  # joint_vel_encoder_finite_difference : mc_rtc ne recoit aucune vitesse
+  # articulaire sur RHPS1 et derive les encodeurs. Le bruit blanc de +/-1.5 est
+  # retire, il est desormais produit par la derivation elle-meme.
+  if "joint_vel" in actor:
+    actor["joint_vel"] = ObservationTermCfg(
+      func=mdp.joint_vel_encoder_finite_difference,
+      # 0.001 rad, pas les 0.01 du terme joint_pos : ce parametre modelise le
+      # bruit d'encodeur PAR ECHANTILLON, et sur une articulation reduite 210:1
+      # il est petit. La part lente (calibration, flexion) est deja portee par
+      # l'evenement encoder_bias, et un biais constant disparait de toute facon
+      # dans une difference. Mesure sur 64 envs : la corruption resultante de la
+      # vitesse vaut 1.03 rad/s d'ecart-type, dont 1.02 vient de la difference
+      # finie elle-meme et non du bruit -- c'est bien la derivation qui domine,
+      # comme sur le robot. A 0.01 on monterait a 1.93, soit deux fois le signal.
+      params={"encoder_noise": 0.001},
+      noise=None,
+    )
+  # Le critic peut garder ses canaux privilegies (foot_height_scan,
+  # joint_torques) : ils n'existent qu'a l'entrainement et ne coutent rien au
+  # deploiement. Seul gait_phase doit partir, il reference une recompense qui
+  # n'existe plus.
+  critic = cfg.observations["critic"].terms
+  critic.pop("gait_phase", None)
+  # Le groupe torque_guidance n'existait que pour torque_guidance_coef, mis a
+  # zero apres cinq echecs et retire de rl_cfg le meme jour. Le laisser ferait
+  # calculer une observation entiere que plus personne ne lit.
+  cfg.observations.pop("torque_guidance", None)
 
 
 def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:

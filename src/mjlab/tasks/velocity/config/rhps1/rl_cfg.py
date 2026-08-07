@@ -111,7 +111,12 @@ def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         # is the only configuration of this robot observed to walk. Everything
         # this session did to sigma was chasing a motionless optimum that the
         # sigma reduction had itself created.
-        "init_std": 0.4286,
+        # 1.0 : la valeur de la policy 0. Le 0.4286 avait ete calibre pour
+        # l'echelle de jambe x4.67 ; le garder avec l'echelle de la policy 0
+        # diviserait le bruit en espace articulaire par 4.67 de plus et
+        # eteindrait l'exploration. Le produit init_std * action_scale est ce
+        # qui compte, et 1.0 * 0.0075 le ramene a ce que la policy 0 avait.
+        "init_std": 1.0,
         # Re-added (2026-07-27): the 2026-07-16 fix for this exact failure
         # mode (commit 4b9018ee, "entropy bonus inflated std to 1.9 once
         # episodes got too short to carry any other learning signal") fell
@@ -218,7 +223,9 @@ def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       # policy from paying for noise it cannot use, without risking the
       # premature sigma collapse a larger cut would invite (std_range's floor is
       # 1e-6, so there is no safety net on the way down).
-      entropy_coef=0.005,
+      # 0.01 : valeur de la policy 0. Le 0.005 accompagnait le resserrage de
+      # sigma, qui repart avec lui.
+      entropy_coef=0.01,
       num_learning_epochs=5,
       num_mini_batches=4,
       learning_rate=1.0e-3,
@@ -265,8 +272,8 @@ def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       # retrying at 0.1 would have been re-running a known-negative
       # experiment. The confound I hoped had been removed
       # (stride_frequency_target) evidently was not the cause.
-      torque_guidance_coef=0.0,
-      torque_guidance_warmup_updates=1000,
+      # Retire le 2026-08-07 : coefficient a 0 apres cinq echecs, donc inerte,
+      # mais il maintenait en vie le groupe d'observation torque_guidance.
     ),
     experiment_name="rhps1_velocity",
     save_interval=150,
