@@ -1308,7 +1308,18 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # territory. Note this term is a *second* difference, so it targets
     # tremor specifically and is structurally blind to the slow sway --
     # that one is standing_base_motion's job, not a bigger weight here.
-    weight=-90.0,
+    # -45 (was -90, 2026-08-08). Retour a la valeur du reequilibrage global du
+    # 2026-07-27, que le passage a -90 du lendemain avait defait sans re-mesurer
+    # la balance. Mesure sur 2026-08-07_15-40-43 (iterations 6000-7200) : ce terme
+    # realisait -28.33, soit 55.7 % du budget negatif, pour un total de -50.82
+    # contre +8.95 de positif. Les termes qui faconnent la marche pesaient 1 a
+    # 2 % et air_time realisait exactement zero.
+    #
+    # A -45 le total negatif tombe vers -36.6, donc encore 4x le positif : le
+    # reequilibrage de juillet coupait CINQ termes ensemble. On n'en coupe qu'un
+    # ici, faute de preuve sur les autres, et on mesure la balance au premier
+    # jalon avant d'aller plus loin.
+    weight=-45.0,
     params={
       "asset_cfg": SceneEntityCfg("robot"),
       "coeffs": {r"CHEST|HEAD|SHOULDER|ELBOW|WRIST": 25.0},
@@ -1592,7 +1603,12 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
       "command_threshold": 0.1,
       "overflow_threshold": 2.0,
       "power": 2.0,
-      "touchdown_cost": 0.15,
+      # 0.0 (etait 0.15, 2026-08-08). Mesure sur 2026-08-07_15-40-43, iterations
+      # 6000-7200 : ce terme realisait +0.0008 pour un poids de +2, c'est-a-dire
+      # rien. Le cout d'atterrissage annulait exactement le paiement du vol, et
+      # rendait meme un pas court net negatif -- une recompense de levee qui
+      # punissait les petites levees.
+      "touchdown_cost": 0.0,
     },
   )
   # torque_limit_margin: raw_torque_peak partant, il ne resterait aucune
@@ -1626,11 +1642,24 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
     },
   )
+  # Cible 0.15 -> 0.04 et poids -4 -> -35 (2026-08-08).
+  #
+  # Le cout est |z - cible| * vitesse_horizontale. A 0.15 contre 0.037 reellement
+  # atteint (mesure directe sur le checkpoint 7050), delta valait ~0.13 quoi que
+  # fasse le robot : le terme degenerait en "penalise la vitesse horizontale du
+  # pied", donc il taxait la marche au lieu de faconner la hauteur. A 0.04 il
+  # varie entre 0.003 et 0.039 et redevient un gradient en hauteur.
+  #
+  # Le poids est EXTRAPOLE, pas mesure : delta chute d'un facteur ~6.5, donc a
+  # poids constant le realise passerait de -0.11 a ~-0.017, c'est-a-dire inerte.
+  # -35 viserait ~-0.15, du niveau de standing_base_motion, present sans dominer.
+  # C'est le seul chiffre de ce run que je n'ai pas su deriver d'une mesure : a
+  # verifier sur Episode_Reward/foot_clearance au premier jalon et a corriger tot.
   cfg.rewards["foot_clearance"] = RewardTermCfg(
     func=mdp.feet_clearance_velocity_weighted,
-    weight=-4.0,
+    weight=-35.0,
     params={
-      "target_height": 0.15,
+      "target_height": 0.04,
       "command_name": "twist",
       "command_threshold": 0.05,
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
