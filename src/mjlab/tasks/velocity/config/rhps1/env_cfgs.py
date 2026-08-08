@@ -4,6 +4,7 @@ from mjlab.asset_zoo.robots import RHPS1_ACTION_SCALE, get_rhps1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -1503,6 +1504,20 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.scene.terrain.terrain_generator.num_cols = 5
         cfg.scene.terrain.terrain_generator.num_rows = 5
         cfg.scene.terrain.terrain_generator.border_width = 10.0
+
+  # Hauteur de semelle, mesuree directement sur les sites. Elle remplace
+  # Metrics/peak_height_mean, qui sous-estimait d'un facteur ~70 : ce pic-la
+  # etait remis a zero des le premier coin qui touche alors que l'atterrissage se
+  # declenche sur les quatre, donc chaque atterrissage reel produisait une bonne
+  # valeur suivie de plusieurs zeros. Le 2026-08-08 elle annoncait 0.0005 m la ou
+  # la mesure directe sur le meme checkpoint donnait 0.037.
+  #
+  # Ne depend d'aucun terme de recompense : la retirer ou la changer ne peut plus
+  # eteindre l'instrument, ce qui est exactement ce qui est arrive ce jour-la.
+  cfg.metrics["sole_height"] = MetricsTermCfg(
+    func=mdp.log_sole_height,
+    params={"asset_cfg": SceneEntityCfg("robot", site_names=("left_foot", "right_foot"))},
+  )
 
   _apply_policy0_baseline(cfg)
   return cfg

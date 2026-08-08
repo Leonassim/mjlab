@@ -387,3 +387,36 @@ def joint_vel_encoder_finite_difference(
   env._encoder_fd_prev_q = q  # type: ignore[attr-defined]
   env._encoder_fd_cache = (key, vel)  # type: ignore[attr-defined]
   return vel
+
+
+def log_sole_height(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Hauteur de semelle, mesuree sans passer par un evenement de contact.
+
+  Remplace Metrics/peak_height_mean, qui sous-estimait d'un facteur ~70.
+  Celle-la etait publiee par split_feet_swing_height, qui remet son pic a zero
+  des le PREMIER coin qui touche alors que le booleen d'atterrissage est vrai
+  pour chacun des quatre, sur plusieurs pas successifs : le vrai pic n'etait
+  compte qu'une fois et les coins suivants ajoutaient des zeros a la moyenne. Le
+  biais etait maximal quand le pied deroule -- le defaut meme qu'on suivait. Le
+  2026-08-08 elle annoncait 0.0005 m la ou la mesure directe donnait 0.037.
+
+  Ici : aucun evenement, aucun etat, aucune remise a zero. On lit la hauteur des
+  sites de semelle a chaque pas et on publie des quantiles. La mediane dit la
+  phase d'appui, le p99 dit la levee. Rien a esquiver.
+
+  Le sol est estime par le p1 de l'echantillon plutot que suppose a zero, pour
+  rester juste si le terrain n'est pas plat.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
+  floor = torch.quantile(z.flatten(), 0.01)
+  rel = z - floor
+  log = env.extras.setdefault("log", {})
+  log["Metrics/sole_height_p50"] = torch.quantile(rel.flatten(), 0.50)
+  log["Metrics/sole_height_p90"] = torch.quantile(rel.flatten(), 0.90)
+  log["Metrics/sole_height_p99"] = torch.quantile(rel.flatten(), 0.99)
+  log["Metrics/sole_height_max"] = rel.max()
+  return rel.max(dim=1).values
