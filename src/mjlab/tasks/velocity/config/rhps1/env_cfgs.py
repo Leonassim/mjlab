@@ -4,6 +4,7 @@ from mjlab.asset_zoo.robots import RHPS1_ACTION_SCALE, get_rhps1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
@@ -1515,6 +1516,21 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.scene.terrain.terrain_generator.num_cols = 5
         cfg.scene.terrain.terrain_generator.num_rows = 5
         cfg.scene.terrain.terrain_generator.border_width = 10.0
+
+  # Randomisation des gains PD. Les 20000/400 ne sont pas une mesure : ce sont
+  # les valeurs d'un servo de position emule, le vrai robot cachant sa boucle
+  # P/PI dans le drive. Une politique entrainee sur une seule valeur apprend la
+  # reponse exacte de ce PD-la ; la randomiser l'oblige a rester correcte sur
+  # une famille de plants.
+  #
+  # +/-15 % et par articulation independamment : chaque drive a son propre
+  # reglage, donc un desaccord entre articulations est le cas realiste, et c'est
+  # aussi le plus exigeant.
+  cfg.events["actuator_gains"] = EventTermCfg(
+    func=mdp.randomize_actuator_gains,
+    mode="reset",
+    params={"stiffness_range": (0.85, 1.15), "damping_range": (0.85, 1.15)},
+  )
 
   # Hauteur de semelle, mesuree directement sur les sites. Elle remplace
   # Metrics/peak_height_mean, qui sous-estimait d'un facteur ~70 : ce pic-la

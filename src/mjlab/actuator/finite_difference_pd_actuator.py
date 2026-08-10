@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import torch
@@ -23,6 +23,27 @@ class FiniteDifferencePdActuatorCfg(IdealPdActuatorCfg):
 
   Higher values keep more of the previous filtered target and reduce abrupt
   setpoint jumps seen by the PD loop. ``0.0`` means no position filtering.
+  """
+
+  posture_task_stiffness: float | None = None
+  """Raideur de la PostureTask mc_rtc a reproduire, ``None`` pour desactiver.
+
+  Sur le robot, la sortie de la politique ne va PAS directement au PD : elle
+  traverse d'abord la ``PostureTask`` du QP, un second ordre en espace
+  articulaire de pulsation ``sqrt(K)`` et d'amortissement ``2*sqrt(K)``
+  (mc_rtc calcule l'amortissement automatiquement). A K=1600, la valeur retenue
+  pour le robot ET pour mc_mujoco, cela fait 40 rad/s, soit environ 25 ms de
+  constante de temps -- cinq pas de politique de retard que l'entrainement ne
+  voyait pas.
+
+  Ce filtre place le meme second ordre en amont du PD :
+
+      qdd_f = K*(q_cmd - q_f) - 2*sqrt(K)*qd_f
+
+  Le PD suit ensuite ``q_f`` au lieu de ``q_cmd``. Tout le reste de cet
+  actionneur -- difference finie, EMA de vitesse, projection de faisabilite --
+  travaille sur la sortie du filtre, comme sur le robot ou ces etages sont bien
+  en aval du QP.
   """
 
   velocity_target_limit: float | None = None
@@ -128,6 +149,12 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     super().__init__(cfg, entity, target_ids, target_names)
     self._last_position_target: torch.Tensor | None = None
     self._filtered_position_target: torch.Tensor | None = None
+    # Etat du second ordre reproduisant la PostureTask. Voir
+    # posture_task_stiffness. Le pas de sous-etape n'est connu que dans
+    # update(dt) ; tant qu'il ne l'est pas, le filtre laisse passer.
+    self._posture_q: torch.Tensor | None = None
+    self._posture_qd: torch.Tensor | None = None
+    self._substep_dt: float | None = None
     self._desired_velocity_target: torch.Tensor | None = None
     self._elapsed_since_target_update: torch.Tensor | None = None
     self._initialized: torch.Tensor | None = None
@@ -234,6 +261,8 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     self._filtered_position_target = torch.zeros(
       shape, device=device, dtype=torch.float
     )
+    self._posture_q = torch.zeros(shape, device=device, dtype=torch.float)
+    self._posture_qd = torch.zeros(shape, device=device, dtype=torch.float)
     self._desired_velocity_target = torch.zeros(shape, device=device, dtype=torch.float)
     self._elapsed_since_target_update = torch.zeros(
       shape, device=device, dtype=torch.float
@@ -266,6 +295,30 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
         self._elapsed_since_target_update,
       )
       self._initialized = torch.ones_like(self._initialized)
+      if self._posture_q is not None:
+        # Seeder sur la cible, pas sur zero : sinon le filtre demarre a la
+        # position nulle et envoie le robot chercher q=0 au premier pas.
+        self._posture_q = torch.where(uninitialized, cmd.position_target,
+                                      self._posture_q)
+        assert self._posture_qd is not None
+        self._posture_qd = torch.where(uninitialized,
+                                       torch.zeros_like(self._posture_qd),
+                                       self._posture_qd)
+
+    # PostureTask du QP, reproduite en amont de tout le reste : sur le robot le
+    # QP est bien avant la difference finie et la projection.
+    posture_k = self.cfg.posture_task_stiffness
+    if posture_k is not None and self._substep_dt is not None:
+      assert self._posture_q is not None and self._posture_qd is not None
+      dt = self._substep_dt
+      acc = posture_k * (cmd.position_target - self._posture_q) \
+          - 2.0 * (posture_k ** 0.5) * self._posture_qd
+      # Semi-implicite : vitesse d'abord, puis position avec la vitesse a jour.
+      # Plus stable que l'explicite pur pour le meme cout, ce qui compte ici
+      # puisque sqrt(K)*dt vaut 0.1 a K=1600 et dt=0.0025.
+      self._posture_qd = self._posture_qd + acc * dt
+      self._posture_q = self._posture_q + self._posture_qd * dt
+      cmd = replace(cmd, position_target=self._posture_q)
 
     filtered_position_target = cmd.position_target
     pos_alpha = float(self.cfg.position_target_filter_alpha)
@@ -472,6 +525,9 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
   def update(self, dt: float) -> None:
     assert self._elapsed_since_target_update is not None
     self._elapsed_since_target_update += dt
+    # Seul endroit ou le pas de sous-etape est connu ; compute() en a besoin
+    # pour integrer le filtre de PostureTask.
+    self._substep_dt = dt
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
     super().reset(env_ids)
@@ -484,6 +540,12 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     assert self._initialized is not None
     if self._executed_position_target is not None:
       self._executed_position_target[env_ids] = 0.0
+    # L'etat du filtre de PostureTask doit repartir de zero avec _initialized,
+    # sinon le nouvel episode herite de la posture du precedent et le filtre
+    # tire le robot vers elle pendant ses 25 ms de constante de temps.
+    for _buf in (self._posture_q, self._posture_qd):
+      if _buf is not None:
+        _buf[env_ids] = 0.0
     for _buf in (
       self._raw_torque_peak,
       self._raw_torque_peak_kp,

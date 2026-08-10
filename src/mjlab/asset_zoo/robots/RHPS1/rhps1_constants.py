@@ -288,10 +288,25 @@ RHPS1_ACTUATOR_CROTCH_Y = FiniteDifferencePdActuatorCfg(
   stiffness=20000.0,
   damping=400.0,
   effort_limit=35.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.06252,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.07087
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=8.0,
   velocity_limits=8.0,
@@ -343,10 +358,25 @@ RHPS1_ACTUATOR_KNEE_L = FiniteDifferencePdActuatorCfg(
   stiffness=20000.0,
   damping=400.0,
   effort_limit=70.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.10672,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.27651
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
   velocity_limits=10.0,
@@ -360,10 +390,25 @@ RHPS1_ACTUATOR_KNEE_R = FiniteDifferencePdActuatorCfg(
   stiffness=20000.0,
   damping=400.0,
   effort_limit=70.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.10672,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.27651
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
   velocity_limits=10.0,
@@ -405,10 +450,25 @@ RHPS1_ACTUATOR_TORSO = FiniteDifferencePdActuatorCfg(
   stiffness=44000.0,
   damping=440.0,
   effort_limit=120.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.19251,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.03994
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -422,10 +482,25 @@ RHPS1_ACTUATOR_SHOULDER_Y = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=50.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.02556,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.02556
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -439,10 +514,25 @@ RHPS1_ACTUATOR_SHOULDER_P = FiniteDifferencePdActuatorCfg(
   stiffness=15000.0,
   damping=240.0,
   effort_limit=50.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.1504,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.0312
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -456,10 +546,25 @@ RHPS1_ACTUATOR_SHOULDER_R = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=50.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.02556,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.02556
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -473,10 +578,25 @@ RHPS1_ACTUATOR_ELBOW_P = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=40.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.0264,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.0264
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -490,10 +610,25 @@ RHPS1_ACTUATOR_ELBOW_Y = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=40.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.0264,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.0264
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -507,10 +642,25 @@ RHPS1_ACTUATOR_WRIST = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=30.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.01485,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.01485
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
   velocity_limits=6.0,
@@ -538,10 +688,25 @@ RHPS1_ACTUATOR_HEAD = FiniteDifferencePdActuatorCfg(
   stiffness=2000.0,
   damping=50.0,
   effort_limit=13.0,
-  # Armature reelle (n_channels * JM * N^2), document de calibration RHPS1_gains,
-  # appliquee le 2026-08-07. Etait un placeholder a 1.0, soit un facteur ~10 sur
-  # l'inertie rotor du genou.
-  armature=0.00331,
+  # armature=1.0 DELIBEREMENT, ce n'est pas une valeur manquante.
+  #
+  # Les gains PD de ce fichier (20000/400 sur les jambes) emulent un servo de
+  # position raide ; ils ont ete regles AVEC armature=1.0 et n'en sont pas
+  # separables. Mesure le 2026-08-10 sur un systeme a 1 DDL reproduisant le
+  # poignet : avec l'armature reelle le critere d'integration explicite
+  # kd*dt/M vaut 13 pour un seuil de 2. Sans ecretage l'articulation part a
+  # 2420 rad ; avec ecretage au effort_limit elle bourdonne en restant collee
+  # a sa limite -- ce que confirme torque_limit_ratio_max = 1.0000 sur tout le
+  # run 2026-08-07_15-40-43, qui tournait avec les vraies valeurs.
+  #
+  # Reduire le pas de temps ne sauve pas : le pire cas demande dt <= 76 us.
+  # implicitfast non plus, MuJoCo ne peut pas integrer implicitement un couple
+  # fourni via ctrl.
+  #
+  # Les activer demande de retuner kp et kd par articulation pour preserver la
+  # reponse en boucle fermee, donc de refaire action_scale (= effort_limit/kp).
+  # Valeur reelle de cette articulation, pour ce jour-la : 0.00331
+  armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=4.0,
   velocity_limits=4.0,
@@ -994,6 +1159,20 @@ def get_rhps1_robot_cfg() -> EntityCfg:
 # removes the policy's incentive to ride the projection -- riding it is itself a
 # flat region, the very thing the projection exists to remove. soft_ratio 0.7 is
 # deliberately *below* this 1.0 so the pull starts inside the feasible set.
+# Raideur de la PostureTask du QP mc_rtc, reproduite en amont du PD.
+#
+# 1600 est la MEME valeur des deux cotes du transfert : sur le robot (mesuree
+# par Leo, meilleur comportement) et dans mc_mujoco. Ce n'est pas un hasard, les
+# deux correspondent au meme sqrt(K)*dt = 0.20 -- le nombre qui gouverne la
+# stabilite en temps discret -- 1600 a 200 Hz et 40000 a 1 kHz. La formule
+# historique du controleur variait en 1/dt alors qu'il faut 1/dt^2, d'ou l'ecart
+# qu'on a corrige.
+#
+# Jusqu'ici l'entrainement envoyait la sortie de la politique DIRECTEMENT au PD,
+# alors que sur le robot elle traverse d'abord ce second ordre : 40 rad/s, soit
+# ~25 ms, cinq pas de politique de retard que le reseau n'a jamais vus.
+_POSTURE_TASK_STIFFNESS = 1600.0
+
 _TORQUE_FEASIBILITY_RATIO = 1.0
 
 # Control period: one policy step. Must equal the env's step_dt
@@ -1051,6 +1230,7 @@ for a in RHPS1_ARTICULATION.actuators:
   assert isinstance(a, FiniteDifferencePdActuatorCfg)
   a.torque_feasibility_ratio = _TORQUE_FEASIBILITY_RATIO
   a.velocity_target_filter_alpha = _VELOCITY_TARGET_FILTER_ALPHA
+  a.posture_task_stiffness = _POSTURE_TASK_STIFFNESS
 
 # One raw action unit = the instantaneous change in position target that, on its
 # own, produces exactly the effort limit:
