@@ -1570,10 +1570,21 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # d'ailleurs un avertissement explicite a ce sujet. alpha_range scale les deux
   # de facon coherente. +/-10 % : l'incertitude plausible sur une masse de
   # segment mesuree au CAO, pas une variation reelle entre exemplaires.
+  #
+  # ATTENTION : alpha est un LOGARITHME, la masse et l'inertie sont multipliees
+  # par exp(2*alpha), et le defaut de la fonction est (0.0, 0.0). Ecrit (0.9,
+  # 1.1) le 2026-08-12 en le prenant pour un multiplicateur, ce qui donnait
+  # exp(1.8)=6.05 a exp(2.2)=9.03 : chaque corps pesait six a neuf fois son
+  # poids, le robot faisait 350 a 520 kg au lieu de 57.6, et il s'effondrait en
+  # 1.4 s quoi que fasse la politique. Le run 2026-08-12_16-04-55 est mort de
+  # ca -- longueur d'episode figee a 70 pas de l'iteration 50 a 492, zero
+  # time_out, alors que la reference tenait 3700 pas.
+  #
+  # +/-10 % s'ecrit donc alpha = ln(1.1)/2 = 0.0477 et ln(0.9)/2 = -0.0527.
   cfg.events["link_inertia"] = EventTermCfg(
     func=mdp.dr.pseudo_inertia,
     mode="startup",
-    params={"alpha_range": (0.9, 1.1), "asset_cfg": SceneEntityCfg("robot")},
+    params={"alpha_range": (-0.0527, 0.0477), "asset_cfg": SceneEntityCfg("robot")},
   )
 
   # Le decalage de centre de masse existait deja mais ne portait que sur le
