@@ -1532,6 +1532,84 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     params={"stiffness_range": (0.85, 1.15), "damping_range": (0.85, 1.15)},
   )
 
+  # --- Elargissement de la randomisation, 2026-08-12 -----------------------
+  #
+  # L'audit du 2026-08-12 a montre que la randomisation reelle etait plus
+  # etroite que ce qu'on croyait : pas de masse, pas d'inertie, un decalage de
+  # centre de masse limite au torse, aucune perturbation externe, et une
+  # friction tiree une seule fois au demarrage et PARTAGEE par les 4096
+  # environnements -- donc une seule valeur de friction pour tout un run.
+  #
+  # Principe applique ici : randomiser ce qu'on n'a pas identifie, et avec des
+  # plages qui restent physiquement plausibles. Ce n'est pas une couverture
+  # maximale, c'est une couverture honnete.
+
+  # Friction par environnement et par episode, au lieu d'une valeur unique
+  # tiree au demarrage. shared_random=False est le vrai changement : avec True,
+  # les 4096 environnements voyaient le meme sol, ce qui ne randomise rien du
+  # point de vue de la politique. Plage elargie vers le bas (0.4) : un sol plus
+  # glissant que 0.5 est le cas qui fait tomber, et il n'etait jamais echantillonne.
+  cfg.events["foot_friction"].mode = "reset"
+  cfg.events["foot_friction"].params["ranges"] = (0.4, 1.0)
+  cfg.events["foot_friction"].params["shared_random"] = False
+
+  # Masse ET inertie ensemble, via pseudo_inertia : dr.body_mass seul laisse le
+  # tenseur d'inertie inchange, ce qui modelise une masse ponctuelle au centre
+  # de masse plutot qu'un changement de densite -- le code de mjlab emet
+  # d'ailleurs un avertissement explicite a ce sujet. alpha_range scale les deux
+  # de facon coherente. +/-10 % : l'incertitude plausible sur une masse de
+  # segment mesuree au CAO, pas une variation reelle entre exemplaires.
+  cfg.events["link_inertia"] = EventTermCfg(
+    func=mdp.dr.pseudo_inertia,
+    mode="startup",
+    params={"alpha_range": (0.9, 1.1), "asset_cfg": SceneEntityCfg("robot")},
+  )
+
+  # Le decalage de centre de masse existait deja mais ne portait que sur le
+  # torse. L'etendre a tous les corps couvre l'erreur d'assemblage et de
+  # modelisation ailleurs que dans le tronc, avec une plage plus serree (+/-1 cm)
+  # puisqu'elle s'applique maintenant a des segments bien plus petits.
+  cfg.events["link_com"] = EventTermCfg(
+    func=mdp.dr.body_com_offset,
+    mode="startup",
+    params={
+      "asset_cfg": SceneEntityCfg("robot"),
+      "operation": "add",
+      "ranges": {0: (-0.01, 0.01), 1: (-0.01, 0.01), 2: (-0.01, 0.01)},
+    },
+  )
+
+  # Poussee externe : absente jusqu'ici alors que c'est le terme standard de la
+  # litterature locomotion, et le seul qui teste la recuperation plutot que le
+  # suivi. Impulsion instantanee sur la base, toutes les 8 a 12 s -- donc zero
+  # a deux fois par episode de 20 s. 0.4 m/s lateral est un desequilibre net
+  # sans etre une chute programmee.
+  cfg.events["push_base"] = EventTermCfg(
+    func=mdp.push_by_setting_velocity,
+    mode="interval",
+    interval_range_s=(8.0, 12.0),
+    params={"velocity_range": {"x": (-0.4, 0.4), "y": (-0.4, 0.4)}},
+  )
+
+  # Posture de depart : les offsets articulaires au reset etaient a (0, 0),
+  # donc chaque episode demarrait exactement a q0. Une politique entrainee
+  # ainsi n'a jamais a rattraper une posture initiale imparfaite, ce qui est
+  # pourtant le cas au moment de l'armement sur le robot. +/-0.05 rad est petit
+  # devant l'amplitude d'un pas et suffit a supprimer cette hypothese.
+  cfg.events["reset_robot_joints"].params["position_range"] = (-0.05, 0.05)
+
+  # Raideur du filtre de PostureTask, donc du retard vu par la politique. Le
+  # taux de resolution du QP vaut 200 Hz sur le robot contre 1 kHz en
+  # simulation de validation et n'est pas garanti stable sous charge CPU ;
+  # +/-25 % couvre cette incertitude. L'amortissement suit en 2*sqrt(K) dans
+  # l'actionneur, comme mc_rtc le fait : c'est un plant qu'on randomise, pas
+  # deux gains independants.
+  cfg.events["posture_filter"] = EventTermCfg(
+    func=mdp.randomize_posture_task_stiffness,
+    mode="reset",
+    params={"stiffness_range": (0.75, 1.25)},
+  )
+
   # Hauteur de semelle, mesuree directement sur les sites. Elle remplace
   # Metrics/peak_height_mean, qui sous-estimait d'un facteur ~70 : ce pic-la
   # etait remis a zero des le premier coin qui touche alors que l'atterrissage se

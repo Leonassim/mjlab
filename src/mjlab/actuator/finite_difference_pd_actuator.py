@@ -154,6 +154,11 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     # update(dt) ; tant qu'il ne l'est pas, le filtre laisse passer.
     self._posture_q: torch.Tensor | None = None
     self._posture_qd: torch.Tensor | None = None
+    # Raideur par environnement plutot que scalaire de cfg : elle est
+    # randomisable (voir randomize_posture_task_stiffness). Seedee depuis la
+    # cfg a l'initialisation ; reste uniforme si personne ne la randomise.
+    self.posture_stiffness: torch.Tensor | None = None
+    self.default_posture_stiffness: torch.Tensor | None = None
     self._substep_dt: float | None = None
     self._desired_velocity_target: torch.Tensor | None = None
     self._elapsed_since_target_update: torch.Tensor | None = None
@@ -263,6 +268,11 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     )
     self._posture_q = torch.zeros(shape, device=device, dtype=torch.float)
     self._posture_qd = torch.zeros(shape, device=device, dtype=torch.float)
+    if self.cfg.posture_task_stiffness is not None:
+      self.posture_stiffness = torch.full(
+        shape, float(self.cfg.posture_task_stiffness), device=device,
+        dtype=torch.float)
+      self.default_posture_stiffness = self.posture_stiffness.clone()
     self._desired_velocity_target = torch.zeros(shape, device=device, dtype=torch.float)
     self._elapsed_since_target_update = torch.zeros(
       shape, device=device, dtype=torch.float
@@ -307,12 +317,14 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
 
     # PostureTask du QP, reproduite en amont de tout le reste : sur le robot le
     # QP est bien avant la difference finie et la projection.
-    posture_k = self.cfg.posture_task_stiffness
+    posture_k = self.posture_stiffness
     if posture_k is not None and self._substep_dt is not None:
       assert self._posture_q is not None and self._posture_qd is not None
       dt = self._substep_dt
+      # Amortissement critique 2*sqrt(K), comme mc_rtc le calcule lui-meme --
+      # il suit donc K quand celui-ci est randomise, au lieu de rester fige.
       acc = posture_k * (cmd.position_target - self._posture_q) \
-          - 2.0 * (posture_k ** 0.5) * self._posture_qd
+          - 2.0 * torch.sqrt(posture_k) * self._posture_qd
       # Semi-implicite : vitesse d'abord, puis position avec la vitesse a jour.
       # Plus stable que l'explicite pur pour le meme cout, ce qui compte ici
       # puisque sqrt(K)*dt vaut 0.1 a K=1600 et dt=0.0025.
