@@ -1869,7 +1869,26 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
       # vitesse vaut 1.03 rad/s d'ecart-type, dont 1.02 vient de la difference
       # finie elle-meme et non du bruit -- c'est bien la derivation qui domine,
       # comme sur le robot. A 0.01 on monterait a 1.93, soit deux fois le signal.
-      params={"encoder_noise": 0.001},
+      # 5e-5, pas 0.001 (2026-08-12). Mesure contre le log robot reel
+      # 2026-08-10-17-08 : a l'arret, la vitesse articulaire vue par le
+      # controleur a un ecart-type de 0.0079 rad/s. La meme mesure en
+      # simulation, apres stabilisation, donnait 0.1628 avec 0.001 -- soit 21
+      # fois trop de bruit sur un canal entier d'observation, que la politique
+      # aurait appris a ignorer purement et simplement.
+      #
+      # La raison est physique : les encodeurs de RHPS1 ont un pas de
+      # quantification de 6e-7 rad cote articulation, donc les deriver
+      # n'amplifie presque rien. 0.001 rad valait 1600 fois le pas reel. Le
+      # raisonnement de la docstring sur l'anti-correlation reste juste, mais
+      # l'effet est invisible ici : l'autocorrelation a lag 1 du signal reel
+      # vaut +0.978, c'est du mouvement, pas du bruit derive.
+      #
+      # Etalonnage mesure : 0.001 -> 0.163, 2e-4 -> 0.034, 1e-4 -> 0.017,
+      # 5e-5 -> 0.0097, 0 -> 0.0041. On garde 5e-5 plutot que 4e-5 pile : la
+      # cible vient d'un seul essai sur un seul robot, une marge de 1.2x est
+      # raisonnable, et le plancher a bruit nul (0.0041) montre que la moitie
+      # du bruit reel n'est de toute facon pas d'origine encodeur.
+      params={"encoder_noise": 0.00005},
       noise=None,
     )
   # Le critic peut garder ses canaux privilegies (foot_height_scan,
