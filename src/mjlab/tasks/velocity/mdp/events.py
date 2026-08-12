@@ -114,3 +114,54 @@ def randomize_posture_task_stiffness(
       "posture_stiffness. Le filtre de PostureTask est-il configure "
       "(posture_task_stiffness) ?"
     )
+
+
+def randomize_sensor_bias(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  bias_ranges: dict[str, tuple[float, float]] | None = None,
+) -> None:
+  """Tire un biais capteur constant par episode et par environnement.
+
+  Distinct du bruit d'observation, qui est recentre a chaque pas : un
+  estimateur reel se trompe dans la meme direction pendant tout un essai. Une
+  politique entrainee uniquement contre du bruit centre apprend a le moyenner
+  sur son historique et reste donc entierement credule face a un decalage
+  constant -- exactement le cas qui produit une posture systematiquement
+  penchee sur le robot alors que la simulation est saine.
+
+  Les cles doivent correspondre a celles que lisent
+  ``observations.base_lin_vel_biased`` / ``projected_gravity_biased`` ; un
+  terme d'observation qui n'utilise pas ces fonctions ignore le biais en
+  silence, d'ou la validation ci-dessous.
+
+  Le biais est tire par axe et par environnement, jamais partage : un biais
+  commun a 4096 environnements serait une constante de plus dans le plant, pas
+  une randomisation.
+  """
+  known = {"base_lin_vel": 3, "projected_gravity": 3, "base_ang_vel": 3}
+  if bias_ranges is None:
+    bias_ranges = {}
+  unknown = set(bias_ranges) - set(known)
+  if unknown:
+    raise ValueError(
+      f"randomize_sensor_bias: cles inconnues {sorted(unknown)}. "
+      f"Attendu parmi {sorted(known)}."
+    )
+
+  store: dict[str, torch.Tensor] = getattr(env, "_rhps1_sensor_bias", {})
+  if not hasattr(env, "_rhps1_sensor_bias"):
+    setattr(env, "_rhps1_sensor_bias", store)
+
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device)
+
+  for key, (lo, hi) in bias_ranges.items():
+    dim = known[key]
+    tensor = store.get(key)
+    if tensor is None:
+      tensor = torch.zeros((env.num_envs, dim), device=env.device)
+      store[key] = tensor
+    tensor[env_ids] = torch.empty(
+      (len(env_ids), dim), device=env.device
+    ).uniform_(lo, hi)

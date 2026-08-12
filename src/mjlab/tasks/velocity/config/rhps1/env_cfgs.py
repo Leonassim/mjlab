@@ -225,6 +225,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     base_ang_vel_term.noise = Unoise(n_min=-0.3, n_max=0.3)
   proj_grav_term = old_terms.get("projected_gravity")
   if proj_grav_term is not None:
+    proj_grav_term.func = mdp.projected_gravity_biased
+    proj_grav_term.params = {}
     proj_grav_term.noise = Unoise(n_min=-0.1, n_max=0.1)
   for term in old_terms.values():
     if getattr(term, "history_length", None) is not None and term.history_length > 1:
@@ -234,7 +236,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     old_terms["command"].flatten_history_dim = True
   new_terms = {
     "base_lin_vel": ObservationTermCfg(
-      func=mdp.base_lin_vel,
+      # _biased : biais constant par episode, tire par l'evenement
+      # "sensor_bias". A l'entrainement cette valeur est la verite terrain de
+      # MuJoCo ; sur le robot c'est la sortie de l'observateur de base
+      # flottante, qui derive. Voir mdp.base_lin_vel_biased.
+      func=mdp.base_lin_vel_biased,
       history_length=history_len,
       flatten_history_dim=True,
     )
@@ -1608,6 +1614,49 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     func=mdp.randomize_posture_task_stiffness,
     mode="reset",
     params={"stiffness_range": (0.75, 1.25)},
+  )
+
+  # Biais capteur constants sur l'episode (2026-08-12). Motive par une
+  # observation sur le robot : il se tient systematiquement sur l'arriere et
+  # tombe en arriere des qu'on lui commande une vitesse negative, alors que la
+  # simulation est saine.
+  #
+  # Ce qui a ete elimine par la mesure avant d'en arriver la : la posture
+  # nominale est centree dans le polygone de sustentation (CoM x=-16.4 mm,
+  # talon -129.6, pointe +105.4, soit 48 % depuis le talon) ; les plages de
+  # commande sont symetriques ((-0.3, 0.3) en x au niveau max) ; les butees
+  # articulaires laissent 1.11 rad d'un cote et 0.94 de l'autre a la cheville.
+  # Aucune de ces trois pistes ne produit d'asymetrie avant/arriere.
+  #
+  # Reste une asymetrie qui ne vit pas dans le modele mais dans la mesure. Le
+  # bruit d'observation existant est recentre a chaque pas ; un estimateur
+  # reel, lui, se trompe dans la meme direction pendant tout l'essai. Avec cinq
+  # pas d'historique la politique moyenne le premier et reste entierement
+  # credule face au second, ce qui est exactement la forme du symptome :
+  # systematique et toujours du meme cote.
+  #
+  # base_lin_vel : 0.05 m/s, soit 17 % de la commande maximale. C'est le canal
+  # le plus suspect -- verite terrain MuJoCo a l'entrainement, sortie d'un
+  # estimateur cinematique-inertiel sur le robot, et il n'avait aucun bruit du
+  # tout, pas meme centre.
+  #
+  # projected_gravity : 0.05 sur un vecteur unitaire, soit environ 2.9 deg
+  # d'assiette. Couvre un defaut de montage de la centrale comme un biais
+  # d'assiette de l'estimateur. Une erreur d'assiette constante se traduit
+  # directement en inclinaison reelle constante, dans l'autre sens.
+  #
+  # base_ang_vel volontairement absent bien que la fonction l'accepte : un
+  # biais gyrometrique produit une derive en lacet, pas une inclinaison, et il
+  # serait de toute facon noye sous le bruit de +/-0.3 rad/s deja present.
+  cfg.events["sensor_bias"] = EventTermCfg(
+    func=mdp.randomize_sensor_bias,
+    mode="reset",
+    params={
+      "bias_ranges": {
+        "base_lin_vel": (-0.05, 0.05),
+        "projected_gravity": (-0.05, 0.05),
+      }
+    },
   )
 
   # Hauteur de semelle, mesuree directement sur les sites. Elle remplace

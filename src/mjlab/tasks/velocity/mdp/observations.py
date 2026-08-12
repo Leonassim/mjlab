@@ -420,3 +420,61 @@ def log_sole_height(
   log["Metrics/sole_height_p99"] = torch.quantile(rel.flatten(), 0.99)
   log["Metrics/sole_height_max"] = rel.max()
   return rel.max(dim=1).values
+
+
+##
+# Biais capteur constants (voir events.randomize_sensor_bias).
+##
+
+_SENSOR_BIAS_ATTR = "_rhps1_sensor_bias"
+
+
+def _apply_bias(env: ManagerBasedRlEnv, key: str, value: torch.Tensor) -> torch.Tensor:
+  """Ajoute le biais constant de l'episode courant, s'il y en a un."""
+  bias = getattr(env, _SENSOR_BIAS_ATTR, {}).get(key)
+  return value if bias is None else value + bias
+
+
+def base_lin_vel_biased(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+) -> torch.Tensor:
+  """Vitesse lineaire de base avec un biais constant par episode.
+
+  A l'entrainement cette observation est la verite terrain de MuJoCo. Sur le
+  robot elle vient de ``rr.bodyVelW(base).linear()``, c'est-a-dire de
+  l'observateur de base flottante -- un estimateur cinematique-inertiel dont
+  le biais est precisement le mode de defaillance connu : il derive lentement
+  et ne se recale que sur les contacts.
+
+  Le bruit centre par pas qui existe deja sur les autres termes n'apprend rien
+  contre ca. Avec un historique de cinq pas, une politique moyenne un bruit
+  centre et retrouve la valeur vraie ; un decalage constant survit exactement
+  a cette moyenne. Les deux ne sont pas le meme defaut et le second n'etait
+  pas modelise du tout.
+
+  Effet recherche : que la politique cesse de croire ce canal sur parole et
+  s'appuie davantage sur ce qui est fiable (encodeurs, gyrometre). C'est la
+  version douce du choix, courant en locomotion humanoide, de simplement
+  retirer la vitesse de base des observations.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  return _apply_bias(env, "base_lin_vel", asset.data.root_link_lin_vel_b)
+
+
+def projected_gravity_biased(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+) -> torch.Tensor:
+  """Gravite projetee avec un biais constant par episode.
+
+  Un defaut de montage de la centrale inertielle, ou un biais d'assiette de
+  l'estimateur, decale ce vecteur en permanence dans la meme direction. La
+  politique lit alors une inclinaison qui n'existe pas et compense en
+  s'inclinant reellement dans l'autre sens -- une erreur d'assiette constante
+  se traduit directement en posture penchee constante.
+
+  Le vecteur n'est pas renormalise apres ajout du biais : sur le robot rien ne
+  garantit que la sortie de l'estimateur soit de norme un, et renormaliser
+  fabriquerait une coherence que le materiel n'offre pas.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  return _apply_bias(env, "projected_gravity", asset.data.projected_gravity_b)
