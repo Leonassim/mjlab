@@ -241,6 +241,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       # MuJoCo ; sur le robot c'est la sortie de l'observateur de base
       # flottante, qui derive. Voir mdp.base_lin_vel_biased.
       func=mdp.base_lin_vel_biased,
+      # Bruit mesure sur le log robot reel 2026-08-10-17-08 : ecart-type 0.0142
+      # a l'arret ou la verite vaut zero, 0.0586 en marche. Unoise(+/-0.1) donne
+      # 0.058, cale sur le second. Ce terme n'avait aucun bruit du tout, alors
+      # que c'est celui dont l'estimation est la moins fiable.
+      noise=Unoise(n_min=-0.1, n_max=0.1),
       history_length=history_len,
       flatten_history_dim=True,
     )
@@ -1635,15 +1640,27 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # credule face au second, ce qui est exactement la forme du symptome :
   # systematique et toujours du meme cote.
   #
-  # base_lin_vel : 0.05 m/s, soit 17 % de la commande maximale. C'est le canal
-  # le plus suspect -- verite terrain MuJoCo a l'entrainement, sortie d'un
-  # estimateur cinematique-inertiel sur le robot, et il n'avait aucun bruit du
-  # tout, pas meme centre.
+  # Chiffres revus le 2026-08-12 contre le log ROBOT REEL 2026-08-10-17-08
+  # (200 Hz ; mc_mujoco tourne a 1 kHz), qui a confirme l'un des deux canaux et
+  # infirme l'autre.
   #
-  # projected_gravity : 0.05 sur un vecteur unitaire, soit environ 2.9 deg
-  # d'assiette. Couvre un defaut de montage de la centrale comme un biais
-  # d'assiette de l'estimateur. Une erreur d'assiette constante se traduit
-  # directement en inclinaison reelle constante, dans l'autre sens.
+  # base_lin_vel : confirme, et c'est le canal serieux. Sur 30 s de marche la
+  # pose estimee par MCWaiko bouge de -0.017 m pendant que sa propre vitesse
+  # integree donne +0.502 m -- deux sorties du meme observateur qui divergent
+  # d'un facteur 30. Le biais vaut +0.0167 m/s en marche (0.0167 * 30 s = 0.502
+  # m, la divergence se referme exactement) contre +0.0002 m/s a l'arret : le
+  # biais nait du mouvement, il n'existe pas au repos. On garde 0.05, soit
+  # trois fois le mesure : la mesure porte sur un seul essai, a une seule
+  # allure, sur un sol propre, et le biais depend justement du mouvement.
+  #
+  # projected_gravity : infirme, et ramene de 0.05 a 0.01. Le -0.0138 lu a
+  # l'arret n'est pas une erreur d'estimation, c'est un vrai tangage du bassin
+  # : les encodeurs donnent -0.909 deg (soit -0.0159 en gravite projetee) pour
+  # la meme posture, l'estimateur annonce -0.0138, ils s'accordent a 0.12 deg.
+  # L'assiette est donc juste et 0.05 valait vingt-cinq fois l'erreur reelle.
+  # On garde 0.01 (~0.6 deg) parce que cet accord ne prouve qu'une coherence
+  # interne : il suppose les semelles a plat sur un sol de niveau, et un sol
+  # incline decalerait les deux estimations ensemble sans qu'on le voie.
   #
   # base_ang_vel volontairement absent bien que la fonction l'accepte : un
   # biais gyrometrique produit une derive en lacet, pas une inclinaison, et il
@@ -1654,7 +1671,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     params={
       "bias_ranges": {
         "base_lin_vel": (-0.05, 0.05),
-        "projected_gravity": (-0.05, 0.05),
+        "projected_gravity": (-0.01, 0.01),
       }
     },
   )
