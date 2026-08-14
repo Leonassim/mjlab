@@ -4,75 +4,88 @@ Un seul checkpoint, remplacé à chaque fois — pas un historique. Le but est d
 pouvoir le relire sur une autre machine sans traîner des dizaines de fichiers
 de 7 Mo dans l'historique git.
 
-`2026-07-29_01-13-36_model_9150.pt` — run 2026-07-29_01-13-36, itération
-9150/15000 (en cours). Le `.onnx` du même point est joint pour tester
-directement sous mc_rtc sans réexporter.
+`2026-08-12_20-36-28_model_14999.pt` — run 2026-08-12_20-36-28, itération
+finale 14999/15000 (run terminé). Le `.onnx` du même point est joint pour
+tester directement sous mc_rtc sans réexporter. `env.yaml` est la config
+effective de ce run.
 
-## ATTENTION — code à utiliser avec ce checkpoint
+## Ce que ce run apporte
 
-Ce checkpoint a été entraîné avec le code **tel qu'il est commité ici**, en
-particulier `_LEG_SCALE_MULTIPLIER = 7.0`.
+Première policy entraînée **avec le filtre de PostureTask modélisé**
+(`posture_task_stiffness = 1600` dans l'actionneur), c'est-à-dire avec les
+~25 ms de retard que le QP impose au déploiement et que l'entraînement
+ignorait jusqu'ici. Plus quatre correctifs mesurés contre le log robot réel
+du 2026-08-10 et une randomisation de domaine élargie :
 
-Un paquet de changements est en préparation sur la machine d'entraînement et
-**n'est pas poussé** : scale à 1.0, projection de faisabilité en couple dans
-l'actionneur, `init_std`/`std_range`/`entropy_coef` recalés. Ils sont
-incompatibles avec ce checkpoint — au scale 1.0 la même sortie réseau commande
-1/7 de l'amplitude articulaire. Si un `uv run play` donne un robot mou ou
-immobile, c'est ce décalage-là, pas la politique.
+- `alpha_range` de `link_inertia` corrigé — c'est un **logarithme**
+  (`exp(2*alpha)`), l'ancienne valeur simulait un robot de 350 kg
+- `encoder_noise` ramené de 0.001 à 5e-5 : mesuré contre le robot, 0.001
+  mettait 21× trop de bruit sur `joint_vel`
+- biais capteur constant par épisode (vitesse ±0.05, gravité ±0.01)
+- friction de sol **par environnement** (avant : un seul sol partagé par les
+  4096 envs, donc pas randomisé du tout), poussées de récupération, inertie
+  et centre de masse randomisés sur tous les corps
 
-## Où en est ce run
+## ATTENTION — ce checkpoint ne marche pas correctement
 
-Mesuré autour de l'itération 9180 (moyenne sur les 80 derniers points) :
+Mesuré en rollout **déterministe** (sans bruit d'exploration), 64
+environnements, `play=True`, curriculum désactivé, commande forcée et vérifiée
+exacte à 0.2 m/s sur 5 s :
 
-| indicateur | valeur | note |
+| percentile du déplacement | valeur | % du suivi |
 |---|---|---|
-| contacts à plat | 2.84 / 4 | meilleur point du run, progression continue depuis 2.67 |
-| vitesse d'impact | 0.064 | tenu depuis l'itération 5500 |
-| jerk d'action | 0.177 | stable |
-| suivi de vitesse | 2.71 | stable |
-| chutes par épisode | 0.100 | descendu de 0.13 |
-| appui simple à l'arrêt | 0.071 | continue de baisser |
-| balancement corps (lin/ang) | 0.068 / 0.235 | toujours plat depuis l'introduction du terme |
-| hauteur de pas | 0.0060 | **toujours bloqué**, cible 0.08 |
-| glissement | 0.0193 | |
-| ratio demande PD / limite couple | 3.27 | remonté depuis 2.74 |
-| ratio couple appliqué / limite | 0.745 | le couple appliqué est aux trois quarts de la limite en moyenne |
-| std d'exploration | 1.00 | 0.43 → 0.98 sur les 1000 premières itérations, puis plat 8000 itérations |
-| récompense moyenne | 10.02 | budget : +11.1 de tâche contre -10.3 de pénalités, ratio 0.93:1 |
+| p50 | +0.017 m | 2 % |
+| p90 | +0.111 m | 11 % |
+| p100 | +0.421 m | 42 % |
 
-## Déploiement
+**56 envs sur 64 en dessous de 10 % du suivi, aucun au-dessus de 50 %.** Le
+robot piétine et dérive très lentement au lieu d'avancer. Un tirage précédent
+avait un env à 80 %, donc il y a de la variance entre tirages — mais la
+médiane à 2 % est le chiffre représentatif.
 
-**Résolu depuis le checkpoint précédent** : le mode torque-clamp sous
-mc_mujoco fonctionne. La cause du "ça ne marche pas du tout" était un bug du
-contrôleur C++, pas la politique — mjlab incrémente
-`_elapsed_since_target_update` dans un hook `update(dt)` séparé appelé à chaque
-sous-pas physique, alors que le C++ ne l'incrémentait que dans la branche
-"cible inchangée", qui ne s'exécutait jamais. La vitesse estimée saturait donc
-à sa limite à chaque pas et le terme kd demandait des couples en bang-bang.
+Le comportement observé en mc_mujoco (pas de pas en avant) est donc **fidèle**
+à ce que fait la policy, ce n'est pas un problème de portage.
 
-**Pas encore validé** : le mode position/QP. Sans clamp de couple en aval du
-PD dans mc_rtc, une politique dont la demande PD est à 3.27x la limite ne
-transfère pas. C'est ce que le paquet non poussé corrige, et il faudra un
-nouvel entraînement pour en profiter.
+Piège de lecture à connaître : les **vidéos d'entraînement contiennent le
+bruit d'exploration**, qui fait bouger les jambes et donne l'apparence d'une
+marche. L'ONNX déployé est déterministe et n'a pas ce bruit. Toujours juger
+sur un rollout déterministe.
 
-## Deux points ouverts sur ce run
+## Métriques finales, comparées à la policy 0 (la seule validée sur robot)
 
-- `peak_height_mean` à 0.006 pour une cible à 0.08, plat depuis des milliers
-  d'itérations malgré `min_foot_height` à -100. Le poids n'est pas le
-  problème.
-- la std d'exploration s'équilibre à 1.00 (soit 0.049 rad, ~2.8°) et y reste,
-  contre une cible de conception de 0.021 rad. Ce n'est pas un emballement
-  (le plafond est à 1.3, elle ne le touche pas) mais un équilibre fixé par
-  `entropy_coef`.
+| | policy 0 | ce run |
+|---|---|---|
+| `impact_vel` | ~-0.19 | **-0.474** |
+| `fell_down` | 0.000 | **0.645** |
+| `torque_limit_ratio_mean` | 0.39–0.46 | **0.913** |
+| `sole_height_p50` | n/a (métrique buguée à l'époque) | 0.9 mm |
 
-## Relecture
+## Différences de plant avec la policy 0
 
-```
+Vérifiées paramètre par paramètre — la configuration de déploiement est
+correcte, ce ne sont pas des erreurs de recopie :
+
+| | policy 0 | ce run |
+|---|---|---|
+| `effort_limit` genou | 100 N·m | **70 N·m** |
+| `action_scale` genou | 0.0075 rad/unité | **0.00525** |
+| filtre PostureTask | absent | K=1600 |
+| projection de faisabilité couple | absente | active (ratio 1.0) |
+| EMA vitesse, `velLim`, décimation, dt | identiques (0.8 / 10 / 2 / 0.0025) | |
+
+Le rapport `scale/effort` est conservé (7.5e-5), donc ce n'est pas un
+déréglage — mais l'autorité absolue du genou est 30 % plus faible des deux
+côtés à la fois.
+
+## Reproduire la mesure
+
+```bash
 uv run play Mjlab-Velocity-Flat-RHPS1 \
-  --checkpoint-file test_checkpoint/2026-07-29_01-13-36_model_9150.pt \
-  --num-envs 1 --fast True
+  --checkpoint-file test_checkpoint/2026-08-12_20-36-28_model_14999.pt
 ```
 
-Les booléens de tyro exigent une valeur explicite : `--fast True`, pas
-`--fast` seul. `--print-impact-vel True` affiche vitesse d'impact et pic de
-hauteur à chaque pose.
+Pour le chiffre du tableau plutôt que l'impression visuelle, il faut un
+rollout déterministe avec la commande **forcée à chaque pas** et le curriculum
+désactivé (`cfg.curriculum = {}`) — sinon le curriculum réécrit les plages de
+commande et on mesure autre chose. C'est l'erreur qui a fausse mes deux
+premières tentatives.
