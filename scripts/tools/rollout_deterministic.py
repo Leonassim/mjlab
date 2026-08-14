@@ -1,29 +1,15 @@
-"""Mesurer si une policy avance vraiment, en deterministe.
+"""Measure whether a policy really advances, deterministically.
 
-Pourquoi ce script existe. Les videos d'entrainement contiennent le bruit
-d'exploration : les jambes bougent, ca ressemble a une marche, et l'ONNX
-deploye -- lui deterministe -- peut pietiner sur place. Le 2026-08-14 c'est
-exactement ce qui s'est passe : le run 2026-08-12_20-36-28 avait l'air de
-marcher a l'ecran et suivait 2 % de sa commande en deterministe.
+Two traps this avoids. The CURRICULUM rewrites the command ranges at every
+reset, so setting cfg.commands["twist"].ranges does nothing. And forcing the
+command after env.step() does nothing either: command_manager.compute() runs
+INSIDE step, just before the observation is built, so the only correct
+injection point is _update_command itself.
 
-Deux pieges que ce script evite, tous deux rencontres en essayant de faire la
-mesure a la main :
+Integrated displacement, not instantaneous velocity: velocity oscillates with
+the step, position does not.
 
-1. Le CURRICULUM reecrit les plages de commande a chaque reset. Regler
-   cfg.commands["twist"].ranges ne sert donc a rien : on croit mesurer 0.2 m/s
-   et la commande vue par le reseau va de -0.26 a +0.30. Il faut vider le
-   curriculum (cfg.curriculum = {}) ET forcer la commande a chaque pas.
-2. rel_standing_envs met par defaut 40 % des environnements en consigne
-   "immobile". Sans les neutraliser, la moyenne est ecrasee par des envs a qui
-   on n'a jamais demande d'avancer.
-
-Le script verifie et affiche la commande reellement vue par la policy, pour que
-le lecteur puisse constater qu'elle vaut bien la consigne et pas autre chose.
-
-On mesure le DEPLACEMENT integre, pas la vitesse instantanee : la vitesse
-oscille avec le pas et sa moyenne est bruitee, la position ne ment pas.
-
-  uv run python scripts/tools/rollout_deterministic.py <checkpoint.pt> [vitesse]
+  uv run python scripts/tools/rollout_deterministic.py <checkpoint.pt> [speed]
 """
 
 from __future__ import annotations

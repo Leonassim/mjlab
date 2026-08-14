@@ -1,22 +1,9 @@
-"""La policy sait-elle DEMARRER une marche, ou seulement l'entretenir ?
+"""Can the policy START a gait, or only sustain one?
 
-Les vidéos d'entrainement demarrent a un instant quelconque de l'episode : env 0
-est deja en mouvement depuis plusieurs secondes quand l'enregistrement commence.
-`uv run play`, mc_mujoco et tout banc de mesure demarrent au contraire depuis le
-reset, robot immobile. Si la policy a appris a entretenir une allure sans savoir
-l'amorcer, les deux observations -- "ca marche dans la vidéo" et "ca se bloque
-au lancement" -- sont vraies en meme temps.
+Training videos begin at an arbitrary point of an episode, with env 0 already
+moving. play, mc_mujoco and every bench start from reset, robot at rest.
 
-Trois conditions, meme checkpoint, meme commande, config d'entrainement :
-
-  depart arrete, 5 s     le protocole utilise jusqu'ici
-  depart arrete, 20 s    laisse le temps d'amorcer (episode d'entrainement)
-  depart lance, 5 s      vitesse initiale = commande, l'etat des vidéos
-
-On mesure le deplacement sur les 5 DERNIERES secondes de chaque condition :
-c'est le regime etabli, pas le transitoire.
-
-  uv run python scripts/tools/startup_vs_sustained.py <checkpoint.pt> [vitesse]
+  uv run python scripts/tools/startup_vs_sustained.py <checkpoint.pt> [speed]
 """
 
 from __future__ import annotations
@@ -70,8 +57,8 @@ def run(
   cmd.is_standing_env[:] = False
 
   if kick:
-    # Vitesse initiale egale a la commande : l'etat dans lequel se trouve env 0
-    # quand VideoRecorder commence a filmer, au lieu d'un robot a l'arret.
+    # Initial velocity equal to the command: the state env 0 is in when
+    # VideoRecorder starts filming, rather than a robot at rest.
     vel = torch.zeros((NUM_ENVS, 6), device=device)
     vel[:, 0] = fwd
     robot.write_root_link_velocity_to_sim(vel)

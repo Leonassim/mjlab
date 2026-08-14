@@ -1,16 +1,10 @@
-"""Temoin pour video_ground_motion.py : un robot qui avance a coup sur.
+"""Control for video_ground_motion.py: a robot that definitely advances.
 
-Mesurer un defilement de sol nul ne prouve rien si l'outil est incapable de
-mesurer un defilement tout court -- le sol du decor a un contraste faible. Ce
-script produit donc la reference manquante : la meme scene, la meme camera
-suiveuse, mais le robot est TRAINE en avant a vitesse constante en ecrivant sa
-vitesse de base a chaque pas. Le sol DOIT defiler.
+Measuring no ground scroll proves nothing unless the tool can measure scroll at
+all. Same scene, same tracking camera, but the robot is dragged forward at a
+constant speed, so the ground MUST scroll.
 
-Si l'outil voit ce defilement-la et pas celui de la video d'entrainement, le
-verdict sur la video est valide. S'il ne voit ni l'un ni l'autre, l'outil est
-aveugle et il faut le jeter.
-
-  uv run python scripts/tools/render_control_translation.py <checkpoint.pt> [vitesse]
+  uv run python scripts/tools/render_control_translation.py <checkpoint.pt> [speed]
 """
 
 from __future__ import annotations
@@ -62,8 +56,8 @@ def main() -> int:
     with torch.inference_mode():
       action = policy(obs)
     obs = env.step(action)[0]
-    # Imposer la vitesse d'avance apres chaque pas : le robot traverse le decor
-    # quoi que fasse la politique.
+    # Force the forward velocity after each step: the robot crosses the scene
+    # whatever the policy does.
     robot.write_root_link_velocity_to_sim(vel)
     if i % 4 == 0:
       frames.append(env_raw.render())

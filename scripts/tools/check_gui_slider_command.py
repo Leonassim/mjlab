@@ -1,15 +1,8 @@
-"""Le curseur du viewer atteint-il vraiment la policy ?
+"""Does the viewer slider actually reach the policy?
 
-Le terme de commande zero les environnements tires "immobiles" (rel_standing_envs
-= 0.4, conserve en mode play) A L'INTERIEUR de _update_command, juste avant
-_emit_command. L'override du curseur viser, lui, tourne APRES super().compute(),
-donc il ecrit dans vel_command_b une valeur que le compute suivant remet a zero
-avant de la propager vers vel_command_out -- qui est ce que la policy observe.
-
-Le chemin manette est different : get_gamepad_command() est appele DANS
-_update_command, apres le zerotage, donc lui passe.
-
-Ce script reproduit les deux chemins sur l'env 0 force en "immobile".
+The command term zeroes envs drawn "standing" (rel_standing_envs = 0.4, kept in
+play mode) inside _update_command. A slider write applied after compute() lands
+in vel_command_b and is zeroed again before it propagates.
 
   uv run python scripts/tools/check_gui_slider_command.py
 """
@@ -40,7 +33,7 @@ def main() -> int:
     f"world={bool(cmd.is_world_env[0])}"
   )
 
-  # Faux handles viser : meme interface que ce que create_gui() installe.
+  # Fake viser handles, same interface as what create_gui() installs.
   class _Handle:
     def __init__(self, value: float) -> None:
       self.value = value

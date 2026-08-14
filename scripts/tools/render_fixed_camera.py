@@ -1,18 +1,11 @@
-"""Rejouer un checkpoint devant une camera FIXE, pour voir s'il avance.
+"""Replay a checkpoint in front of a FIXED camera.
 
-Les videos d'entrainement sont filmees avec viewer.origin_type = ASSET_BODY : la
-camera suit le corps du robot, qui reste donc au centre de l'image qu'il avance
-ou qu'il pietine. Le temoin le prouve : un robot traine de 3.77 m en 3 s donne
-une video visuellement statique.
+Training videos use viewer.origin_type = ASSET_BODY, so the robot stays centred
+whether it advances or marches in place. With a WORLD camera the question is
+binary: it leaves the frame or it does not. Renders the policy and a dragged
+control for comparison.
 
-Avec une camera WORLD, la question devient binaire : le robot sort du cadre ou
-il n'en sort pas. Ce script rend les deux videos qu'il faut comparer :
-
-  policy    la politique livree a elle-meme, commande forcee
-  temoin    le meme robot traine a la vitesse commandee, quoi que fasse la
-            politique -- c'est a quoi ressemble un robot qui avance vraiment
-
-  uv run python scripts/tools/render_fixed_camera.py <checkpoint.pt> [vitesse]
+  uv run python scripts/tools/render_fixed_camera.py <checkpoint.pt> [speed]
 """
 
 from __future__ import annotations
@@ -41,8 +34,7 @@ def run(ckpt: str, fwd: float, drag: bool, out: str) -> float:
   if drag:
     cfg.terminations = {}
 
-  # Camera fixe, de cote, cadrant le depart : un robot qui avance de 1 m le
-  # traverse visiblement.
+  # Fixed side camera framing the start: 1 m of travel visibly crosses it.
   cfg.viewer.origin_type = ViewerConfig.OriginType.WORLD
   cfg.viewer.lookat = (0.8, 0.0, 0.6)
   cfg.viewer.distance = 4.5

@@ -1,10 +1,8 @@
-"""La normalisation d'observation survit-elle au chargement du checkpoint ?
+"""Does the observation normalisation survive loading a checkpoint?
 
-L'entrainement n'appelle jamais runner.load(). `uv run play`, tout banc de
-mesure, et l'export ONNX si : c'est la seule chose qu'ils ont en commun et que
-l'entrainement n'a pas. Si EmpiricalNormalization revient a son etat neuf
-(mean=0, std=1, count=0), le reseau recoit des observations a la mauvaise
-echelle et se fige -- dans les trois cas a la fois, entrainement epargne.
+Training never calls runner.load(). play, any measurement bench and the ONNX
+export do. If EmpiricalNormalization came back blank the policy would see
+mis-scaled observations everywhere except in training.
 
   uv run python scripts/tools/check_normalizer_restored.py <checkpoint.pt>
 """

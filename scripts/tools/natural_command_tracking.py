@@ -1,16 +1,8 @@
-"""Suivi de vitesse avec les commandes NATURELLES de l'env d'entrainement.
+"""Velocity tracking under the training env's NATURAL commands.
 
-Complement de why_video_walks.py. Ici on ne force rien du tout : curriculum
-actif, commandes echantillonnees, bruit d'exploration -- exactement la
-configuration que VideoRecorder filme pour wandb. On regarde, environnement par
-environnement, le deplacement realise contre le deplacement demande.
-
-C'est le seul moyen de distinguer deux explications d'un robot qui a l'air de
-marcher a l'ecran mais mesure 2 % de suivi en commande forcee :
-
-  - la policy suit bien sa commande, et c'est le protocole en commande
-    constante forcee qui est pathologique
-  - la policy pietine, et la vidéo montre un pas sur place
+Nothing forced: curriculum on, commands sampled, exploration noise -- exactly
+what VideoRecorder films for wandb. Displacement is projected on the demanded
+direction so a robot drifting sideways gets no credit.
 
   uv run python scripts/tools/natural_command_tracking.py <checkpoint.pt>
 """
@@ -61,7 +53,7 @@ def main() -> int:
   cmd_sum = torch.zeros((NUM_ENVS, 2), device=device)
   steps = int(DURATION_S / POLICY_DT)
   for _ in range(steps):
-    # Integrer la commande vue, elle change en cours de route (resampling).
+    # Integrate the command seen; it changes mid-window on resampling.
     cmd_sum += cmd.command[:, :2] * POLICY_DT
     with torch.inference_mode():
       action = policy(obs, stochastic_output=True)
@@ -80,8 +72,8 @@ def main() -> int:
     print("aucun env ne recoit de demande de marche significative")
     return 0
 
-  # Projection du deplacement realise sur la direction demandee : c'est le
-  # chiffre honnete, un robot qui derive de cote ne doit pas etre credite.
+  # Project the realised displacement on the demanded direction: a robot
+  # drifting sideways should get no credit.
   unit = want[walking] / demand[walking][:, None]
   along = (moved[walking] * unit).sum(axis=1)
   ratio = along / demand[walking]

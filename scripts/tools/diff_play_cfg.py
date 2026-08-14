@@ -1,9 +1,7 @@
-"""Diff exhaustif entre la config d'entrainement et la config 'play'.
+"""Exhaustive diff between the training config and the play config.
 
-Quand le robot se comporte differemment sous `uv run play` et pendant
-l'entrainement, la premiere chose a faire n'est pas de deviner quel parametre a
-bouge : c'est de les comparer tous. Ce script aplatit les deux dataclasses de
-config et n'affiche que ce qui differe.
+Flattens both dataclasses and prints only what differs. Use it before guessing
+which parameter moved.
 
   uv run python scripts/tools/diff_play_cfg.py
 """
@@ -26,8 +24,8 @@ def flatten(obj: Any, prefix: str = "") -> dict[str, Any]:
     for k, v in obj.items():
       out.update(flatten(v, f"{prefix}.{k}" if prefix else str(k)))
   elif isinstance(obj, (list, tuple)):
-    # Les listes courtes de scalaires sont des valeurs (plages, gains) ; les
-    # listes d'objets sont des conteneurs a descendre.
+    # Short scalar lists are values (ranges, gains); lists of objects are
+    # containers to descend into.
     if all(isinstance(x, (int, float, str, bool, type(None))) for x in obj):
       out[prefix] = obj
     else:

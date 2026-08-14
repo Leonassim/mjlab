@@ -1,11 +1,10 @@
-"""Comparer la config REELLEMENT UTILISEE par un run a celle que play construit.
+"""Diff the config a run ACTUALLY used against what play builds today.
 
-diff_play_cfg.py compare play=False et play=True tels que le code les produit
-AUJOURD'HUI. Ce n'est pas la bonne reference : les videos viennent d'un run
-passe, et le depot a pu bouger depuis. La seule reference qui ne ment pas est le
-env.yaml ecrit par le run lui-meme.
+diff_play_cfg.py compares two configs as the code produces them now, which says
+nothing about a past run. The only reference that cannot drift is the env.yaml
+the run wrote itself.
 
-  uv run python scripts/tools/diff_run_vs_play.py <run_dir_ou_env.yaml>
+  uv run python scripts/tools/diff_run_vs_play.py <run_dir_or_env.yaml>
 """
 
 from __future__ import annotations
@@ -59,9 +58,8 @@ def main() -> int:
   if p.is_dir():
     p = p / "env.yaml"
 
-  # Le yaml du run porte des tags python ; certains ne resolvent plus (une classe
-  # a bouge depuis). On les remplace par leur representation textuelle plutot que
-  # d'echouer : ce qui nous interesse est la valeur, pas le type.
+  # The run's yaml carries python tags and some no longer resolve. Fall back to
+  # their textual form rather than fail: the value is what matters, not the type.
   class Tolerant(yaml.SafeLoader):
     pass
 
@@ -70,7 +68,7 @@ def main() -> int:
       return loader.construct_scalar(node)
     if isinstance(node, yaml.SequenceNode):
       seq = loader.construct_sequence(node, deep=True)
-      # !!python/object/apply:...  -> les args sont la valeur utile
+      # !!python/object/apply:... -> the args carry the useful value
       return seq[0] if len(seq) == 1 else seq
     return loader.construct_mapping(node, deep=True)
 

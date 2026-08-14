@@ -1,18 +1,13 @@
-"""Le robot traverse-t-il le sol, ou pietine-t-il ? Mesure sur la video.
+"""Ground scroll in a video, by phase correlation on two side bands.
 
-La camera des videos d'entrainement suit le robot (viewer.origin_type =
-ASSET_BODY) : le robot reste au centre de l'image quoi qu'il arrive. Donc on ne
-peut pas juger de son avance en le regardant lui -- il faut regarder le SOL.
+The training camera tracks the robot, so it stays centred whether it advances or
+not; the ground is the only thing that can tell.
 
-Le sol est un damier. S'il defile sous le robot, le robot avance ; s'il est fige,
-le robot pietine. On mesure ce defilement par correlation de phase entre images
-successives, sur deux bandes laterales choisies loin du robot pour qu'il ne
-pollue pas la mesure.
+KNOWN BLIND: validated against render_control_translation.py, where the robot
+covers 3.77 m and this tool still reports a static ground. The checker contrast
+is too low. Do not trust a null result from it.
 
-La sortie est un deplacement en PIXELS cumules, pas en metres : la question est
-binaire (le sol defile ou non) et l'echelle importe peu.
-
-  uv run python scripts/tools/video_ground_motion.py <video.mp4> [<video2.mp4> ...]
+  uv run python scripts/tools/video_ground_motion.py <video.mp4> [...]
 """
 
 from __future__ import annotations
@@ -61,7 +56,7 @@ def main() -> int:
   for path in sys.argv[1:]:
     f = frames(path)
     n, h, w = f.shape
-    # Bandes laterales, moitie basse : le sol, sans le robot qui est au centre.
+    # Side bands, lower half: the ground, away from the centred robot.
     left = f[:, int(0.60 * h) : int(0.95 * h), : int(0.22 * w)]
     right = f[:, int(0.60 * h) : int(0.95 * h), int(0.78 * w) :]
 

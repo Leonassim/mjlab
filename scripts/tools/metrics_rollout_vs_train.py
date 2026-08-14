@@ -1,14 +1,7 @@
-"""Mesurer dans un rollout les MEMES metriques que celles loguees a l'entrainement.
+"""Read the same metrics in a rollout as the training loop logs.
 
-Le run 2026-08-12_20-36-28 logue, a l'iteration 14999, un robot qui marche :
-sole_height_p90 = 4.2 cm, air_time_mean = 0.33 s, landing_vel_mean = 0.083 m/s.
-Un rollout du meme checkpoint donne un robot immobile. Les deux ne peuvent pas
-etre vrais : quelque chose separe le banc de l'entrainement.
-
-Plutot que de continuer a comparer des configurations, ce script compare les
-SORTIES : il rejoue le checkpoint et lit le MetricsManager, terme par terme, avec
-les memes noms que ceux du tensorboard. La metrique qui s'effondre designe la
-cause.
+Compares outputs rather than configurations: whichever metric collapses points
+at the cause.
 
   uv run python scripts/tools/metrics_rollout_vs_train.py <checkpoint.pt> [--play]
 """
@@ -105,8 +98,8 @@ def main() -> int:
   print(f"\nrollout : config {mode}, {cmdmode}, {NUM_ENVS} envs, deterministe\n")
   print(f"{'metrique':32s} {'rollout':>10s} {'train 14999':>12s} {'rapport':>9s}")
   for name, v in sorted(zip(names, got, strict=True)):
-    # Les tags tensorboard suffixent le nom du terme (_mean, _p90, ...) ; on
-    # rapproche par prefixe pour ne pas rater la correspondance.
+    # Tensorboard tags suffix the term name (_mean, _p90, ...), so match on
+    # the prefix.
     ref = TRAIN_REF.get(name)
     if ref is None:
       cands = [k for k in TRAIN_REF if k.startswith(name)]

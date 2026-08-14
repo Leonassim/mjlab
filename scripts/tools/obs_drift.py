@@ -1,19 +1,8 @@
-"""Comparer les observations d'un rollout a celles vues pendant l'entrainement.
+"""Compare a rollout's observations against the training distribution.
 
-Le checkpoint transporte les statistiques figees d'EmpiricalNormalization :
-c'est un enregistrement direct de la distribution d'observations sur laquelle la
-policy a ete entrainee (ici count = 2.9e9 echantillons). On peut donc rejouer un
-rollout, mesurer la distribution qu'il produit, et exprimer l'ecart en z-score
-par dimension :
-
-    z = (moyenne du rollout - _mean du checkpoint) / _std du checkpoint
-
-Une dimension a |z| de l'ordre de 1 est normale. Une dimension a |z| de 10 dit
-que la policy recoit, sur cette entree precise, quelque chose qu'elle n'a jamais
-vu -- et le nom du terme d'observation designe le coupable.
-
-C'est le seul diagnostic qui compare le banc de mesure a l'ENTRAINEMENT REEL et
-non a une autre execution du banc.
+The checkpoint carries EmpiricalNormalization's frozen statistics, which are a
+direct record of the distribution the policy trained on. Express the gap as a
+per-dimension z score and the offending observation term names itself.
 
   uv run python scripts/tools/obs_drift.py <checkpoint.pt> [--train]
 """
@@ -61,7 +50,7 @@ def main() -> int:
   if int(norm.count) == 0:
     print("  ATTENTION : count nul, la normalisation n'a PAS ete rechargee")
 
-  # Noms de chaque dimension, pour pouvoir nommer le coupable.
+  # Per-dimension names, so the offending term can be named.
   om = env_raw.observation_manager
   group = "actor"
   terms: list[tuple[str, int]] = []
@@ -91,8 +80,8 @@ def main() -> int:
   if isinstance(obs, tuple):
     obs = obs[0]
 
-  # Exactement ce que le reseau normalise : la concatenation de ses obs_groups,
-  # dans l'ordre du modele (cf. MLPModel.get_latent).
+  # Exactly what the network normalises: its obs_groups concatenated in model
+  # order, see MLPModel.get_latent.
   groups = list(policy.obs_groups)
   print(f"groupes concatenes par le modele : {groups}")
 
@@ -105,7 +94,7 @@ def main() -> int:
     obs = env.step(action)[0]
     cmd.is_standing_env[:] = False
 
-  # Les 200 premiers pas contiennent le transitoire de reset.
+  # The first 200 steps hold the reset transient.
   got = np.stack(acc)[200:].mean(axis=0)
 
   if len(names) != got.shape[0]:

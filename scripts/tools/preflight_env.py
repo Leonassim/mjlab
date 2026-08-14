@@ -79,10 +79,8 @@ def main() -> int:
   print(f"config complete : survie {mean:.1f}/{args.steps} pas, "
         f"{standing}/{args.num_envs} encore debout")
 
-  # Marge deliberement large : on cherche un environnement qui tue le robot,
-  # pas un qui le fait vaciller. Un seuil serre transformerait ce garde-fou en
-  # source de faux positifs, et un garde-fou qu'on apprend a ignorer ne sert
-  # plus a rien.
+  # Deliberately loose: this looks for an env that kills the robot, not one that
+  # makes it wobble. A guard that cries wolf gets ignored.
   ok = standing >= 0.9 * args.num_envs
   if ok:
     print("OK : un robot inerte tient debout, l'environnement est lancable.")

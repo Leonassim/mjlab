@@ -1,18 +1,15 @@
-"""Pourquoi la video wandb marche et 'play' ne marche pas.
+"""Why the wandb video walks and play does not.
 
-Les videos wandb ne viennent PAS de play : train.py enveloppe l'env
-d'ENTRAINEMENT (play=False) dans VideoRecorder et filme l'environnement 0. Trois
-differences avec play, pas une seule :
+wandb videos do NOT come from play: train.py wraps the TRAINING env in
+VideoRecorder and films env 0. Three differences, not one -- sampled actions,
+observation corruption, recovery pushes.
 
-  1. action ECHANTILLONNEE (bruit d'exploration) vs deterministe
-  2. corruption des observations active vs desactivee
-  3. poussees de recuperation actives vs desactivees
+Forcing the command after env.step() forces nothing: command_manager.compute()
+runs inside step, just before the observation is built, so the injection point
+is _update_command. Re-reading cmd.command right after writing it is a
+tautological check.
 
-Ce script separe les deux premieres, qui sont les seules a pouvoir faire
-avancer un robot qui piétine. On mesure le deplacement integre sur 5 s, commande
-forcee et verifiee, curriculum vide (sinon il reecrit les plages a chaque reset).
-
-  uv run python scripts/tools/why_video_walks.py <checkpoint.pt> [vitesse]
+  uv run python scripts/tools/why_video_walks.py <checkpoint.pt> [speed]
 """
 
 from __future__ import annotations
@@ -39,9 +36,9 @@ def run(
   device = "cuda:0" if torch.cuda.is_available() else "cpu"
   cfg = load_env_cfg(TASK, play=play)
   cfg.scene.num_envs = NUM_ENVS
-  # Vide, pas None : load_managers() fait len() dessus sans garde.
+  # Empty, not None: load_managers() calls len() on it without a guard.
   cfg.curriculum = {}
-  # Sinon l'env d'entrainement coupe l'episode avant les 5 s.
+  # Otherwise the training env cuts the episode short.
   cfg.episode_length_s = max(cfg.episode_length_s, 2 * DURATION_S)
 
   env_raw = ManagerBasedRlEnv(
@@ -55,11 +52,10 @@ def run(
   robot = env_raw.scene["robot"]
   cmd = env_raw.command_manager.get_term("twist")
 
-  # Forcer la commande APRES env.step() ne sert a rien : command_manager.compute()
-  # tourne A L'INTERIEUR de step, juste avant observation_manager.compute(), donc
-  # il reecrit la commande avant que l'observation soit construite. Le seul point
-  # d'injection correct est _update_command lui-meme, qui est la derniere chose a
-  # ecrire vel_command_out avant l'observation.
+  # Forcing the command AFTER env.step() does nothing: command_manager.compute()
+  # runs INSIDE step, just before observation_manager.compute(), so it rewrites
+  # the command before the observation is built. _update_command is the only
+  # correct injection point.
   target = torch.tensor([fwd, 0.0, 0.0], device=device)
 
   def forced_update() -> None:
@@ -68,9 +64,8 @@ def run(
     cmd.vel_command_out[:] = target
 
   cmd._update_command = forced_update  # type: ignore[method-assign]
-  # La consigne "immobile" mettrait 40 % des envs a zero ; on la neutralise en
-  # plus, pour que rien d'autre dans l'env (metriques, recompenses) ne croie
-  # qu'on demande l'arret.
+  # The standing mask would zero 40% of the envs; clear it so nothing else in
+  # the env believes a stop was requested.
   cmd.is_standing_env[:] = False
 
   env.reset()
@@ -80,8 +75,8 @@ def run(
     obs = obs[0]
 
   x0 = robot.data.root_link_pos_w[:, 0].clone()
-  # Lu en debut de boucle, donc apres le compute() du step precedent : c'est bien
-  # la valeur produite par l'env, pas celle qu'on vient d'ecrire soi-meme.
+  # Read at the top of the loop, hence after the previous step's compute: this
+  # is the value the env produced, not the one we just wrote ourselves.
   seen_min, seen_max = 1e9, -1e9
   frames: list[np.ndarray] = []
   for i in range(int(DURATION_S / POLICY_DT)):
@@ -91,7 +86,7 @@ def run(
       action = policy(obs, stochastic_output=True) if stochastic else policy(obs)
     obs = env.step(action)[0]
     cmd.is_standing_env[:] = False
-    # 1 image sur 4 -> 50 im/s pour un pas de politique a 200 Hz.
+    # Every 4th frame -> 50 fps for a 200 Hz policy step.
     if video and i % 4 == 0:
       frames.append(env_raw.render())
 
