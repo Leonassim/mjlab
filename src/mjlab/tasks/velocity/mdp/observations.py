@@ -366,6 +366,44 @@ def joint_vel_encoder_finite_difference(
   return vel
 
 
+def log_command_progress(
+  env: ManagerBasedRlEnv,
+  command_name: str = "twist",
+  command_threshold: float = 0.05,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Speed along the commanded direction, in m/s. Does the robot ADVANCE?
+
+  Nothing else logged in this task answers that. error_vel_xy is an
+  instantaneous base velocity error, and a biped that walks well oscillates
+  every step, so a good gait and a gait in place both score badly.
+  sole_height_p50 is a median over all timesteps with the feet down most of the
+  time. Neither can distinguish walking from marching in place.
+
+  Projected on the command, so turning or drifting sideways earns nothing, and
+  reported only over environments actually asked to move -- averaging in the
+  standing ones would halve the number for no reason.
+
+  Read Metrics/progress_ratio: 1.0 is perfect tracking, 0.0 is a robot going
+  nowhere. It is comparable across runs and across commanded speeds.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  cmd = env.command_manager.get_command(command_name)[:, :2]
+  speed = torch.norm(cmd, dim=-1)
+  walking = speed > command_threshold
+  unit = cmd / speed.clamp(min=1e-6).unsqueeze(-1)
+  progress = (asset.data.root_link_lin_vel_b[:, :2] * unit).sum(dim=-1)
+
+  log = env.extras.setdefault("log", {})
+  if bool(walking.any()):
+    w = progress[walking]
+    log["Metrics/progress_speed"] = w.mean()
+    log["Metrics/progress_ratio"] = (w / speed[walking]).mean()
+    log["Metrics/command_speed"] = speed[walking].mean()
+    log["Metrics/progress_walking_frac"] = walking.float().mean()
+  return torch.where(walking, progress, torch.zeros_like(progress))
+
+
 def log_sole_height(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,

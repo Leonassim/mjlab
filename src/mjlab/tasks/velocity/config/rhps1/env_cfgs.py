@@ -1040,6 +1040,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Sole height straight off the sites. It replaces peak_height_mean, which
   # reset on the first corner touching while landing fires on all four, so it
   # read ~70x low. Depends on no reward term, so nothing can silence it.
+  # Does the robot advance? Nothing else logged here answers that.
+  cfg.metrics["command_progress"] = MetricsTermCfg(
+    func=mdp.log_command_progress,
+    params={"command_name": "twist", "command_threshold": 0.05},
+  )
+
   cfg.metrics["sole_height"] = MetricsTermCfg(
     func=mdp.log_sole_height,
     params={"asset_cfg": SceneEntityCfg("robot", site_names=("left_foot", "right_foot"))},
