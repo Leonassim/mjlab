@@ -944,14 +944,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   if play:
     cfg.episode_length_s = int(1e9)
     cfg.observations[actor_group_name].enable_corruption = False
-    # Ce bloc ne desactive plus que la corruption, la visualisation et la duree
-    # d'episode. Ce qu'il contenait avant et qui ne faisait rien :
-    #   pop("teacher"), pop("air_time_weight"), pop("standing_envs"),
-    #   pop("push_robot") et la branche "actor_history"
-    # Aucun de ces cinq noms n'est cree nulle part dans ce fichier, et le
-    # ", None" des pop rendait l'echec muet. push_base, lui, existe -- il est
-    # retire dans rhps1_flat_env_cfg, seul endroit ou toute la config est deja
-    # construite : ajoute plus bas dans cette fonction, il est invisible ici.
+    # push_base is dropped in rhps1_flat_env_cfg, not here: it is added later
+    # in this function, so a pop at this point would see nothing.
     # Disable debug visualizers to recover viewer FPS.
     twist_cmd.debug_vis = False
     for sensor in cfg.scene.sensors:
@@ -965,69 +959,35 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.scene.terrain.terrain_generator.num_rows = 5
         cfg.scene.terrain.terrain_generator.border_width = 10.0
 
-  # Randomisation des gains PD. Les 20000/400 ne sont pas une mesure : ce sont
-  # les valeurs d'un servo de position emule, le vrai robot cachant sa boucle
-  # P/PI dans le drive. Une politique entrainee sur une seule valeur apprend la
-  # reponse exacte de ce PD-la ; la randomiser l'oblige a rester correcte sur
-  # une famille de plants.
-  #
-  # +/-15 % et par articulation independamment : chaque drive a son propre
-  # reglage, donc un desaccord entre articulations est le cas realiste, et c'est
-  # aussi le plus exigeant.
+  # 20000/400 is an emulated position servo, not a measurement -- the robot
+  # hides its own P/PI loop in the drive. Per joint, so a mismatch between
+  # joints is covered too.
   cfg.events["actuator_gains"] = EventTermCfg(
     func=mdp.randomize_actuator_gains,
     mode="reset",
     params={"stiffness_range": (0.85, 1.15), "damping_range": (0.85, 1.15)},
   )
 
-  # --- Elargissement de la randomisation, 2026-08-12 -----------------------
-  #
-  # L'audit du 2026-08-12 a montre que la randomisation reelle etait plus
-  # etroite que ce qu'on croyait : pas de masse, pas d'inertie, un decalage de
-  # centre de masse limite au torse, aucune perturbation externe, et une
-  # friction tiree une seule fois au demarrage et PARTAGEE par les 4096
-  # environnements -- donc une seule valeur de friction pour tout un run.
-  #
-  # Principe applique ici : randomiser ce qu'on n'a pas identifie, et avec des
-  # plages qui restent physiquement plausibles. Ce n'est pas une couverture
-  # maximale, c'est une couverture honnete.
-
-  # Friction par environnement et par episode, au lieu d'une valeur unique
-  # tiree au demarrage. shared_random=False est le vrai changement : avec True,
-  # les 4096 environnements voyaient le meme sol, ce qui ne randomise rien du
-  # point de vue de la politique. Plage elargie vers le bas (0.4) : un sol plus
-  # glissant que 0.5 est le cas qui fait tomber, et il n'etait jamais echantillonne.
+  # Per env and per episode. shared_random=False is the real change: with True
+  # all 4096 envs saw one ground, which randomises nothing. Range widened down
+  # to 0.4, the slippery case that makes it fall and was never sampled.
   cfg.events["foot_friction"].mode = "reset"
   cfg.events["foot_friction"].params["ranges"] = (0.4, 1.0)
   cfg.events["foot_friction"].params["shared_random"] = False
 
-  # Masse ET inertie ensemble, via pseudo_inertia : dr.body_mass seul laisse le
-  # tenseur d'inertie inchange, ce qui modelise une masse ponctuelle au centre
-  # de masse plutot qu'un changement de densite -- le code de mjlab emet
-  # d'ailleurs un avertissement explicite a ce sujet. alpha_range scale les deux
-  # de facon coherente. +/-10 % : l'incertitude plausible sur une masse de
-  # segment mesuree au CAO, pas une variation reelle entre exemplaires.
-  #
-  # ATTENTION : alpha est un LOGARITHME, la masse et l'inertie sont multipliees
-  # par exp(2*alpha), et le defaut de la fonction est (0.0, 0.0). Ecrit (0.9,
-  # 1.1) le 2026-08-12 en le prenant pour un multiplicateur, ce qui donnait
-  # exp(1.8)=6.05 a exp(2.2)=9.03 : chaque corps pesait six a neuf fois son
-  # poids, le robot faisait 350 a 520 kg au lieu de 57.6, et il s'effondrait en
-  # 1.4 s quoi que fasse la politique. Le run 2026-08-12_16-04-55 est mort de
-  # ca -- longueur d'episode figee a 70 pas de l'iteration 50 a 492, zero
-  # time_out, alors que la reference tenait 3700 pas.
-  #
-  # +/-10 % s'ecrit donc alpha = ln(1.1)/2 = 0.0477 et ln(0.9)/2 = -0.0527.
+  # Mass and inertia together: body_mass alone leaves the inertia tensor, which
+  # models a point mass rather than a density change.
+  # alpha is a LOGARITHM -- mass scales by exp(2*alpha), default (0.0, 0.0).
+  # Written as (0.9, 1.1) once, it made every body 6 to 9x its weight and
+  # killed a whole run. +/-10% is ln(1.1)/2 and ln(0.9)/2.
   cfg.events["link_inertia"] = EventTermCfg(
     func=mdp.dr.pseudo_inertia,
     mode="startup",
     params={"alpha_range": (-0.0527, 0.0477), "asset_cfg": SceneEntityCfg("robot")},
   )
 
-  # Le decalage de centre de masse existait deja mais ne portait que sur le
-  # torse. L'etendre a tous les corps couvre l'erreur d'assemblage et de
-  # modelisation ailleurs que dans le tronc, avec une plage plus serree (+/-1 cm)
-  # puisqu'elle s'applique maintenant a des segments bien plus petits.
+  # All bodies, not just the torso. Tighter range because the segments are
+  # much smaller.
   cfg.events["link_com"] = EventTermCfg(
     func=mdp.dr.body_com_offset,
     mode="startup",
@@ -1038,11 +998,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
 
-  # Poussee externe : absente jusqu'ici alors que c'est le terme standard de la
-  # litterature locomotion, et le seul qui teste la recuperation plutot que le
-  # suivi. Impulsion instantanee sur la base, toutes les 8 a 12 s -- donc zero
-  # a deux fois par episode de 20 s. 0.4 m/s lateral est un desequilibre net
-  # sans etre une chute programmee.
+  # The only term that tests recovery rather than tracking. Zero to two hits
+  # per 20 s episode.
   cfg.events["push_base"] = EventTermCfg(
     func=mdp.push_by_setting_velocity,
     mode="interval",
@@ -1050,69 +1007,25 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     params={"velocity_range": {"x": (-0.4, 0.4), "y": (-0.4, 0.4)}},
   )
 
-  # Posture de depart : les offsets articulaires au reset etaient a (0, 0),
-  # donc chaque episode demarrait exactement a q0. Une politique entrainee
-  # ainsi n'a jamais a rattraper une posture initiale imparfaite, ce qui est
-  # pourtant le cas au moment de l'armement sur le robot. +/-0.05 rad est petit
-  # devant l'amplitude d'un pas et suffit a supprimer cette hypothese.
+  # Episodes used to start exactly at q0, so the policy never had to recover an
+  # imperfect initial posture -- which is the case when it is armed on the robot.
   cfg.events["reset_robot_joints"].params["position_range"] = (-0.05, 0.05)
 
-  # Raideur du filtre de PostureTask, donc du retard vu par la politique. Le
-  # taux de resolution du QP vaut 200 Hz sur le robot contre 1 kHz en
-  # simulation de validation et n'est pas garanti stable sous charge CPU ;
-  # +/-25 % couvre cette incertitude. L'amortissement suit en 2*sqrt(K) dans
-  # l'actionneur, comme mc_rtc le fait : c'est un plant qu'on randomise, pas
-  # deux gains independants.
+  # The QP solves at 200 Hz on the robot against 1 kHz in validation sim, and is
+  # not guaranteed stable under CPU load. Damping follows as 2*sqrt(K) in the
+  # actuator, like mc_rtc: one plant randomised, not two independent gains.
   cfg.events["posture_filter"] = EventTermCfg(
     func=mdp.randomize_posture_task_stiffness,
     mode="reset",
     params={"stiffness_range": (0.75, 1.25)},
   )
 
-  # Biais capteur constants sur l'episode (2026-08-12). Motive par une
-  # observation sur le robot : il se tient systematiquement sur l'arriere et
-  # tombe en arriere des qu'on lui commande une vitesse negative, alors que la
-  # simulation est saine.
-  #
-  # Ce qui a ete elimine par la mesure avant d'en arriver la : la posture
-  # nominale est centree dans le polygone de sustentation (CoM x=-16.4 mm,
-  # talon -129.6, pointe +105.4, soit 48 % depuis le talon) ; les plages de
-  # commande sont symetriques ((-0.3, 0.3) en x au niveau max) ; les butees
-  # articulaires laissent 1.11 rad d'un cote et 0.94 de l'autre a la cheville.
-  # Aucune de ces trois pistes ne produit d'asymetrie avant/arriere.
-  #
-  # Reste une asymetrie qui ne vit pas dans le modele mais dans la mesure. Le
-  # bruit d'observation existant est recentre a chaque pas ; un estimateur
-  # reel, lui, se trompe dans la meme direction pendant tout l'essai. Avec cinq
-  # pas d'historique la politique moyenne le premier et reste entierement
-  # credule face au second, ce qui est exactement la forme du symptome :
-  # systematique et toujours du meme cote.
-  #
-  # Chiffres revus le 2026-08-12 contre le log ROBOT REEL 2026-08-10-17-08
-  # (200 Hz ; mc_mujoco tourne a 1 kHz), qui a confirme l'un des deux canaux et
-  # infirme l'autre.
-  #
-  # base_lin_vel : confirme, et c'est le canal serieux. Sur 30 s de marche la
-  # pose estimee par MCWaiko bouge de -0.017 m pendant que sa propre vitesse
-  # integree donne +0.502 m -- deux sorties du meme observateur qui divergent
-  # d'un facteur 30. Le biais vaut +0.0167 m/s en marche (0.0167 * 30 s = 0.502
-  # m, la divergence se referme exactement) contre +0.0002 m/s a l'arret : le
-  # biais nait du mouvement, il n'existe pas au repos. On garde 0.05, soit
-  # trois fois le mesure : la mesure porte sur un seul essai, a une seule
-  # allure, sur un sol propre, et le biais depend justement du mouvement.
-  #
-  # projected_gravity : infirme, et ramene de 0.05 a 0.01. Le -0.0138 lu a
-  # l'arret n'est pas une erreur d'estimation, c'est un vrai tangage du bassin
-  # : les encodeurs donnent -0.909 deg (soit -0.0159 en gravite projetee) pour
-  # la meme posture, l'estimateur annonce -0.0138, ils s'accordent a 0.12 deg.
-  # L'assiette est donc juste et 0.05 valait vingt-cinq fois l'erreur reelle.
-  # On garde 0.01 (~0.6 deg) parce que cet accord ne prouve qu'une coherence
-  # interne : il suppose les semelles a plat sur un sol de niveau, et un sol
-  # incline decalerait les deux estimations ensemble sans qu'on le voie.
-  #
-  # base_ang_vel volontairement absent bien que la fonction l'accepte : un
-  # biais gyrometrique produit une derive en lacet, pas une inclinaison, et il
-  # serait de toute facon noye sous le bruit de +/-0.3 rad/s deja present.
+  # A per-episode constant bias, not per-step noise: a five-frame history
+  # averages zero-mean noise away but stays credulous to an offset, which is
+  # the shape of the symptom on the robot. base_lin_vel is the serious channel
+  # (+0.0167 m/s measured while walking, zero at rest); projected_gravity is
+  # small because the estimated attitude agrees with the encoders to 0.12 deg.
+  # No base_ang_vel: a gyro bias drifts yaw, it does not tilt.
   cfg.events["sensor_bias"] = EventTermCfg(
     func=mdp.randomize_sensor_bias,
     mode="reset",
@@ -1124,15 +1037,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
 
-  # Hauteur de semelle, mesuree directement sur les sites. Elle remplace
-  # Metrics/peak_height_mean, qui sous-estimait d'un facteur ~70 : ce pic-la
-  # etait remis a zero des le premier coin qui touche alors que l'atterrissage se
-  # declenche sur les quatre, donc chaque atterrissage reel produisait une bonne
-  # valeur suivie de plusieurs zeros. Le 2026-08-08 elle annoncait 0.0005 m la ou
-  # la mesure directe sur le meme checkpoint donnait 0.037.
-  #
-  # Ne depend d'aucun terme de recompense : la retirer ou la changer ne peut plus
-  # eteindre l'instrument, ce qui est exactement ce qui est arrive ce jour-la.
+  # Sole height straight off the sites. It replaces peak_height_mean, which
+  # reset on the first corner touching while landing fires on all four, so it
+  # read ~70x low. Depends on no reward term, so nothing can silence it.
   cfg.metrics["sole_height"] = MetricsTermCfg(
     func=mdp.log_sole_height,
     params={"asset_cfg": SceneEntityCfg("robot", site_names=("left_foot", "right_foot"))},
@@ -1174,17 +1081,15 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
   EXACTEMENT la V3 a 126 dimensions, celle que `utils.cpp` case 0 sait deja
   construire. Aucun travail C++ pour deployer ce run.
   """
-  # Le capteur par pied est cree dans rhps1_rough_env_cfg, hors de portee ici.
-  # Verifie plutot que devine : un nom faux donnerait une recompense muette.
+  # Both names live in rhps1_rough_env_cfg. Asserted below rather than assumed:
+  # a wrong sensor name would give a silent reward.
   _SPLIT_SENSOR = "feet_ground_contact_split"
-  # Idem : local a rhps1_rough_env_cfg. Ce sont les sites plantes dans le plan de
-  # la semelle depuis le 2026-07-26, pas les anciens 20 mm plus haut.
   site_names = ("left_foot", "right_foot")
   assert any(getattr(s, "name", None) == _SPLIT_SENSOR for s in cfg.scene.sensors), (
     f"capteur {_SPLIT_SENSOR!r} absent de la scene"
   )
 
-  # --- termes qui partent ------------------------------------------------
+  # Terms that go.
   for name in (
     "raw_torque_peak",
     "gait_phase",
@@ -1195,11 +1100,7 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
     cfg.rewards.pop(name, None)
   cfg.curriculum.pop("raw_torque_peak_weight", None)
 
-  # --- termes de la policy 0 qui n'ont pas de successeur -----------------
-  # air_time: en retirant gait_phase on retire la seule chose qui prescrivait
-  # une duree de vol. Sans lui, plus rien ne demande de lever le pied et le
-  # robot converge vers le trainage. La policy 0 le portait a +2.
-  # Parametres repris tels quels du run 2026-07-10_20-59-17, pas re-inventes.
+  # Policy 0 terms with no successor.
   cfg.rewards["air_time"] = RewardTermCfg(
     func=mdp.split_feet_air_time,
     weight=2.0,
@@ -1211,16 +1112,12 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
       "command_threshold": 0.1,
       "overflow_threshold": 2.0,
       "power": 2.0,
-      # 0.0 (etait 0.15, 2026-08-08). Mesure sur 2026-08-07_15-40-43, iterations
-      # 6000-7200 : ce terme realisait +0.0008 pour un poids de +2, c'est-a-dire
-      # rien. Le cout d'atterrissage annulait exactement le paiement du vol, et
-      # rendait meme un pas court net negatif -- une recompense de levee qui
-      # punissait les petites levees.
+      # Zero: the landing cost exactly cancelled the airborne payment, making a
+      # short step net negative -- a lift reward that punished small lifts.
       "touchdown_cost": 0.0,
     },
   )
-  # torque_limit_margin: raw_torque_peak partant, il ne resterait aucune
-  # penalite de couple. C'est celle que la policy 0 portait, a -0.16.
+  # The only torque penalty left once raw_torque_peak goes.
   cfg.rewards["torque_limit_margin"] = RewardTermCfg(
     func=mdp.joint_torque_limit_margin_penalty,
     weight=-0.16,
@@ -1230,14 +1127,8 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
     func=mdp.joint_torques_l2, weight=-1e-5
   )
 
-  # min_foot_height doit partir avec gait_phase : clock_swing_height_deficit lit
-  # la phase de l'horloge, et sans elle il leve au premier pas. Il n'y aurait
-  # alors plus rien du tout sur la hauteur de pied. On remet les deux termes que
-  # la policy 0 portait a sa place -- ce sont eux qui ont marche sur le robot.
-  #
-  # A garder en tete pour la suite : le piege documente de min_foot_height (il
-  # punissait la tentative de pas et payait zero pour rester debout) portait sur
-  # CETTE forme-la, pas sur celles-ci.
+  # min_foot_height reads the gait clock, so it goes with gait_phase. The two
+  # terms below are what policy 0 carried instead, and they worked on the robot.
   cfg.rewards.pop("min_foot_height", None)
   cfg.rewards["foot_swing_height"] = RewardTermCfg(
     func=mdp.split_feet_swing_height,
@@ -1250,19 +1141,10 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
     },
   )
-  # Cible 0.15 -> 0.04 et poids -4 -> -35 (2026-08-08).
-  #
-  # Le cout est |z - cible| * vitesse_horizontale. A 0.15 contre 0.037 reellement
-  # atteint (mesure directe sur le checkpoint 7050), delta valait ~0.13 quoi que
-  # fasse le robot : le terme degenerait en "penalise la vitesse horizontale du
-  # pied", donc il taxait la marche au lieu de faconner la hauteur. A 0.04 il
-  # varie entre 0.003 et 0.039 et redevient un gradient en hauteur.
-  #
-  # Le poids est EXTRAPOLE, pas mesure : delta chute d'un facteur ~6.5, donc a
-  # poids constant le realise passerait de -0.11 a ~-0.017, c'est-a-dire inerte.
-  # -35 viserait ~-0.15, du niveau de standing_base_motion, present sans dominer.
-  # C'est le seul chiffre de ce run que je n'ai pas su deriver d'une mesure : a
-  # verifier sur Episode_Reward/foot_clearance au premier jalon et a corriger tot.
+  # Cost is |z - target| * horizontal speed. With the target far above what the
+  # foot reaches, the delta is constant and the term degenerates into a tax on
+  # foot speed. The weight here is extrapolated, not measured: check
+  # Episode_Reward/foot_clearance at the first milestone.
   cfg.rewards["foot_clearance"] = RewardTermCfg(
     func=mdp.feet_clearance_velocity_weighted,
     weight=-35.0,
@@ -1278,65 +1160,28 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
   actor = cfg.observations["actor"].terms
   for name in ("gait_phase", "raw_torque"):
     actor.pop(name, None)
-  # actions AVEC historique 5, comme les dernieres politiques. Deux raisons, pas
-  # une : l'actionneur porte une EMA sur la cible de vitesse (alpha 0.8) dont
-  # rien d'autre dans l'observation ne revele l'etat, et la projection de
-  # faisabilite fait que plusieurs actions brutes donnent la meme execution --
-  # une politique qui ne voit que ce qu'elle a demande ne peut pas les
-  # distinguer. Les deux mecanismes sont actifs dans ce run.
-  #
-  # Cout au deploiement : l'observation passe de 126 a 246 dimensions. Ce n'est
-  # ni la V3 ni la V4 (266, qui ajoute gait_phase), donc il faut un cas de plus
-  # dans utils.cpp -- mais c'est le corps de case 2 sans sa derniere ligne.
+  # Actions with history 5: the velocity-target EMA (alpha 0.8) and the
+  # feasibility projection are both hidden state. Observation goes 126 -> 246,
+  # which needs its own case in utils.cpp.
   if "actions" in actor:
     actor["actions"].history_length = 5
 
-  # joint_vel par difference finie, comme le robot reel. Voir la docstring de
-  # joint_vel_encoder_finite_difference : mc_rtc ne recoit aucune vitesse
-  # articulaire sur RHPS1 et derive les encodeurs. Le bruit blanc de +/-1.5 est
-  # retire, il est desormais produit par la derivation elle-meme.
+  # Finite difference, like the robot: mc_rtc gets no joint velocities on RHPS1
+  # and derives the encoders.
   if "joint_vel" in actor:
     actor["joint_vel"] = ObservationTermCfg(
       func=mdp.joint_vel_encoder_finite_difference,
-      # 0.001 rad, pas les 0.01 du terme joint_pos : ce parametre modelise le
-      # bruit d'encodeur PAR ECHANTILLON, et sur une articulation reduite 210:1
-      # il est petit. La part lente (calibration, flexion) est deja portee par
-      # l'evenement encoder_bias, et un biais constant disparait de toute facon
-      # dans une difference. Mesure sur 64 envs : la corruption resultante de la
-      # vitesse vaut 1.03 rad/s d'ecart-type, dont 1.02 vient de la difference
-      # finie elle-meme et non du bruit -- c'est bien la derivation qui domine,
-      # comme sur le robot. A 0.01 on monterait a 1.93, soit deux fois le signal.
-      # 5e-5, pas 0.001 (2026-08-12). Mesure contre le log robot reel
-      # 2026-08-10-17-08 : a l'arret, la vitesse articulaire vue par le
-      # controleur a un ecart-type de 0.0079 rad/s. La meme mesure en
-      # simulation, apres stabilisation, donnait 0.1628 avec 0.001 -- soit 21
-      # fois trop de bruit sur un canal entier d'observation, que la politique
-      # aurait appris a ignorer purement et simplement.
-      #
-      # La raison est physique : les encodeurs de RHPS1 ont un pas de
-      # quantification de 6e-7 rad cote articulation, donc les deriver
-      # n'amplifie presque rien. 0.001 rad valait 1600 fois le pas reel. Le
-      # raisonnement de la docstring sur l'anti-correlation reste juste, mais
-      # l'effet est invisible ici : l'autocorrelation a lag 1 du signal reel
-      # vaut +0.978, c'est du mouvement, pas du bruit derive.
-      #
-      # Etalonnage mesure : 0.001 -> 0.163, 2e-4 -> 0.034, 1e-4 -> 0.017,
-      # 5e-5 -> 0.0097, 0 -> 0.0041. On garde 5e-5 plutot que 4e-5 pile : la
-      # cible vient d'un seul essai sur un seul robot, une marge de 1.2x est
-      # raisonnable, et le plancher a bruit nul (0.0041) montre que la moitie
-      # du bruit reel n'est de toute facon pas d'origine encodeur.
+      # Per-sample encoder noise. RHPS1 encoders quantise at 6e-7 rad on the
+      # joint side, so differentiating amplifies almost nothing; 0.001 put 21x
+      # too much noise on the channel, measured against the real-robot log.
       params={"encoder_noise": 0.00005},
       noise=None,
     )
-  # Le critic peut garder ses canaux privilegies (foot_height_scan,
-  # joint_torques) : ils n'existent qu'a l'entrainement et ne coutent rien au
-  # deploiement. Seul gait_phase doit partir, il reference une recompense qui
-  # n'existe plus.
+  # The critic keeps its privileged channels, they cost nothing at deployment.
+  # gait_phase must go, it references a reward that no longer exists.
   critic = cfg.observations["critic"].terms
   critic.pop("gait_phase", None)
-  # Le groupe torque_guidance n'existait que pour torque_guidance_coef, mis a
-  # zero apres cinq echecs et retire de rl_cfg le meme jour. Le laisser ferait
-  # calculer une observation entiere que plus personne ne lit.
+  # torque_guidance existed only for torque_guidance_coef, now zero.
   cfg.observations.pop("torque_guidance", None)
 
 
@@ -1366,18 +1211,8 @@ def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     twist_cmd.ranges.lin_vel_y = (-0.4, 0.4)
     twist_cmd.ranges.ang_vel_z = (-0.45, 0.45)
 
-    # Les poussees doivent partir en play, et jusqu'ici elles restaient. Deux
-    # raisons cumulees, toutes deux silencieuses :
-    #   - le bloc play du rough cfg fait pop("push_robot"), or l'evenement
-    #     s'appelle push_base ; le ", None" avale l'absence sans rien dire ;
-    #   - meme avec le bon nom ce serait inutile, ce bloc-la s'execute avant la
-    #     ligne qui ajoute push_base.
-    # On le retire donc ici, ou toute la config est construite. Ce n'est pas un
-    # detail cosmetique : push_by_setting_velocity ECRASE la vitesse de base
-    # avec un tirage jusqu'a +/-0.4 m/s, soit plus que la commande maximale de
-    # 0.3, et parfois a contresens. A l'entrainement l'episode dure 20 s et se
-    # reinitialise ; en play episode_length_s vaut 1e9, donc ces poussees
-    # tombent indefiniment sur le meme robot.
+    # Removed here, where the whole config exists: the play block in the rough
+    # config runs before push_base is added, and named push_robot anyway.
     cfg.events.pop("push_base", None)
 
   return cfg
@@ -1402,9 +1237,7 @@ def rhps1_stepping_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       },
     ]
 
-  # L'evenement de poussee s'appelle push_base, pas push_robot : le pop qui
-  # etait ici ne retirait rien. Cette configuration veut bien un robot non
-  # pousse, donc on retire le bon nom.
+  # This config wants an unpushed robot; the old pop named push_robot.
   cfg.events.pop("push_base", None)
 
   cfg.rewards["track_linear_velocity"].weight = 1.0
