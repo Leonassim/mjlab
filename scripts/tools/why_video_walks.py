@@ -33,7 +33,9 @@ POLICY_DT = 0.005
 NUM_ENVS = 64
 
 
-def run(ckpt: str, fwd: float, play: bool, stochastic: bool) -> np.ndarray:
+def run(
+  ckpt: str, fwd: float, play: bool, stochastic: bool, video: str | None = None
+) -> np.ndarray:
   device = "cuda:0" if torch.cuda.is_available() else "cpu"
   cfg = load_env_cfg(TASK, play=play)
   cfg.scene.num_envs = NUM_ENVS
@@ -42,7 +44,9 @@ def run(ckpt: str, fwd: float, play: bool, stochastic: bool) -> np.ndarray:
   # Sinon l'env d'entrainement coupe l'episode avant les 5 s.
   cfg.episode_length_s = max(cfg.episode_length_s, 2 * DURATION_S)
 
-  env_raw = ManagerBasedRlEnv(cfg, device=device)
+  env_raw = ManagerBasedRlEnv(
+    cfg, device=device, render_mode="rgb_array" if video else None
+  )
   env = RslRlVecEnvWrapper(env_raw)
   runner = load_runner_cls(TASK)(env, asdict(load_rl_cfg(TASK)), device=device)
   runner.load(ckpt, map_location=device)
@@ -79,13 +83,23 @@ def run(ckpt: str, fwd: float, play: bool, stochastic: bool) -> np.ndarray:
   # Lu en debut de boucle, donc apres le compute() du step precedent : c'est bien
   # la valeur produite par l'env, pas celle qu'on vient d'ecrire soi-meme.
   seen_min, seen_max = 1e9, -1e9
-  for _ in range(int(DURATION_S / POLICY_DT)):
+  frames: list[np.ndarray] = []
+  for i in range(int(DURATION_S / POLICY_DT)):
     seen_min = min(seen_min, float(cmd.command[:, 0].min()))
     seen_max = max(seen_max, float(cmd.command[:, 0].max()))
     with torch.inference_mode():
       action = policy(obs, stochastic_output=True) if stochastic else policy(obs)
     obs = env.step(action)[0]
     cmd.is_standing_env[:] = False
+    # 1 image sur 4 -> 50 im/s pour un pas de politique a 200 Hz.
+    if video and i % 4 == 0:
+      frames.append(env_raw.render())
+
+  if video:
+    import mediapy as media
+
+    media.write_video(video, frames, fps=50)
+    print(f"  video ecrite : {video}")
 
   travelled = (robot.data.root_link_pos_w[:, 0] - x0).cpu().numpy()
   assert abs(seen_min - fwd) < 1e-6 and abs(seen_max - fwd) < 1e-6, (
@@ -110,7 +124,8 @@ def main() -> int:
         f"{'play=True (deploiement)' if play else 'play=False (=video wandb)'}"
         f" + {'stochastique' if stochastic else 'deterministe'}"
       )
-      d = run(ckpt, fwd, play, stochastic)
+      tag = f"{'play' if play else 'train'}_{'stoch' if stochastic else 'det'}"
+      d = run(ckpt, fwd, play, stochastic, video=f"/tmp/rhps1_{tag}.mp4")
       p50, p90 = float(np.percentile(d, 50)), float(np.percentile(d, 90))
       print(f"{label:38s} {p50:+8.3f}m {p90:+8.3f}m {100 * p50 / expected:9.0f} %")
   return 0
