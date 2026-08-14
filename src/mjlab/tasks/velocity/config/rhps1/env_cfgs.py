@@ -237,66 +237,27 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   new_terms = {
     "base_lin_vel": ObservationTermCfg(
       # _biased : biais constant par episode, tire par l'evenement
-      # "sensor_bias". A l'entrainement cette valeur est la verite terrain de
-      # MuJoCo ; sur le robot c'est la sortie de l'observateur de base
-      # flottante, qui derive. Voir mdp.base_lin_vel_biased.
+      # MuJoCo ground truth in training, a drifting observer on the robot.
       func=mdp.base_lin_vel_biased,
-      # Bruit mesure sur le log robot reel 2026-08-10-17-08 : ecart-type 0.0142
-      # a l'arret ou la verite vaut zero, 0.0586 en marche. Unoise(+/-0.1) donne
-      # 0.058, cale sur le second. Ce terme n'avait aucun bruit du tout, alors
-      # que c'est celui dont l'estimation est la moins fiable.
       noise=Unoise(n_min=-0.1, n_max=0.1),
       history_length=history_len,
       flatten_history_dim=True,
     )
   }
   new_terms.update(old_terms)
-  # Explicit gait clock (see mdp.gait_phase_tracking / rewards["gait_phase"]
-  # below): the policy needs to perceive the prescribed swing/stance timing
-  # to act on it, not just be rewarded for matching it by chance.
-  # reward_name passed explicitly (not left to the function default) so
-  # play.py --fast can see that this observation depends on the gait_phase
-  # reward term: the clock lives in that term, and fast mode drops any reward
-  # nothing references. A default argument is invisible to that scan.
+  # reward_name explicit, not defaulted: play.py --fast scans params to decide
+  # which rewards to keep, and the clock lives in the gait_phase reward.
   new_terms["gait_phase"] = ObservationTermCfg(
     func=mdp.gait_phase_obs, params={"reward_name": "gait_phase"}
   )
-  # Feed back the action as *executed*, not as requested. The actuator projects
-  # any command whose PD demand exceeds the effort limit back onto the
-  # executable set, so on those steps mdp.last_action reports an intent the
-  # plant never carried out, and the policy's own history misdescribes the
-  # dynamics it is trying to model (18% of steps early in the 2026-07-29 run).
-  #
-  # This is not about torque saturation, which is normal for high-gain position
-  # control and costs nothing -- kp=20000 against a 140 N.m hip has a 0.4 deg
-  # linear range, the real robot rides its limit constantly. It is about two
-  # different commands producing one identical execution: the policy cannot
-  # notice that if it only ever observes what it asked for.
-  #
-  # Applied to the actor group and to actor_history below; they must agree, or
-  # the history says something different from the current step about the same
-  # quantity.
-  # executed_action again: the projection is back on for the combination run
-  # (_TORQUE_FEASIBILITY_RATIO = 1.0), so the raw action and the executed one
-  # diverge on every step where the projection bites -- which is most of them,
-  # the feasible half-window is 0.143 action units against a 1.0-unit scale.
-  # Feeding back intent instead of execution would put the hidden state straight
-  # back in, and this pairs with the history below rather than replacing it.
-  #
-  # history_length 5 on actions (Leo, 2026-08-01), treated as a base change and
-  # not as an ablation. Rationale: with the velocity-target EMA at alpha=0.8,
-  # qd* depends on the whole history of position targets and nothing in the
-  # observation carried it -- the actuator was non-Markovian from the policy's
-  # point of view. Five frames recover 1 - 0.8^5 = 67% of that state. Costs 120
-  # observation dimensions.
+  # Executed, not requested: the actuator projects any target whose PD demand
+  # exceeds the effort limit, so two different actions can execute identically.
+  # History 5 because the velocity-target EMA (alpha 0.8) is hidden state.
+  # The C++ controller must feed back the same quantity, see utils.cpp.
   if "actions" in new_terms:
     new_terms["actions"] = ObservationTermCfg(
       func=mdp.executed_action, history_length=history_len, flatten_history_dim=True
     )
-  # gait_phase history: asked for in the same breath. Less defensible on its own
-  # -- the phase is a deterministic clock, so the current frame already
-  # determines every past one -- but it is 16 dimensions and it makes the two
-  # history-bearing term families consistent.
   if "gait_phase" in new_terms:
     new_terms["gait_phase"] = ObservationTermCfg(
       func=mdp.gait_phase_obs,
@@ -304,46 +265,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       history_length=history_len,
       flatten_history_dim=True,
     )
-  # Peak raw torque of the last policy step, per joint, normalised by the effort
-  # limit (Leo, 2026-08-04). The critic already had joint_torques, but post-clamp:
-  # past the limit every command reports the same number, so it cannot say how far
-  # past. The actor had nothing and inferred saturation from joint_pos/joint_vel.
-  #
-  # A longer window than history_len (5), because that is the point *here* -- a
-  # saturation builds over tens of milliseconds and the policy needs to see it
-  # coming -- while on command, which changes on a 3-8 s resample, it would be
-  # dimensions of nothing. Kept local for that reason: at 20 across every block
-  # the observation goes 266 -> 1466 dims; local, it is 566, and the C++ side has
-  # one new block to build instead of five to resize.
-  #
-  # 20, and local rather than raising history_len for every block: a saturation
-  # builds over tens of milliseconds and the policy needs to see it coming, while
-  # on command -- which changes on a 3-8 s resample -- the same window would be 45
-  # dimensions of nothing. At history_len 20 everywhere the observation would go
-  # 266 -> 1466 dims and the C++ deployment would have five blocks to resize
-  # instead of one to add. Local, it is 866.
-  #
-  # 10 (566-dim actor obs), not the 20 first asked for. Measured grid on an 11.3 GB
-  # card, all failures being "Warp CUDA error 2: out of memory" in
-  # wp.capture_launch at iteration 0:
-  #
-  #   history  video  expandable_segments   result
-  #      20     yes          no             OOM
-  #      20     no           no             OOM
-  #      10     yes          no             OOM
-  #      10     no           no             OK  (10.16 GB)
-  #       5     yes          yes            OK  (10.31 GB)
-  #      20     yes          yes            OOM
-  #      10     yes          yes            OK  (10.66 GB)   <- this
-  #
-  # Two lessons. Most of those failures were fragmentation, not capacity: running
-  # the trainer under PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True is what
-  # makes video and a 566-dim observation coexist, and it must be tried before
-  # shrinking anything -- four restarts were spent cutting history and dropping
-  # video to work around an allocator setting. But it is not unlimited: at 866 dims
-  # the run OOMs even with it, so 20 is genuinely out of reach here.
-  #
-  # THE TRAINER MUST BE LAUNCHED WITH THAT ENV VAR. Without it this config OOMs.
+  # Post-clamp joint_torques cannot say how far past the limit a command went.
+  # History 10, local to this block: saturation builds over tens of ms.
+  # Needs PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True or the run OOMs.
   new_terms["raw_torque"] = ObservationTermCfg(
     func=mdp.raw_torque_ratio,
     history_length=10,
@@ -496,98 +420,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   if "reset_base" in cfg.events:
     cfg.events["reset_base"].params["pose_range"]["z"] = (0.0, 0.02)
   if cfg.curriculum is not None:
-    # velocity_damper disabled for now (2026-07-26). It ramps the actuator
-    # safety projection that mirrors the mc_rtc QP KinematicsConstraint, which
-    # matters for deployment -- but it only starts at step 360_000 (iter 7500)
-    # and no run has ever survived that far, so it has literally never
-    # executed. Re-enabling it belongs in a pass of its own, once a run
-    # actually reaches that far and the many reward changes made today have
-    # been evaluated on their own. FiniteDifferencePdActuator defaults
-    # velocity_damper_progress to 0.0, and the projection is an explicit
-    # no-op at 0, so leaving the curriculum out simply keeps it inactive.
-    # No air_time_weight curriculum (removed 2026-07-25, with the
-    # air_time_target one). It used to ramp 40 -> 80 to demand progressively
-    # longer swings; that job now belongs entirely to the gait clock, which
-    # prescribes a 0.4s swing at every speed. air_time keeps a fixed
-    # threshold_max of 0.5s, so escalating its weight would only sharpen a
-    # pull toward 0.5s *against* the clock's 0.4s -- the opposite of what
-    # the ramp was for. Its remaining job (require a genuine lift-off, not
-    # a light-footed drag; see the air_time block further down) is a
-    # constant-strength guard, not something that needs to grow.
-    #
-    # Historical note, since this was one of the four curricula involved:
-    # air_time_weight, impact_vel_weight, flat_support_weight and
-    # air_time_target all used to jump together on step 216_000 (iter
-    # ~4500), which compounded into a full training collapse -- fell_down
-    # from a noisy ~0.15-0.25 baseline to >6/episode over the following
-    # ~5000 iterations with no recovery. The survivors are now staggered;
-    # see min_foot_height_weight below.
-    # Metrics/peak_height_mean plateaued at ~0.006-0.009m (target 0.08m, net
-    # ~0.055m after the ~0.023m ankle-site offset -- see 2026-07-24 visual
-    # check) through the entire -25 -> -41 range with zero improvement. Two
-    # fixes together: pushed the weight ceiling much higher (-200), and
-    # curriculum the min_height target itself instead of fixing it at the
-    # final 0.08m from step 0 -- 0.08m was simply out of reach the whole
-    # time, so no weight was going to close that gap on its own (same
-    # break-even idea as air_time_target_curriculum: each stage's target
-    # should be reachable from the previous stage's converged behavior).
-    # Fine ~1.3x weight stages (not the old 3-stage jumps that only reached
-    # -50), same lesson as pd_demand_excess's regrade: many small steps let
-    # the policy actually converge at each level, few big ones risk
-    # yanking it past what it can absorb. Steps deliberately offset from
-    # 144k/216k/288k (the air_time/impact_vel/flat_support jump points) to
-    # avoid stacking multiple curricula's hardest jump on the same step,
-    # the likely cause of the iter-4500 destabilization.
-    # min_foot_height_weight curriculum removed (2026-07-26). It ramped the
-    # weight -25 -> -200 (and min_height 0.030 -> 0.080) across 8 stages. Two
-    # runs' worth of evidence say it does not work and now actively hurts:
-    #   - Metrics/peak_height_mean never responded to the weight anywhere in
-    #     the -25 -> -200 range across earlier runs.
-    #   - In run 2026-07-25_18-33-25 the first stage (weight -25 -> -33, at
-    #     step 100_000 / iter 2083) produced a clean step change in
-    #     Episode_Termination/fell_down, from ~0.26-0.30 before to
-    #     0.37-0.54 immediately after, with 7 more such stages queued behind
-    #     it.
-    #   - Over that same window peak_height_mean went *down* (0.0081 ->
-    #     0.0049 vs the previous run), i.e. the pressure rose while the
-    #     behavior it targets got worse.
-    # Since peak height (~0.006) sits far below even the first stage's 0.030
-    # target, the one-sided deficit clamp(1 - peak/min_height, 0) is nearly
-    # saturated regardless, so the ramp mostly rescales a constant penalty
-    # rather than sharpening a gradient. Base weight -25 / min_height 0.030
-    # stays; see the note on swing-height shaping in the air_time block for
-    # why the foot skims rather than lifts.
-    # impact_vel_weight curriculum removed (2026-07-27): base weight set
-    # directly to -2.0 (safety-priority budget bump, see impact_vel
-    # registration), already above every stage this used to ramp through
-    # (-1.0 -> -1.3 -> -1.6). Left wired up, the first stage firing at step
-    # 170k would have *downgraded* the weight back to -1.0. Same reasoning
-    # as the flat_support_weight removal directly below.
-    # flat_support_weight curriculum removed (2026-07-26), same reasoning as
-    # air_time_target and min_foot_height_weight before it: it ramped -18 ->
-    # -30 on a metric that had not moved across three runs (2.0 -> 2.5 of 4,
-    # flat through a -9 -> -18 base change). Ramping was never going to fix a
-    # term whose obstacle is a competing penalty, not insufficient pressure.
-    #
-    # Every curriculum that used to live in this block has now been removed
-    # (see comments above) -- velocity_damper, air_time_weight,
-    # min_foot_height_weight, impact_vel_weight, flat_support_weight.
-    #
-    # No torque_feasibility curriculum either, and this one is worth stating
-    # rather than leaving as an absence, because a ramp 3.0 -> 1.0 was drafted
-    # here first (2026-07-29) and then dropped as pointless.
-    #
-    # The projection is set at ratio 1.0 constantly in rhps1_constants.py. At
-    # 1.0 it delivers exactly the torque MuJoCo's effort clamp already
-    # delivered -- tau is affine and increasing in q*, so clamping tau and
-    # projecting q* onto tau's preimage are the same operation. Same dynamics,
-    # same return, so there is no adaptation for a curriculum to ease: a ramp
-    # would interpolate between two settings with *identical* physics, buying
-    # nothing while re-admitting un-executable commands early on. That is the
-    # opposite of the point.
-    #
-    # ``curriculums.torque_feasibility_progress`` still exists as an escape
-    # hatch, unregistered. Wire it only if a run somehow argues for it.
+    # Every curriculum that used to live here was removed after measuring
+    # that none of them moved its metric. curriculums.torque_feasibility_progress
+    # still exists, unregistered, as an escape hatch.
     pass
   if cfg.curriculum is not None and "command_vel" in cfg.curriculum:
     cfg.curriculum["command_vel"].params["velocity_stages"] = [
@@ -836,77 +671,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # route through the return/advantage, so it can't create this loop.
   cfg.rewards["pd_demand_excess"] = RewardTermCfg(
     func=mdp.pd_demand_excess,
-    # -1e-6 -> -1e-4 (2026-07-26). Enabled deliberately, at a weight small
-    # enough that it cannot dominate a recovery. The problem it addresses is
-    # real and measured on every run: Metrics/pd_demand_ratio_mean climbs to
-    # 3-4, i.e. the policy asks for three to four times the torque the
-    # actuator can deliver. Training never notices because the simulated
-    # actuator clamps silently, but hardware that clamps differently is
-    # exactly how mc_mujoco blew up on 287 N.m demanded from a 35 N.m hip.
-    # Kept deliberately small: at a large weight this term caused two
-    # collapses earlier in the session by making the policy timid about the
-    # big corrective actions that catch a stumble -- suppressing the very
-    # recoveries that prevent falls, whose own chaotic demand then fed the
-    # penalty back in. A constant small weight gives a gradient toward
-    # feasibility without ever outbidding a recovery, and is more legible
-    # than the late curriculum the original comment suggested.
-    # -1e-3 (was -1e-4, 2026-07-28). At -1e-4 the realized value was -0.001,
-    # i.e. 0.01% of the penalty budget -- inert, while
-    # Metrics/pd_demand_ratio_mean sits at 5.6 (max 350): the policy asks for
-    # ~5.6x the torque the actuator can deliver and nothing pushes back.
-    # Still deliberately small: the history above is real, a large weight
-    # here made the policy timid on stumble recoveries twice. The heavy
-    # lifting is meant to come from torque_guidance_coef (rl_cfg.py), which
-    # bypasses the advantage entirely and therefore cannot form that loop.
-    # -0.05 (was -1e-3, 2026-07-29), and re-banded. Its job changed: the hard
-    # cap is now structural (FiniteDifferencePdActuator's
-    # torque_feasibility_ratio = 3.0 projects the position target, so the demand
-    # cannot exceed 3x the limit by construction), and this term only has to
-    # supply a *gradient before the wall* so the policy prefers the interior
-    # rather than riding the projection -- riding it would recreate exactly the
-    # flat plateau the projection exists to remove, just at ratio 3 instead of
-    # infinity.
-    #
-    # That is why the two earlier collapses at large weights (up to -8.0, both
-    # producing a policy too timid to catch a stumble, whose falls then fed the
-    # penalty back in) do not argue against -0.05 here: with the projection in
-    # place a big corrective action is still *executed*, merely projected onto
-    # the feasible set, so the recovery is not suppressed -- only its infeasible
-    # component is. Budget check: excess is capped at 1.5 per joint and
-    # realistically only the leg joints pay, so the realized term should land
-    # around -0.15 to -0.3, a few percent of the penalty budget, nowhere near
-    # the ~2.5:1 TOTAL-/TOTAL+ working ceiling. Watch it on the first run.
-    #
-    # -0.02 (was -0.05 the same day), after measuring the live budget on run
-    # 2026-07-29_01-13-36 at iter 9096 rather than estimating it. Realized
-    # there was -0.0085 at weight -1e-3, i.e. sum(excess) ~ 8.6 at
-    # soft_ratio 1.0 / cap 1.0; re-banded to 0.7 / 4.0 that sum lands around
-    # 40-50, so -0.05 would have realized ~-2.0 -- third-largest penalty in the
-    # run, and it would have pushed the torque family (this +
-    # torque_limit_margin -0.57 + joint_torques_l2 -1.03 +
-    # joint_torque_rate_l2 -0.75) to ~35% of a 10.3 penalty budget against an
-    # 11.1 task budget. That concentration is how the two earlier collapses
-    # started. -0.02 realizes ~-0.8, keeps the family near 28%, and is still
-    # 20x the inert level it replaces.
-    #
-    # It does not need to be large: with the projection active, an infeasible
-    # command no longer *buys* anything (it produces the same torque as its
-    # projection), so this term only has to break a tie, not win an argument.
-    # -0.02 and the 0.7/4.0 band, finally applied (2026-08-01): every comment
-    # above described them, the code was still at -0.001 / 1.0 / 1.0. Same
-    # comment-ahead-of-code gap as the velocity filter had.
-    #
-    # Caveat this run carries, stated because the reasoning above assumes
-    # otherwise: the band and the weight were derived *with the projection
-    # active* ("0.7, i.e. below the projection's ratio of 1.0", "with the
-    # projection in place a big corrective action is still executed, merely
-    # projected, so the recovery is not suppressed"). Here the projection is
-    # OFF, so this term is alone against the two collapses documented above --
-    # a policy too timid to catch a stumble, whose falls then feed the penalty
-    # back in. Those were at weights up to -8.0, i.e. 400x this one, and the
-    # realized value here should land near -0.8. Watch Episode_Termination/
-    # fell_down against the realized Episode_Reward/pd_demand_excess: if falls
-    # climb while the term grows, that is the loop restarting.
+    # Small on purpose: at large weights this made the policy too timid to
+    # catch a stumble, and the resulting falls fed the penalty back in.
     weight=-0.02,
     params={
       # 0.7, i.e. *below* the projection's ratio of 1.0, not above it. This
