@@ -397,22 +397,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   twist_cmd.ranges.heading = None
   twist_cmd.rel_heading_envs = 0.0
   twist_cmd.rel_standing_envs = 0.4
-  # vel_ramp_rate left at None (teleporting command) -- UNTESTED, not rejected.
-  #
-  # Setting it to 0.5 to match NewRLQPController's ramp would put the walk-to-stand
-  # transition, the regime the deployed robot spends ~0.6 s in on every stop, into
-  # the training distribution; today it is never sampled at all, because the command
-  # teleports at every resample. That argument still stands.
-  #
-  # Two runs on 2026-08-03 appeared to reject it. They are void: both trained with
-  # `num_envs` at its default of 1 instead of 4096 (the launch command omitted
-  # --env.scene.num-envs), so PPO saw 48 samples per iteration instead of 196608 and
-  # no configuration could have learned. Check the "Number of environments" line the
-  # trainer prints at startup before trusting any comparison.
-  #
-  # The one thing measured off-run and still valid: scratch/cmd_band.py shows the
-  # ramp does NOT starve gait_phase -- it leaves slightly more time above the 0.1
-  # gate, not less.
+  # vel_ramp_rate stays None: the command teleports at each resample, so the
+  # walk-to-stand transition the deployed robot always goes through is never
+  # sampled. Untested, not rejected.
   twist_cmd.viz.z_offset = 1.0
   twist_cmd.ranges.lin_vel_x = (-0.1, 0.1)
   twist_cmd.ranges.lin_vel_y = (-0.15, 0.15)
@@ -457,24 +444,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
   cfg.rewards["track_linear_velocity"].weight = 3.5
-  # Wide kernel: a tight one punishes the COM oscillation a long stride
-  # naturally causes, implicitly biasing toward short quick steps. Widened
-  # 0.30 -> 0.40 alongside the low-cadence gait clock (originally
-  # stride_frequency_target, now gait_phase): a lower stride count means
-  # for the same commanded speed, stride length (and the COM velocity
-  # ripple within each stride) must grow -- give it more room here rather
-  # than fight it with a tight kernel. Weight left untouched: this is a
-  # tolerance-shape fix, not an importance/scale one, and changing both at
-  # once would make either change hard to attribute in the next run.
+  # Wide kernel: a tight one punishes the COM ripple of a long stride and
+  # biases toward short quick steps.
   cfg.rewards["track_linear_velocity"].params["std"] = 0.40
   cfg.rewards["track_angular_velocity"].weight = 3.5
   cfg.rewards["track_angular_velocity"].params["std"] = 0.45
 
-  # 0.5 -> 1.5, alongside the mean(exp) reform in mdp.variable_posture. This is
-  # the only term that tells the robot *which way* to move to fix a bad
-  # standing posture -- everything else about standing is a verdict, not a
-  # direction -- and at 0.5 its entire achievable range was 4% of the
-  # standing_single_support penalty it is meant to counterbalance.
+  # The only term that says which way to move to fix a bad standing posture;
+  # everything else about standing is a verdict, not a direction.
   cfg.rewards["pose"].weight = 1.5
   cfg.rewards["pose"].params["command_name"] = "twist"
   cfg.rewards["pose"].params["walking_threshold"] = 0.05
@@ -483,14 +460,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards.pop("soft_landing", None)
   cfg.rewards["impact_vel"] = RewardTermCfg(
     func=mdp.impact_velocity,
-    # -2.0 (was -0.7, 2026-07-27): realized only -0.27 of a -17.1 budget --
-    # essentially unpenalized despite being one of the four explicit safety
-    # priorities (low impact velocity, don't break knees). Cheap headroom,
-    # same budget-ratio reasoning as flat_support above. Skips the existing
-    # impact_vel_weight curriculum's slow ramp to -1.6 by iter ~4500; that
-    # ramp was ambition-paced (matched to how fast air_time/flat_support grew
-    # harder to reach), not safety-paced, and this term does not need to
-    # wait on it.
+    # One of the four safety priorities, so it gets real weight.
     weight=-2.0,
     params={
       "sensor_name": feet_ground_split_cfg.name,
@@ -513,16 +483,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "command_threshold": 0.1,
     },
   )
-  # Video review (run 2026-07-23_16-09-31) showed the swing foot kicking
-  # backward before swinging forward -- air_time only rewards *duration*
-  # aloft, not direction, so a longer, looping swing banks the same credit
-  # as a direct one. Targeting knee flexion directly was considered and
-  # rejected: real swing is hip-driven (double-pendulum model), the knee
-  # bends passively as the shank trails the hip-accelerated thigh, so a
-  # foot/knee that moves backward purely from correct hip-driven flexion is
-  # legitimate and would be wrongly punished by constraining knee or foot
-  # motion directly. Constrain the hip's direction instead and let
-  # knee/foot follow.
+  # air_time rewards duration aloft, not direction, so a looping backward
+  # swing banks the same credit. Constrain the hip, not the knee: real swing
+  # is hip-driven and the knee bends passively.
   cfg.rewards["swing_hip_direction"] = RewardTermCfg(
     func=mdp.swing_hip_direction_penalty,
     weight=-0.3,
@@ -535,38 +498,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "command_threshold": 0.05,
     },
   )
-  # Periodic Reward Composition (Siekmann et al., Cassie): an explicit gait
-  # clock prescribes swing/stance timing directly (paired with
-  # mdp.gait_phase_obs so the policy can perceive and act on it), rather
-  # than the reactive/post-hoc approach the rest of this file uses --
-  # air_time/min_foot_height/stride_frequency_target all stalled for
-  # thousands of iterations despite escalating weights, since they only
-  # ever reward a gait the policy already stumbled onto, not steer it
-  # there.
-  #
-  # Cadence is commanded-speed dependent (period_slow -> period_fast over
-  # command_threshold -> command_ref), NOT curriculum-driven. A curriculum
-  # link to air_time_target's threshold_max was tried 2026-07-25 and
-  # reverted the same day: run 2026-07-25_18-33-25 was stable (fell_down
-  # noisy but bounded, ~0.03-0.3) right up through that curriculum's first
-  # stage at step 72_000/iter 1500, then entered a slow, continuous,
-  # never-recovering climb starting ~iter 2100 that compounded into full
-  # collapse (fell_down >70/episode) by iter ~3200. Speed-dependence is a
-  # different mechanism and does not reintroduce that failure: it varies
-  # smoothly and per-env with a quantity the policy already observes (the
-  # command), the way ``amplitude`` does, rather than snapping the cadence
-  # for all 4096 envs at once at a curriculum step boundary.
-  #
-  # Targets: 1.0s per step at the slow end (period 2.0s), ~0.55s per step
-  # at command_ref and above (period 1.1s) -- a step is a half-cycle. Fixed
-  # cadence was the structural reason low-speed commands could only ever
-  # produce tiny steps (step length = v*T/2), the "petits pas" problem this
-  # whole line of work has been chasing.
-  #
-  # swing_duration is a duration, not a ratio, so single-support time stays
-  # ~0.4s at every speed and the extra cycle time at low speed goes into
-  # double support (= 1 - 2*swing_ratio) instead of into a 1.0s one-legged
-  # balance the robot cannot hold. See mdp.gait_phase_tracking's docstring.
+  # Explicit gait clock (Siekmann et al.), prescriptive rather than reactive.
+  # Cadence follows commanded speed, never a curriculum: a curriculum step
+  # snaps all 4096 envs at once and collapsed a run on 2026-07-25.
+  # swing_duration is a duration, not a ratio, so extra cycle time at low
+  # speed goes into double support instead of a one-legged balance.
   cfg.rewards["gait_phase"] = RewardTermCfg(
     func=mdp.gait_phase_tracking,
     weight=2.0,
@@ -659,38 +595,18 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       weight=-2.0,
       params={"sensor_name": prox_cfg.name, "min_dist": min_dist},
     )
-  # Logging-only: kept at a near-zero weight purely so
-  # Metrics/pd_demand_ratio_mean/max still track hardware-readiness. The two
-  # curriculum ramps that used this as a training signal (up to -8.0) both
-  # produced the same failure mode -- large enough to matter, it also made
-  # the policy timid on the big corrective actions needed to catch a
-  # stumble, so falls became more frequent, and a fall's own chaotic demand
-  # fed the same penalty right back in. The actual torque-feasibility signal
-  # is now mdp.pd_action_guidance_target, consumed as a direct actor-space
-  # auxiliary loss (rl_ext.TorqueGuidedPPO) instead of a reward: it doesn't
-  # route through the return/advantage, so it can't create this loop.
+  # Near-zero weight, kept so Metrics/pd_demand_ratio_* keep tracking
+  # hardware readiness. The real feasibility signal is an auxiliary loss
+  # (rl_ext.TorqueGuidedPPO), which cannot form the timidity loop a reward can.
   cfg.rewards["pd_demand_excess"] = RewardTermCfg(
     func=mdp.pd_demand_excess,
     # Small on purpose: at large weights this made the policy too timid to
     # catch a stumble, and the resulting falls fed the penalty back in.
     weight=-0.02,
     params={
-      # 0.7, i.e. *below* the projection's ratio of 1.0, not above it. This
-      # term is the only thing that moves the raw action into the window: the
-      # projection is local to the actuator's compute, so
-      # ``data.joint_pos_target`` (what this reads) keeps the raw target and
-      # the measured ratio stays honest -- but a projection supplies no
-      # gradient of its own, it just discards the excess. A soft_ratio of 1.0
-      # or more would only start paying once the command is already
-      # infeasible, and riding the projection is itself a flat region; 0.7
-      # gives a pull that begins inside the feasible set.
-      #
-      # cap 4.0, not 2.0: the cap is a clamp, so every joint past it pays the
-      # same and the gradient there is exactly zero -- capping at 2.0 with the
-      # live ratio at 3.26 (run 2026-07-29_01-13-36, iter 9096) would have put
-      # most leg joints in a second flat region, which is the same mistake this
-      # whole change is undoing. 4.0 keeps the observed range on the sloped
-      # part while still bounding the tail (the ratio max has hit 350).
+      # Below the projection ratio: a projection supplies no gradient, it just
+      # discards the excess, so the pull has to start inside the feasible set.
+      # cap 4.0 keeps the observed range on the sloped part (ratio max hits 350).
       "soft_ratio": 0.7,
       "cap": 4.0,
       "ema_dt": 0.04,
@@ -716,92 +632,22 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
     },
   )
-  # -18 (was -9, 2026-07-24): flat_support_contacts_mean plateaued at
-  # ~1.97-1.99/4 for 5000+ iterations despite the curriculum already
-  # reaching -13 (run 2026-07-23_16-09-31) -- doubled the base alongside the
-  # curriculum stages below rather than trust the same range to work this
-  # time.
-  # -18 -> -25 (2026-07-26). 4/4 is geometrically reachable: at the nominal
-  # keyframe all four contact boxes are exactly coplanar (world z = -0.0020
-  # each), and they sit only 3 mm proud of the real ankle-link mesh, so they
-  # are a faithful stand-in for the sole. Yet after a couple of hundred
-  # settling steps under its own control the robot holds a tilted stance --
-  # the same four boxes then span 6.5 mm in height and only two of them
-  # report contact. So the deficit is a control failure, not a modelling
-  # one, and the weight was never the blocker either (2.0 -> 2.5 of 4 across
-  # three runs, flat through a -9 -> -18 base change). What was blocking it:
-  # levelling a foot costs ankle torque, and ankle_roll + ankle_pitch were
-  # taxed harder than this reward paid -- realized ~-4.8 against
-  # flat_support's -4.2, so staying tilted was simply cheaper. Those two are
-  # cut in the same commit; this now clearly outweighs them.
   cfg.rewards["flat_support"] = RewardTermCfg(
     func=mdp.flat_support_penalty,
-    # -11 (was -7, then -15 before that, 2026-07-27): budget-ratio framework
-    # replaces per-term isolation. TOTAL-/TOTAL+ realized ratio measured
-    # ~2:1 at -7 (survived) vs ~4:1 at pre-rescale weights (collapsed) --
-    # 2.5:1 is the working safety ceiling. flat_support's realized share was
-    # only -2.94 of -17.1, cheap headroom to buy more of exactly what the
-    # user's safety priorities call out (foot flat at every contact). The
-    # escape closure it carries is unchanged.
+    # Four coplanar corners are geometrically reachable; what blocked it was
+    # ankle torque penalties costing more than this paid. Those are gone.
     weight=-11.0,
     params={
-      # Stays at 4: all four corners genuinely can touch at once. The four
-      # contact boxes are exactly coplanar at the nominal keyframe (world
-      # z = -0.0020 each), and the reason a settled robot only lands 1.5 of
-      # them is a ~3.4 deg steady-state droop at the ankle roll joint -- a
-      # proportional controller only produces the torque that holds the foot
-      # level by sitting at some position error, and 3.4 deg across a 11 cm
-      # sole lifts one edge by the 6.5 mm measured between corners. The policy
-      # can cancel that by commanding an offset ankle target: 3.4 deg is 1.9
-      # action units against a typical output of 2.4. It never did, because
-      # ankle_roll_torque and ankle_pitch_torque taxed exactly that
-      # compensation harder than this term paid for the result -- both are
-      # removed in this same commit, so the correction is affordable for the
-      # first time. If the metric still parks below ~3 after a full run, then
-      # lower this; the loss/gain terms keep supplying gradient either way, so
-      # an out-of-reach level no longer silences the whole term the way the
-      # old absolute-only version did.
       "sensor_name": feet_ground_split_cfg.name,
       "command_name": "twist",
       "required_contacts_per_foot": 4,
-      # Ablation 3 (2026-07-31). Counts a corner as down when it sits within
-      # 1 mm of the *lowest* corner of the same foot, instead of waiting for
-      # the contact sensor to fire. Relative z, not an absolute plane: the
-      # four patches share one rigid body, so differences between their centre
-      # heights equal differences between their lowest corners and tilt
-      # cancels without needing the orientation. Comparing centres to the
-      # ground does not work -- at a 0.0525 m half-length, 0.01 rad of tilt
-      # moves the lowest corner by 525 um.
-      #
-      # 1 mm is deliberately small, and the sensitivity is the reason: it is
-      # 0.44 deg across the 130 mm sole, against the 3.4 deg ankle droop this
-      # term exists to remove. So it forgives sensor-threshold noise and the
-      # irregularity the real robot will have, without forgiving a tilted
-      # stance. Measured effect on a settled robot: 2.15 -> 3.87 corners.
-      #
-      # This replaces the geom margin+gap route, which is unavailable here:
-      # mujoco_warp raises NotImplementedError for a non-zero margin on
-      # box-box pairs under MULTICCD.
+      # A corner counts as down within 1 mm of the lowest corner of the same
+      # foot, not when the contact sensor fires. Relative z cancels tilt; the
+      # geom margin+gap route is unavailable, mujoco_warp rejects a non-zero
+      # margin on box-box pairs under MULTICCD.
       "corner_tolerance": 0.001,
     },
   )
-  # -12 -> -6 (2026-07-26). At -12 this had become the largest single term in
-  # the objective (-5.44 realized, more than any positive reward) while
-  # provably not changing the behaviour it targets: the policy holds one foot
-  # 27 mm up for 99% of standing time, and four separate hypotheses for why --
-  # broken measurement, unavoidable transitions, exploration noise, missing
-  # gradient -- were each tested and refuted. A large penalty that does not
-  # move behaviour does not steer the policy; it just injects variance into
-  # the value function, which is what destabilised the run where this was
-  # briefly doubled. Halved so it still expresses the preference without
-  # dominating, pending an actual explanation. standing_joint_vel now covers
-  # the "hold still" half of the intent with a dense signal.
-  # Back to -12 (2026-07-26, same pass that closed flat_support's escape
-  # hatch). Halving it was the wrong call: the term was not weak, it was being
-  # cancelled -- lifting a foot saved 5.86 on flat_support against this
-  # penalty's 6.0. With that saving now turned into a 9.14 *extra* charge, the
-  # gap between one foot and two at zero command is ~21 per step instead of
-  # 0.14, which is the large, unambiguous shift the behaviour needs.
   cfg.rewards["standing_single_support"] = RewardTermCfg(
     func=mdp.standing_single_support_penalty,
     weight=-6.0,
@@ -887,240 +733,67 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["angular_momentum"].weight = -0.1
   cfg.rewards["angular_momentum"].params["sensor_name"] = "robot/root_angmom"
   cfg.rewards["dof_pos_limits"].weight = -1.0
-  # -3e-5 (was -1e-5): plain L2 on realized (post-clamp) torque, no
-  # threshold/margin -- just "less torque, everywhere, all the time". Unlike
-  # pd_demand_excess (unclamped demand, routed through the return, caused
-  # two separate collapses this session) this is smooth and monotonic, so a
-  # 3x bump is a reasonable first non-marginal step rather than a risky one.
-  # At -1e-5 it already contributed ~-0.87 per step (Episode_Reward, run
-  # 2026-07-23_16-09-31) -- not actually negligible despite the tiny-looking
-  # weight, since raw squared torques are large; retune further after a run.
-  # One consolidated torque term instead of three overlapping ones (see
-  # mdp.joint_torques_weighted_l2). Ankles carry the emphasis: weakest
-  # actuators on the leg, and low ankle effort goes hand in hand with a
-  # well-placed flat foot rather than against it. 4x on roll (45 N.m limit,
-  # and the axis that decides whether the sole sits flat), 2x on pitch
-  # (65 N.m, legitimately works at push-off). Far below the ~18x the old
-  # separate ankle_roll_torque effectively applied, which made it the single
-  # largest term in the whole objective.
+  # One consolidated torque term instead of three overlapping ones. Ankles
+  # carry the emphasis: weakest leg actuators, and low ankle effort goes with
+  # a flat foot rather than against it.
   cfg.rewards["joint_torques_l2"] = RewardTermCfg(
     func=mdp.joint_torques_weighted_l2,
-    # -1.2e-5 (was -3e-5, 2026-07-27): uniform penalty rescale, see action_jerk.
     weight=-1.2e-5,
     params={
       "asset_cfg": SceneEntityCfg("robot"),
-      # ANKLE_R 4.0 -> 1.5 (2026-07-28). flat_support has been stuck at
-      # ~2.67/4 contacts for thousands of iterations, and its own comment
-      # explains why the policy never learns the fix: holding the sole flat
-      # against the ~3.4 deg ankle-roll droop needs *sustained ankle-roll
-      # torque*, and that comment assumed the conflict was gone once
-      # ankle_roll_torque/ankle_pitch_torque were deleted. It wasn't -- this
-      # 4x coefficient reproduces the same tax in reduced form, on exactly
-      # the joint whose torque buys flat contact. Raising flat_support
-      # instead would be pushing harder on an already-dominant term (-3.56,
-      # the largest single penalty) against a cost it cannot outbid.
+      # Keep ANKLE_R low: holding the sole flat against the ankle-roll droop
+      # needs sustained roll torque, and taxing it is what stalled flat_support.
       "coeffs": {r"ANKLE_R": 1.5, r"ANKLE_P": 2.0},
     },
   )
-  # ankle_roll_torque / ankle_pitch_torque removed (2026-07-26). Three terms
-  # were taxing torque *usage* -- these two plus joint_torques_l2, which
-  # already covers every joint including the ankles -- while only one,
-  # torque_limit_margin, guards what actually protects hardware: exceeding the
-  # actuator limit. The ankles were therefore double-taxed for doing necessary
-  # work, and measurably so (realized -4.8 combined against flat_support's
-  # -4.2). Since the ankle is the only joint that can level a sole, that was a
-  # direct conflict with the flat-contact priority: staying tilted was cheaper
-  # than correcting. Tuning them up and down across three runs never resolved
-  # it, which is the signature of a term that should not exist rather than one
-  # that is mis-weighted. joint_torques_l2 (-3e-5) and torque_limit_margin
-  # (-0.08) remain; watch Metrics/torque_limit_ratio_mean for ankle saturation.
-  # air_time retired (2026-07-26). It and gait_phase both governed swing
-  # duration, which is one job: the clock prescribes it up front and the actor
-  # can see it coming through mdp.gait_phase_obs, a channel air_time never
-  # had. Same reasoning that retired stride_frequency_target earlier -- once an
-  # explicit clock owns the timing, the post-hoc measurements of that timing
-  # should stop steering it. Its realized contribution had already fallen to
-  # roughly -0.1 to -0.6 per step, so little is being given up numerically.
-  #
-  # Caveat worth watching: air_time read the binary contact sensor and was
-  # therefore the strictest test that a foot genuinely left the ground.
-  # gait_phase scores swing as exp(-(F/force_std)^2), which a merely unloaded
-  # foot partly satisfies -- though force_std was tightened 30 -> 12 in this
-  # same pass, taking a 10 N skim from 89% of the reward down to 50%.
-  # min_foot_height still requires a real airborne phase, since its landing
-  # edge only fires after all four corners have cleared. If
-  # Metrics/peak_height_mean and air_time_mean start diverging (long air time,
-  # flat trajectory), a skimming gait is the thing to suspect.
+  # air_time retired: the gait clock owns swing duration, and the actor can
+  # see the clock coming through gait_phase_obs. Watch peak_height_mean
+  # against air_time_mean -- long air time with a flat trajectory means the
+  # foot is skimming, which gait_phase scores more leniently than a contact
+  # sensor would.
   cfg.rewards.pop("air_time", None)
   # Height shaping lives only in the min_foot_height floor below; per-step
   # clearance/swing-height taxes made short fast shuffling optimal.
   cfg.rewards.pop("foot_clearance", None)
   cfg.rewards.pop("foot_swing_height", None)
-  # Charged once per landing, not per airborne step: air time is free, only
-  # landing with a low swing peak costs.
-  #
-  # Landing-triggered -> clock-gated (2026-07-30). The comment above describes
-  # the defect without naming it: "air time is free, only landing with a low
-  # swing peak costs" also means *never leaving the ground costs nothing*. A
-  # landing is the transition from fully airborne to any contact, so a robot
-  # that keeps a toe down never triggers one and never pays.
-  #
-  # Measured by perturbation on model_450: multiplying the deterministic
-  # policy's action by 3 made it move 7x faster (0.0072 -> 0.0545 m/s) with
-  # zero terminations, and this term alone went -0.51 -> -12.64 -- half of the
-  # total reward lost. At weight -100 and a 5 mm peak against a 15 mm floor,
-  # every attempted step cost ~67 while standing still cost 0. The term whose
-  # only purpose is to make the robot lift its foot was the largest single
-  # penalty on lifting it.
-  #
-  # That also explains what env_cfgs recorded as an unexplained plateau:
-  # peak_height_mean "never responded to the weight anywhere" from -25 to -200
-  # across two curricula. It could not -- more weight makes attempting a step
-  # more expensive, so each escalation deepened the trap.
-  #
-  # mdp.clock_swing_height_deficit charges the shortfall over the *prescribed*
-  # swing window instead, whether or not the foot actually left the ground:
-  # standing through a swing pays full, 5 mm pays a little less, 15 mm pays
-  # nothing. Monotone in height, impossible to dodge by staying planted, and no
-  # per-landing bonus to farm with a chopped cadence.
-  #
-  # -100 -> -5: it now fires on ~25% of steps per foot instead of ~0.05
-  # landings per step, roughly a 10x higher rate. -5 puts a fully planted robot
-  # at ~2.4 per step from this term, comparable to flat_support, rather than
-  # crushing everything else.
+  # Clock-gated, not landing-triggered. Charging per landing means never
+  # leaving the ground costs nothing, so the term meant to make the robot
+  # lift its foot was the largest single penalty on lifting it.
   cfg.rewards["min_foot_height"] = RewardTermCfg(
     func=mdp.clock_swing_height_deficit,
     weight=-5.0,
     params={
-      # In TRUE sole clearance since the left/right_foot sites moved to the
-      # sole plane (rhps1_constants.py, 2026-07-26). The old 0.030 was read
-      # against a site 20 mm up the ankle, so it only ever asked for 10 mm of
-      # real clearance -- and the robot delivered 2-4 mm because the reward
-      # was mismeasuring landings anyway. 0.015 is a genuine 15 mm floor.
+      # True sole clearance: the foot sites sit in the sole plane.
       "min_height": 0.015,
-      # sensor_name / command_name / command_threshold are gone: the window is
-      # the gait clock's, and the clock's own amplitude does the command gating.
       "reward_name": "gait_phase",
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
     },
   )
   cfg.rewards["foot_slip"].func = mdp.split_feet_slip
-  # -0.3 -> -20 (2026-07-26). The contact-point-drift rewrite produces values
-  # an order of magnitude smaller than the old site-velocity one (it no longer
-  # counts a rolling foot as sliding), so the inherited weight left the term
-  # realizing -0.002 -- entirely inert, for a failure mode that causes falls.
-  # -20 restores it to ~-0.13 at current behaviour and scales with real slip.
-  # -28 (was -20, 2026-07-27): realized only -0.33 of -17.1 budget, cheap
-  # headroom -- same budget-ratio reasoning as flat_support/impact_vel above.
   cfg.rewards["foot_slip"].weight = -28.0
-  # Smoothness pressure lives in joint (physical) space; action-space
-  # rate/acc terms tax exploration noise itself and are kept small to avoid
-  # premature std collapse. They use an L2-squared kernel on raw actions
-  # (physical_rate = scale * raw_rate), so their weight must move with
-  # scale^2 to preserve physical-space enforcement across a leg-scale
-  # change. Rescaled by (7.0/1.5)^2 = 21.78 (2026-07-24, leg scale 1.5->7.0
-  # to make ample hip/knee excursions reachable without walking the raw
-  # action mean 15-35 std out -- see rhps1_constants.py's
-  # _LEG_SCALE_MULTIPLIER comment): scale went up this time, so unlike the
-  # previous 5.0->1.5 rescale these weights move up too, to keep the same
-  # physical-space smoothness enforcement instead of quietly weakening it.
-  # Split by phase below instead: stance/upper-body joints have different
-  # smoothness needs than one blanket term captures.
   cfg.rewards.pop("action_acc_l2", None)
   
-  # Smoothness consolidated into two terms (2026-07-26), replacing five that
-  # all penalized "change" without distinguishing the two things we actually
-  # care about:
-  #   - action_jerk_l2: soft dynamics *while moving*. Second difference, in
-  #     physical joint units, so an ample stride is cheap and a tremor is not.
-  #     Upper body weighted 3x -- it has no reason to move much at all.
-  #   - standing_joint_vel: near-total stillness *when stopped*, gated on the
-  #     command so it never taxes the gait.
-  # The five it replaces (action_rate_l2, stance_action_acc_l2,
-  # upper_body_action_acc_l2, leg_joint_acc_l2 and the retained-but-separate
-  # torque-rate term) together realized ~-14.7 per step against +10.5 for the
-  # entire task, i.e. moving cost 1.4x more than succeeding paid. Penalizing
-  # the first difference was the core error: it cannot ask for "soft but
-  # moving", only for "less".
+  # Smoothness is two terms, not five: action_jerk (second difference, so an
+  # ample stride is cheap and a tremor is not) and standing_joint_vel,
+  # command-gated so it never taxes the gait. Penalising the first difference
+  # can only ask for less motion, never for soft motion.
   cfg.rewards.pop("action_rate_l2", None)
   cfg.rewards.pop("stance_action_acc_l2", None)
   cfg.rewards.pop("upper_body_action_acc_l2", None)
   cfg.rewards.pop("leg_joint_acc_l2", None)
-  # Weight and the upper-body coefficient are calibrated to reproduce, in
-  # physical units, the strength the two acceleration terms this replaces had
-  # in raw units: legs 150*1*0.049^2 = 0.360 against stance_action_acc_l2's
-  # 0.3528, upper body 150*25*0.002^2 = 0.0150 against
-  # upper_body_action_acc_l2's 0.0162. The 25x is not a preference invented
-  # here -- it is what those two weights already implied once the action
-  # scales are divided out, i.e. the old config was asking for a far stiffer
-  # upper body than legs and simply expressing it through units.
-
-  # action_jerk restored at -150 (2026-07-27). Briefly blamed for a collapse
-  # and removed; that was wrong. Run 2026-07-26_20-47-53 ran this exact weight
-  # and produced the best numbers of the session (flat contacts 2.91/4, sole
-  # clearance 15.3 mm, fell_down 0.17). Removing it made things far worse
-  # (fell_down 28.7 by iteration 3000), so it is load-bearing. The collapse it
-  # was blamed for began with the standing changes below, not here -- the jerk
-  # rising before fell_down was correlation, both being driven by the same
-  # underlying instability.
   cfg.rewards["action_jerk"] = RewardTermCfg(
     func=mdp.action_jerk_l2,
-    # -45 (was -150, 2026-07-27). Not a re-run of the earlier "blame the jerk"
-    # mistake -- this is a whole-objective rescale, not a targeted cut. At iter
-    # 1596 the realized budget was TOTAL+ 6.03 against TOTAL- 23.69, i.e. the
-    # sum of penalties was ~4x the sum of task rewards, and action_jerk alone
-    # (-9.77) outweighed every positive term combined. With a net-negative
-    # per-step return, terminating early dominates surviving: the episode
-    # sheds the whole remaining penalty stream and pays termination_penalty
-    # once. fell_down climbing 0.73 -> 1.29 while *every* penalty magnitude
-    # shrank and *every* task reward fell is exactly that signature. The five
-    # dominant penalties are cut ~2.5x together (see flat_support,
-    # joint_torques_l2, joint_torque_rate_l2, torque_limit_margin,
-    # standing_joint_vel) to bring TOTAL- to roughly TOTAL+. Their ratios to
-    # each other are unchanged, so this does not re-litigate any of the
-    # relative-weight decisions above.
-    # -90 (was -45, 2026-07-28): the robot still visibly vibrates. -45 came
-    # from the whole-objective rescale, not from evidence that -45 is right;
-    # -150 ran earlier this session with the best contact metrics of the
-    # whole session and no collapse, so -90 is well inside proven-survivable
-    # territory. Note this term is a *second* difference, so it targets
-    # tremor specifically and is structurally blind to the slow sway --
+    # Second difference, so it targets tremor and is blind to slow sway;
     # that one is standing_base_motion's job, not a bigger weight here.
-    # -45 (was -90, 2026-08-08). Retour a la valeur du reequilibrage global du
-    # 2026-07-27, que le passage a -90 du lendemain avait defait sans re-mesurer
-    # la balance. Mesure sur 2026-08-07_15-40-43 (iterations 6000-7200) : ce terme
-    # realisait -28.33, soit 55.7 % du budget negatif, pour un total de -50.82
-    # contre +8.95 de positif. Les termes qui faconnent la marche pesaient 1 a
-    # 2 % et air_time realisait exactement zero.
-    #
-    # A -45 le total negatif tombe vers -36.6, donc encore 4x le positif : le
-    # reequilibrage de juillet coupait CINQ termes ensemble. On n'en coupe qu'un
-    # ici, faute de preuve sur les autres, et on mesure la balance au premier
-    # jalon avant d'aller plus loin.
     weight=-45.0,
     params={
       "asset_cfg": SceneEntityCfg("robot"),
       "coeffs": {r"CHEST|HEAD|SHOULDER|ELBOW|WRIST": 25.0},
     },
   )
-  # New (2026-08-03): nothing with any leverage forced the stance back to nominal
-  # at zero command, which is why the robot settles duck-footed -- pose's per-joint
-  # exponential divided by 30 joints caps a 20 deg hip-yaw error at 0.05 reward.
-  # Legs only: hip yaw and roll set where the feet point and how wide they sit,
-  # ankle roll sets whether they end up flat. Hip/knee pitch are deliberately out,
-  # so the term prescribes a stance without prescribing a squat depth.
-  # -40 (was -4.0, 2026-08-04). The cost is 4 * error^2 where error is
-  # Metrics/standing_pose_error, so the weight has to be set against the deviation
-  # the robot actually reaches, not against the one it would reach if the term
-  # already worked. Measured over 9 milestones of 2026-08-04_00-48-22, the error
-  # climbs 0.043 -> 0.088 rad across 4500 iterations and decelerates: at -4.0 the
-  # term realized -0.014 against standing_joint_vel's -0.47, i.e. 30x too quiet to
-  # influence anything, and extrapolating its own trend it would have needed
-  # ~17000 more iterations to reach the 0.28 rad where it starts to bite. At -40
-  # it reaches 0.4 per step at 0.10 rad -- the level of the rest of the standing
-  # family, without dominating it. That run is also the control proving this
-  # config reproduces abl7 (9 milestones within 4%), so the comparison baseline
-  # for judging this change is either run.
+  # Legs only: hip yaw and roll set where the feet point, ankle roll whether
+  # they land flat. Hip and knee pitch stay out, so this prescribes a stance
+  # without prescribing a squat depth.
   cfg.rewards["standing_pose"] = RewardTermCfg(
     func=mdp.standing_pose_penalty,
     weight=-40.0,
@@ -1135,11 +808,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["standing_joint_vel"] = RewardTermCfg(
     func=mdp.standing_joint_vel_l2,
-    # -0.7 (was -0.2, itself down from -0.5 in the 2026-07-27 uniform
-    # rescale). Realized only -0.29 at -0.2, i.e. ~2.6% of the penalty
-    # budget, while the robot visibly vibrates at standstill. Being an L2 sum
-    # this only ever bites on *fast* residual motion -- the slow whole-body
-    # sway is standing_base_motion's job below, not this one's.
+    # An L2 sum, so it only bites on fast residual motion; slow sway is
+    # standing_base_motion.
     weight=-0.7,
     params={
       "command_name": "twist",
@@ -1147,10 +817,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "asset_cfg": SceneEntityCfg("robot"),
     },
   )
-  # New (2026-07-28): nothing penalized base translation at zero command, and
-  # both terms that could have (track_linear_velocity's wide 0.40 kernel,
-  # standing_joint_vel's squared norm) go soft exactly in the slow-drift
-  # regime -- see the function docstring for the arithmetic. L1 by design.
+  # L1 by design: the terms that could have caught slow drift at zero command
+  # all go soft in exactly that regime.
   cfg.rewards["standing_base_motion"] = RewardTermCfg(
     func=mdp.standing_base_motion,
     weight=-1.5,
