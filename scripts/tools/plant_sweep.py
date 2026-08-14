@@ -133,6 +133,17 @@ def main() -> int:
   for _, name, mb, mw, gap, corr in sorted(rows, reverse=True):
     print(f"{name:18s} {mb:14.4f} {mw:12.4f} {gap:+8.2f}s {corr:+12.2f}")
   print("\nEcart en ecarts-types. Une correlation sous ~0.15 n'est pas separante.")
+
+  # Dump the environments that actually walked, with their full drawn plant, so
+  # the draw can be reproduced by hand in play.
+  winners = np.argsort(-p)[:5]
+  print(f"\n{'env':>5s} {'chemin':>9s} {'v_x':>8s}  " +
+        "  ".join(f"{k:>16s}" for k in feats))
+  for e in winners:
+    vals = "  ".join(f"{feats[k][e]:16.4f}" for k in feats)
+    print(f"{e:5d} {p[e]:8.3f}m {v[e]:+8.3f}  {vals}")
+  print(f"\nnominal pour comparaison : masse 57.6 kg, friction 0.5, K 1600, "
+        f"gain 1.0, biais 0")
   return 0
 
 
