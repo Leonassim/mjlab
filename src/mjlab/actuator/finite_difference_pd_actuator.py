@@ -26,24 +26,17 @@ class FiniteDifferencePdActuatorCfg(IdealPdActuatorCfg):
   """
 
   posture_task_stiffness: float | None = None
-  """Raideur de la PostureTask mc_rtc a reproduire, ``None`` pour desactiver.
+  """mc_rtc PostureTask stiffness to reproduce, ``None`` to disable.
 
-  Sur le robot, la sortie de la politique ne va PAS directement au PD : elle
-  traverse d'abord la ``PostureTask`` du QP, un second ordre en espace
-  articulaire de pulsation ``sqrt(K)`` et d'amortissement ``2*sqrt(K)``
-  (mc_rtc calcule l'amortissement automatiquement). A K=1600, la valeur retenue
-  pour le robot ET pour mc_mujoco, cela fait 40 rad/s, soit environ 25 ms de
-  constante de temps -- cinq pas de politique de retard que l'entrainement ne
-  voyait pas.
-
-  Ce filtre place le meme second ordre en amont du PD :
+  On the robot the policy output does not reach the PD directly: it goes through
+  the QP PostureTask first, a second order system at ``sqrt(K)`` with damping
+  ``2*sqrt(K)``. At K=1600 that is ~25 ms, five policy steps of delay training
+  otherwise ignores.
 
       qdd_f = K*(q_cmd - q_f) - 2*sqrt(K)*qd_f
 
-  Le PD suit ensuite ``q_f`` au lieu de ``q_cmd``. Tout le reste de cet
-  actionneur -- difference finie, EMA de vitesse, projection de faisabilite --
-  travaille sur la sortie du filtre, comme sur le robot ou ces etages sont bien
-  en aval du QP.
+  The PD then follows ``q_f``. Everything else in this actuator works on the
+  filter output, as it does downstream of the QP on the robot.
   """
 
   velocity_target_limit: float | None = None
@@ -149,14 +142,11 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     super().__init__(cfg, entity, target_ids, target_names)
     self._last_position_target: torch.Tensor | None = None
     self._filtered_position_target: torch.Tensor | None = None
-    # Etat du second ordre reproduisant la PostureTask. Voir
-    # posture_task_stiffness. Le pas de sous-etape n'est connu que dans
-    # update(dt) ; tant qu'il ne l'est pas, le filtre laisse passer.
+    # PostureTask second order state. The substep dt is only known in
+    # update(dt); until then the filter passes through.
     self._posture_q: torch.Tensor | None = None
     self._posture_qd: torch.Tensor | None = None
-    # Raideur par environnement plutot que scalaire de cfg : elle est
-    # randomisable (voir randomize_posture_task_stiffness). Seedee depuis la
-    # cfg a l'initialisation ; reste uniforme si personne ne la randomise.
+    # Per environment rather than the cfg scalar, so it can be randomised.
     self.posture_stiffness: torch.Tensor | None = None
     self.default_posture_stiffness: torch.Tensor | None = None
     self._substep_dt: float | None = None
@@ -321,13 +311,10 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     if posture_k is not None and self._substep_dt is not None:
       assert self._posture_q is not None and self._posture_qd is not None
       dt = self._substep_dt
-      # Amortissement critique 2*sqrt(K), comme mc_rtc le calcule lui-meme --
-      # il suit donc K quand celui-ci est randomise, au lieu de rester fige.
+      # Damping 2*sqrt(K), computed like mc_rtc does, so it tracks a randomised K.
       acc = posture_k * (cmd.position_target - self._posture_q) \
           - 2.0 * torch.sqrt(posture_k) * self._posture_qd
-      # Semi-implicite : vitesse d'abord, puis position avec la vitesse a jour.
-      # Plus stable que l'explicite pur pour le meme cout, ce qui compte ici
-      # puisque sqrt(K)*dt vaut 0.1 a K=1600 et dt=0.0025.
+      # Semi-implicit: velocity first, then position with the updated velocity.
       self._posture_qd = self._posture_qd + acc * dt
       self._posture_q = self._posture_q + self._posture_qd * dt
       cmd = replace(cmd, position_target=self._posture_q)
@@ -537,8 +524,7 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
   def update(self, dt: float) -> None:
     assert self._elapsed_since_target_update is not None
     self._elapsed_since_target_update += dt
-    # Seul endroit ou le pas de sous-etape est connu ; compute() en a besoin
-    # pour integrer le filtre de PostureTask.
+    # Only place the substep dt is known; compute() needs it for the filter.
     self._substep_dt = dt
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
@@ -552,9 +538,8 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     assert self._initialized is not None
     if self._executed_position_target is not None:
       self._executed_position_target[env_ids] = 0.0
-    # L'etat du filtre de PostureTask doit repartir de zero avec _initialized,
-    # sinon le nouvel episode herite de la posture du precedent et le filtre
-    # tire le robot vers elle pendant ses 25 ms de constante de temps.
+    # Filter state must clear with _initialized, or the new episode inherits the
+    # previous posture and the filter drags the robot toward it.
     for _buf in (self._posture_q, self._posture_qd):
       if _buf is not None:
         _buf[env_ids] = 0.0

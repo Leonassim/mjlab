@@ -329,34 +329,15 @@ def joint_vel_encoder_finite_difference(
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   encoder_noise: float = 0.01,
 ) -> torch.Tensor:
-  """Vitesse articulaire telle que le robot reel la fabrique, pas telle que le
-  simulateur la connait.
+  """Joint velocity as the robot builds it, not as the simulator knows it.
 
-  Sur RHPS1, mc_rtc ne recoit **aucune** vitesse articulaire : verifie de bout
-  en bout le 2026-08-06, les drives la mesurent (PDO 0x6069), l'IOB la range
-  dans ``state.speed[]`` et ``RobotHardware`` la publie sur son port ``dq``,
-  mais ``nocnoid.py`` ne connecte jamais ce port a ``alphaIn``. Le
-  ``EncoderObserver`` retombe donc sur ``encoderFiniteDifferences`` et derive
-  les positions.
+  mc_rtc receives no joint velocity on RHPS1, so EncoderObserver differentiates
+  positions. Noise is applied to the position BEFORE differentiating: a
+  derivative of noisy positions is anti-correlated step to step, which a policy
+  can learn to filter, and white noise added after the fact is not.
 
-  Ce que l'entrainement faisait jusqu'ici -- verite MuJoCo plus un bruit blanc
-  de +/-1.5 rad/s -- a la bonne amplitude par accident, mais pas la bonne
-  structure. Une derivee de positions bruitees est **anti-correlee** d'un pas au
-  suivant (le meme echantillon de position apparait avec un + puis un -), ce
-  qu'une politique peut apprendre a filtrer ; un bruit blanc, non.
-
-  D'ou : on bruite la position AVANT de deriver, dans le terme, parce que le
-  bruit d'observation de mjlab s'applique apres la fonction et donnerait une
-  derivee propre suivie d'un bruit blanc -- exactement ce qu'on veut quitter.
-
-  ``encoder_noise`` est la demi-largeur du bruit uniforme sur la position, en
-  radians, a garder egale a celle du terme ``joint_pos`` (0.01 par defaut).
-  L'amplitude qui en sort, 0.01/sqrt(3) * sqrt(2) / 0.005 ~ 1.6 rad/s d'ecart
-  type, tombe pres du +/-1.5 blanc qu'elle remplace : le changement porte sur la
-  correlation, pas sur le niveau.
-
-  Le biais d'encodeur n'entre pas ici : constant, il disparait dans la
-  difference. C'est ``joint_pos`` qui le porte.
+  ``encoder_noise`` is the half-width of the uniform position noise, in radians.
+  Encoder bias does not belong here, it cancels in the difference.
   """
   asset: Entity = env.scene[asset_cfg.name]
   jnt_ids = asset_cfg.joint_ids
@@ -364,12 +345,9 @@ def joint_vel_encoder_finite_difference(
   if encoder_noise > 0.0:
     q = q + (torch.rand_like(q) * 2.0 - 1.0) * encoder_noise
 
-  # Un cache par pas, pas seulement un etat : ce terme est dans le groupe actor
-  # ET dans le critic, donc il est appele deux fois par pas. Sans le cache, le
-  # deuxieme appel derive q contre lui-meme et rend zero -- un des deux reseaux
-  # observerait une vitesse identiquement nulle, en silence. La cle est
-  # (common_step_counter, forme), le tirage de bruit est donc partage par les
-  # deux groupes, ce qui est correct : c'est le meme capteur.
+  # Cached per step, not merely stateful: this term is in both the actor and the
+  # critic group, so it is called twice per step. Without the cache the second
+  # call differentiates q against itself and silently returns zero.
   key = (int(env.common_step_counter), tuple(q.shape))
   cached = getattr(env, "_encoder_fd_cache", None)
   if cached is not None and cached[0] == key:
@@ -379,9 +357,8 @@ def joint_vel_encoder_finite_difference(
   if prev is None or prev.shape != q.shape:
     prev = q.clone()
 
-  # Au premier pas d'un episode la difference n'a pas de passe : la mettre a
-  # zero plutot que de deriver contre l'etat d'avant la reinitialisation, qui
-  # produirait une pointe de vitesse a chaque reset.
+  # First step of an episode has no past; zero rather than differentiate against
+  # the pre-reset state, which would spike the velocity at every reset.
   fresh = (env.episode_length_buf == 0).unsqueeze(-1)
   vel = torch.where(fresh, torch.zeros_like(q), (q - prev) / env.step_dt)
   env._encoder_fd_prev_q = q  # type: ignore[attr-defined]
@@ -393,22 +370,12 @@ def log_sole_height(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-  """Hauteur de semelle, mesuree sans passer par un evenement de contact.
+  """Sole height, read every step with no contact event and no state.
 
-  Remplace Metrics/peak_height_mean, qui sous-estimait d'un facteur ~70.
-  Celle-la etait publiee par split_feet_swing_height, qui remet son pic a zero
-  des le PREMIER coin qui touche alors que le booleen d'atterrissage est vrai
-  pour chacun des quatre, sur plusieurs pas successifs : le vrai pic n'etait
-  compte qu'une fois et les coins suivants ajoutaient des zeros a la moyenne. Le
-  biais etait maximal quand le pied deroule -- le defaut meme qu'on suivait. Le
-  2026-08-08 elle annoncait 0.0005 m la ou la mesure directe donnait 0.037.
-
-  Ici : aucun evenement, aucun etat, aucune remise a zero. On lit la hauteur des
-  sites de semelle a chaque pas et on publie des quantiles. La mediane dit la
-  phase d'appui, le p99 dit la levee. Rien a esquiver.
-
-  Le sol est estime par le p1 de l'echantillon plutot que suppose a zero, pour
-  rester juste si le terrain n'est pas plat.
+  Replaces Metrics/peak_height_mean, which read ~70x low because it reset its
+  peak on the first corner touching while landing fires on all four. Median
+  reports stance, p99 reports the lift. The floor is the p1 of the sample rather
+  than assumed zero, so it stays honest on uneven terrain.
   """
   asset: Entity = env.scene[asset_cfg.name]
   z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
@@ -423,14 +390,14 @@ def log_sole_height(
 
 
 ##
-# Biais capteur constants (voir events.randomize_sensor_bias).
+# Per-episode constant sensor bias (see events.randomize_sensor_bias).
 ##
 
 _SENSOR_BIAS_ATTR = "_rhps1_sensor_bias"
 
 
 def _apply_bias(env: ManagerBasedRlEnv, key: str, value: torch.Tensor) -> torch.Tensor:
-  """Ajoute le biais constant de l'episode courant, s'il y en a un."""
+  """Add this episode's constant bias, if any."""
   bias = getattr(env, _SENSOR_BIAS_ATTR, {}).get(key)
   return value if bias is None else value + bias
 
@@ -438,24 +405,12 @@ def _apply_bias(env: ManagerBasedRlEnv, key: str, value: torch.Tensor) -> torch.
 def base_lin_vel_biased(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-  """Vitesse lineaire de base avec un biais constant par episode.
+  """Base linear velocity with a per-episode constant bias.
 
-  A l'entrainement cette observation est la verite terrain de MuJoCo. Sur le
-  robot elle vient de ``rr.bodyVelW(base).linear()``, c'est-a-dire de
-  l'observateur de base flottante -- un estimateur cinematique-inertiel dont
-  le biais est precisement le mode de defaillance connu : il derive lentement
-  et ne se recale que sur les contacts.
-
-  Le bruit centre par pas qui existe deja sur les autres termes n'apprend rien
-  contre ca. Avec un historique de cinq pas, une politique moyenne un bruit
-  centre et retrouve la valeur vraie ; un decalage constant survit exactement
-  a cette moyenne. Les deux ne sont pas le meme defaut et le second n'etait
-  pas modelise du tout.
-
-  Effet recherche : que la politique cesse de croire ce canal sur parole et
-  s'appuie davantage sur ce qui est fiable (encodeurs, gyrometre). C'est la
-  version douce du choix, courant en locomotion humanoide, de simplement
-  retirer la vitesse de base des observations.
+  MuJoCo ground truth in training; on the robot this comes from the floating
+  base observer, whose known failure mode is exactly a slow drifting bias. Per
+  step zero-mean noise does not model that: a five-frame history averages it
+  away, an offset survives.
   """
   asset: Entity = env.scene[asset_cfg.name]
   return _apply_bias(env, "base_lin_vel", asset.data.root_link_lin_vel_b)
@@ -464,17 +419,12 @@ def base_lin_vel_biased(
 def projected_gravity_biased(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-  """Gravite projetee avec un biais constant par episode.
+  """Projected gravity with a per-episode constant bias.
 
-  Un defaut de montage de la centrale inertielle, ou un biais d'assiette de
-  l'estimateur, decale ce vecteur en permanence dans la meme direction. La
-  politique lit alors une inclinaison qui n'existe pas et compense en
-  s'inclinant reellement dans l'autre sens -- une erreur d'assiette constante
-  se traduit directement en posture penchee constante.
-
-  Le vecteur n'est pas renormalise apres ajout du biais : sur le robot rien ne
-  garantit que la sortie de l'estimateur soit de norme un, et renormaliser
-  fabriquerait une coherence que le materiel n'offre pas.
+  An IMU mounting error reads as a tilt that is not there, and the policy leans
+  the other way to compensate. Not renormalised after the bias: nothing
+  guarantees unit norm on the robot, and renormalising would invent a coherence
+  the hardware does not have.
   """
   asset: Entity = env.scene[asset_cfg.name]
   return _apply_bias(env, "projected_gravity", asset.data.projected_gravity_b)

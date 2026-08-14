@@ -169,26 +169,23 @@ class UniformVelocityCommand(CommandTerm):
     if self.use_gamepad:
       self.vel_command_b[0] = self.get_gamepad_command()
 
-    # Les curseurs du viewer doivent etre appliques ICI, apres le zerotage des
-    # environnements "immobiles" et avant _emit_command -- exactement comme la
-    # manette juste au-dessus. Applique depuis compute(), c'est-a-dire apres
-    # super().compute(), l'ecriture partait dans vel_command_b et le compute
-    # suivant la rezerotait avant de la propager : sur un env tire immobile
-    # (40 % des tirages, conserves en mode play ou l'episode ne se termine
-    # jamais) le curseur n'atteignait jamais la policy.
+    # Sliders must be applied HERE, after the standing envs are zeroed and before
+    # _emit_command, like the gamepad above. Applied from compute() instead, the
+    # write landed in vel_command_b and the next compute zeroed it again, so on a
+    # standing env the slider never reached the policy.
     self._apply_joystick_gui()
 
     self._emit_command()
 
   def _apply_joystick_gui(self) -> None:
-    """Ecrire les curseurs viser dans la commande, si la GUI existe et est active."""
+    """Write the viser sliders into the command, if the GUI is up and enabled."""
     enabled = getattr(self, "_joystick_enabled", None)
     if enabled is None or not enabled.value:
       return
     assert self._joystick_get_env_idx is not None
     idx = self._joystick_get_env_idx()
-    # Le curseur est une consigne explicite de l'operateur : elle prime sur le
-    # masque "immobile", sinon l'env reste bloque a l'arret sans aucun retour.
+    # An explicit operator command overrides the standing mask, which would
+    # otherwise pin the env at rest with no feedback.
     self.is_standing_env[idx] = False
     for i, s in enumerate(self._joystick_sliders):
       self.vel_command_b[idx, i] = s.value
@@ -293,9 +290,8 @@ class UniformVelocityCommand(CommandTerm):
     self._joystick_sliders = sliders
     self._joystick_get_env_idx = get_env_idx
 
-  # Pas de surcharge de compute() ici : les curseurs sont appliques dans
-  # _update_command via _apply_joystick_gui(), seul point ou l'ecriture survit
-  # au zerotage des environnements "immobiles" et atteint _emit_command.
+  # No compute() override: sliders go through _apply_joystick_gui() inside
+  # _update_command, the only point where the write survives the standing mask.
 
   # Visualization.
 

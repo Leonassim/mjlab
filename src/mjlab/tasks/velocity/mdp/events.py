@@ -1,4 +1,4 @@
-"""Evenements de randomisation propres a la tache velocity."""
+"""Randomisation events specific to the velocity task."""
 
 from __future__ import annotations
 
@@ -21,22 +21,10 @@ def randomize_actuator_gains(
   damping_range: tuple[float, float] = (0.9, 1.1),
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-  """Multiplie kp et kd par un facteur tire par environnement et par joint.
+  """Scale kp and kd by a factor drawn per environment and per joint.
 
-  Pourquoi : les gains 20000/400 ne sont pas une mesure, ce sont les valeurs
-  d'un servo de position emule -- le vrai robot cache sa boucle P/PI dans le
-  drive et on ne connait pas les gains equivalents. Une politique entrainee sur
-  une seule valeur apprend implicitement la reponse exacte de ce PD-la ; la
-  randomiser l'oblige a rester correcte sur une famille de plants, ce qui est
-  precisement le transfert qu'on cherche.
-
-  Les facteurs sont tires INDEPENDAMMENT par articulation, pas un seul par
-  robot : un desaccord entre articulations est le cas realiste (chaque drive a
-  son propre reglage) et c'est aussi le plus dur, donc le plus utile.
-
-  Le tirage part toujours de ``default_stiffness`` / ``default_damping``, jamais
-  de la valeur courante -- sinon les facteurs se composent d'un episode au
-  suivant et les gains derivent sans borne.
+  Always drawn from ``default_stiffness`` / ``default_damping``, never from the
+  current value: factors would otherwise compound from one episode to the next.
   """
   asset = env.scene[asset_cfg.name]
   if env_ids is None:
@@ -50,8 +38,6 @@ def randomize_actuator_gains(
     if stiffness is None or damping is None:
       continue
     if default_k is None or default_d is None:
-      # Un actionneur sans defaut memorise ne peut pas etre randomise sans
-      # composer les facteurs. Le sauter en silence serait pire que de le dire.
       raise RuntimeError(
         f"randomize_actuator_gains: l'actionneur {type(act).__name__} n'expose "
         "pas default_stiffness/default_damping"
@@ -69,26 +55,12 @@ def randomize_posture_task_stiffness(
   stiffness_range: tuple[float, float] = (0.75, 1.25),
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-  """Randomise la raideur du filtre de PostureTask reproduit a l'entrainement.
+  """Randomise the stiffness of the PostureTask filter modelled in training.
 
-  Ce filtre modelise le second ordre que le QP du controleur interpose entre la
-  sortie de la politique et l'articulation -- environ 25 ms de retard, cinq pas
-  de politique. Sa raideur nominale (1600) a ete choisie parce qu'elle donne le
-  meme sqrt(K)*dt que le reglage valide en simulation, mais elle depend du taux
-  de resolution du QP, qui n'est pas garanti stable : il vaut 200 Hz sur le
-  robot et 1 kHz dans le simulateur de validation, et rien n'interdit qu'il
-  change avec la charge CPU du calculateur embarque.
-
-  Randomiser K revient donc a randomiser le retard vu par la politique, ce qui
-  est le seul retard modelise dans cet environnement -- la latence
-  capteur-vers-actionnement, elle, n'est ni mesuree ni reproduite.
-
-  L'amortissement suit automatiquement en 2*sqrt(K) dans l'actionneur, comme
-  mc_rtc le calcule sur le robot : on randomise un plant, pas une paire de
-  gains independants.
-
-  Comme pour les gains PD, le tirage repart du defaut memorise et jamais de la
-  valeur courante, sinon les facteurs se composent d'un episode au suivant.
+  Randomising K randomises the delay the policy sees -- the only delay modelled
+  here. Damping follows as 2*sqrt(K) in the actuator, so this is one plant, not
+  two independent gains. Drawn from the stored default, never from the current
+  value.
   """
   asset = env.scene[asset_cfg.name]
   if env_ids is None:
@@ -107,12 +79,10 @@ def randomize_posture_task_stiffness(
     touched = True
 
   if not touched:
-    # Silence = le filtre n'est pas actif et la randomisation ne fait rien,
-    # ce qui se lit comme un succes dans les journaux. Preferable de casser.
+    # Staying silent would read as success in the logs while randomising nothing.
     raise RuntimeError(
-      "randomize_posture_task_stiffness: aucun actionneur n'expose "
-      "posture_stiffness. Le filtre de PostureTask est-il configure "
-      "(posture_task_stiffness) ?"
+      "randomize_posture_task_stiffness: no actuator exposes posture_stiffness. "
+      "Is the PostureTask filter configured (posture_task_stiffness)?"
     )
 
 
@@ -121,23 +91,14 @@ def randomize_sensor_bias(
   env_ids: torch.Tensor | None,
   bias_ranges: dict[str, tuple[float, float]] | None = None,
 ) -> None:
-  """Tire un biais capteur constant par episode et par environnement.
+  """Draw a sensor bias held constant over an episode, per environment.
 
-  Distinct du bruit d'observation, qui est recentre a chaque pas : un
-  estimateur reel se trompe dans la meme direction pendant tout un essai. Une
-  politique entrainee uniquement contre du bruit centre apprend a le moyenner
-  sur son historique et reste donc entierement credule face a un decalage
-  constant -- exactement le cas qui produit une posture systematiquement
-  penchee sur le robot alors que la simulation est saine.
+  Distinct from observation noise, which is re-centred every step: a five-frame
+  history averages zero-mean noise away but stays credulous to an offset.
 
-  Les cles doivent correspondre a celles que lisent
-  ``observations.base_lin_vel_biased`` / ``projected_gravity_biased`` ; un
-  terme d'observation qui n'utilise pas ces fonctions ignore le biais en
-  silence, d'ou la validation ci-dessous.
-
-  Le biais est tire par axe et par environnement, jamais partage : un biais
-  commun a 4096 environnements serait une constante de plus dans le plant, pas
-  une randomisation.
+  Keys must match what ``observations.base_lin_vel_biased`` and
+  ``projected_gravity_biased`` read; any other observation term ignores the bias
+  silently, hence the validation below.
   """
   known = {"base_lin_vel": 3, "projected_gravity": 3, "base_ang_vel": 3}
   if bias_ranges is None:
@@ -145,8 +106,8 @@ def randomize_sensor_bias(
   unknown = set(bias_ranges) - set(known)
   if unknown:
     raise ValueError(
-      f"randomize_sensor_bias: cles inconnues {sorted(unknown)}. "
-      f"Attendu parmi {sorted(known)}."
+      f"randomize_sensor_bias: unknown keys {sorted(unknown)}. "
+      f"Expected among {sorted(known)}."
     )
 
   store: dict[str, torch.Tensor] = getattr(env, "_rhps1_sensor_bias", {})
