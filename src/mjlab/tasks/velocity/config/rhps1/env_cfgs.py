@@ -1512,9 +1512,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if "actor_history" in cfg.observations:
       cfg.observations["actor_history"].enable_corruption = False
     cfg.observations.pop("teacher", None)
-    cfg.events.pop("push_robot", None)
-    cfg.curriculum.pop("air_time_weight", None)
-    cfg.curriculum.pop("standing_envs", None)
+    # push_base est retire dans rhps1_flat_env_cfg, pas ici : il n'est ajoute
+    # que plus bas dans cette fonction, donc un pop a cet endroit ne verrait
+    # rien. Les anciens pop("push_robot"), pop("air_time_weight") et
+    # pop("standing_envs") visaient tous les trois des noms inexistants et ne
+    # faisaient donc rien -- le ", None" rendait l'echec muet.
     # Disable debug visualizers to recover viewer FPS.
     twist_cmd.debug_vis = False
     for sensor in cfg.scene.sensors:
@@ -1928,6 +1930,20 @@ def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     twist_cmd.ranges.lin_vel_x = (-0.3, 0.3)
     twist_cmd.ranges.lin_vel_y = (-0.4, 0.4)
     twist_cmd.ranges.ang_vel_z = (-0.45, 0.45)
+
+    # Les poussees doivent partir en play, et jusqu'ici elles restaient. Deux
+    # raisons cumulees, toutes deux silencieuses :
+    #   - le bloc play du rough cfg fait pop("push_robot"), or l'evenement
+    #     s'appelle push_base ; le ", None" avale l'absence sans rien dire ;
+    #   - meme avec le bon nom ce serait inutile, ce bloc-la s'execute avant la
+    #     ligne qui ajoute push_base.
+    # On le retire donc ici, ou toute la config est construite. Ce n'est pas un
+    # detail cosmetique : push_by_setting_velocity ECRASE la vitesse de base
+    # avec un tirage jusqu'a +/-0.4 m/s, soit plus que la commande maximale de
+    # 0.3, et parfois a contresens. A l'entrainement l'episode dure 20 s et se
+    # reinitialise ; en play episode_length_s vaut 1e9, donc ces poussees
+    # tombent indefiniment sur le meme robot.
+    cfg.events.pop("push_base", None)
 
   return cfg
 
