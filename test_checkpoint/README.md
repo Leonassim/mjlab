@@ -28,28 +28,47 @@ du 2026-08-10 et une randomisation de domaine élargie :
 
 ## ATTENTION — ce checkpoint ne marche pas correctement
 
-Mesuré en rollout **déterministe** (sans bruit d'exploration), 64
-environnements, `play=True`, curriculum désactivé, commande forcée et vérifiée
-exacte à 0.2 m/s sur 5 s :
+Quatre mesures indépendantes, qui concordent à 1–2 % de suivi.
 
-| percentile du déplacement | valeur | % du suivi |
-|---|---|---|
-| p50 | +0.017 m | 2 % |
-| p90 | +0.111 m | 11 % |
-| p100 | +0.421 m | 42 % |
+`scripts/tools/why_video_walks.py`, commande injectée dans `_update_command` et
+vérifiée, 64 envs, 0.2 m/s sur 5 s (attendu 1.00 m) :
 
-**56 envs sur 64 en dessous de 10 % du suivi, aucun au-dessus de 50 %.** Le
-robot piétine et dérive très lentement au lieu d'avancer. Un tirage précédent
-avait un env à 80 %, donc il y a de la variance entre tirages — mais la
-médiane à 2 % est le chiffre représentatif.
+| condition | p50 | p90 | suivi p50 |
+|---|---|---|---|
+| `play=True` + déterministe | +0.023 m | +0.116 m | 2 % |
+| `play=True` + stochastique | +0.010 m | +0.117 m | 1 % |
+| `play=False` (config des vidéos) + déterministe | +0.009 m | +0.117 m | 1 % |
+| `play=False` + stochastique | −0.012 m | +0.102 m | −1 % |
+
+`scripts/tools/natural_command_tracking.py`, aucune commande forcée du tout —
+curriculum actif, commandes échantillonnées, bruit d'exploration, soit
+exactement ce que `VideoRecorder` filme pour wandb. Déplacement projeté sur la
+direction demandée, envs « immobiles » exclus : **p50 à 2 %, 4 envs sur 124
+au-dessus de 50 %.**
+
+Enfin, sans passer par aucun script : la boucle d'entraînement elle-même
+rapporte `Metrics/twist/error_vel_xy = 0.322` en fin de run, contre 0.146–0.154
+pour la policy 0, pour un curriculum arrivé au même endroit (±0.3 m/s). L'erreur
+de suivi est aussi grande que la commande.
 
 Le comportement observé en mc_mujoco (pas de pas en avant) est donc **fidèle**
 à ce que fait la policy, ce n'est pas un problème de portage.
 
-Piège de lecture à connaître : les **vidéos d'entraînement contiennent le
-bruit d'exploration**, qui fait bouger les jambes et donne l'apparence d'une
-marche. L'ONNX déployé est déterministe et n'a pas ce bruit. Toujours juger
-sur un rollout déterministe.
+### Deux pièges de mesure rencontrés ici, tous deux corrigés
+
+**Le bruit d'exploration n'explique PAS l'écart avec les vidéos.** C'était
+l'hypothèse initiale et elle est fausse : reproduire la config filmée, bruit
+compris, donne le même 1–2 %. Ce que la vidéo montre est une cadence, pas une
+translation — caméra qui suit le robot sur un plan, un pas sur place ressemble
+à une marche.
+
+**Forcer la commande après `env.step()` ne force rien.**
+`command_manager.compute()` tourne *à l'intérieur* de `step`, juste avant
+`observation_manager.compute()` : la valeur écrite après le retour est réécrite
+avant que l'observation soit construite. Le seul point d'injection correct est
+`_update_command` lui-même. Relire `cmd.command` juste après l'avoir écrit est
+un contrôle tautologique — il faut le lire en début de boucle, donc après le
+`compute()` du pas précédent.
 
 ## Métriques finales, comparées à la policy 0 (la seule validée sur robot)
 
