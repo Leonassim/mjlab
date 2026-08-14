@@ -1430,7 +1430,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "right_foot3_collision",
       "right_foot4_collision",
     )
-    cfg.events["foot_friction"].params["ranges"] = (0.5, 0.9)
+    # Range is set further down, to (0.4, 1.0). Nothing here.
+  # push_robot comes from the base velocity config, not from this file.
   cfg.events.pop("push_robot", None)
 
   # --- Raw-torque peak: one observable, gradient-carrying term replacing the
@@ -1509,14 +1510,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   if play:
     cfg.episode_length_s = int(1e9)
     cfg.observations[actor_group_name].enable_corruption = False
-    if "actor_history" in cfg.observations:
-      cfg.observations["actor_history"].enable_corruption = False
-    cfg.observations.pop("teacher", None)
-    # push_base est retire dans rhps1_flat_env_cfg, pas ici : il n'est ajoute
-    # que plus bas dans cette fonction, donc un pop a cet endroit ne verrait
-    # rien. Les anciens pop("push_robot"), pop("air_time_weight") et
-    # pop("standing_envs") visaient tous les trois des noms inexistants et ne
-    # faisaient donc rien -- le ", None" rendait l'echec muet.
+    # Ce bloc ne desactive plus que la corruption, la visualisation et la duree
+    # d'episode. Ce qu'il contenait avant et qui ne faisait rien :
+    #   pop("teacher"), pop("air_time_weight"), pop("standing_envs"),
+    #   pop("push_robot") et la branche "actor_history"
+    # Aucun de ces cinq noms n'est cree nulle part dans ce fichier, et le
+    # ", None" des pop rendait l'echec muet. push_base, lui, existe -- il est
+    # retire dans rhps1_flat_env_cfg, seul endroit ou toute la config est deja
+    # construite : ajoute plus bas dans cette fonction, il est invisible ici.
     # Disable debug visualizers to recover viewer FPS.
     twist_cmd.debug_vis = False
     for sensor in cfg.scene.sensors:
@@ -1967,7 +1968,10 @@ def rhps1_stepping_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       },
     ]
 
-  cfg.events.pop("push_robot", None)
+  # L'evenement de poussee s'appelle push_base, pas push_robot : le pop qui
+  # etait ici ne retirait rien. Cette configuration veut bien un robot non
+  # pousse, donc on retire le bon nom.
+  cfg.events.pop("push_base", None)
 
   cfg.rewards["track_linear_velocity"].weight = 1.0
   cfg.rewards["track_angular_velocity"].weight = 1.0
