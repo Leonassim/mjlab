@@ -444,11 +444,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
   cfg.rewards["track_linear_velocity"].weight = 3.5
-  # Wide kernel: a tight one punishes the COM ripple of a long stride and
-  # biases toward short quick steps.
-  cfg.rewards["track_linear_velocity"].params["std"] = 0.40
+  # Policy 0's kernel. Widened to 0.40 at some point, which left a motionless
+  # robot collecting 78% of the term; at 0.20 that drops to 43%.
+  cfg.rewards["track_linear_velocity"].params["std"] = 0.20
   cfg.rewards["track_angular_velocity"].weight = 3.5
-  cfg.rewards["track_angular_velocity"].params["std"] = 0.45
+  cfg.rewards["track_angular_velocity"].params["std"] = 0.35
 
   # The only term that says which way to move to fix a bad standing posture;
   # everything else about standing is a verdict, not a direction.
