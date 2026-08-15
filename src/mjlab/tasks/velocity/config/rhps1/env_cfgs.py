@@ -978,9 +978,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # the base config is 0.86 deg, three times too wide for a 210:1 reducer.
   cfg.events["encoder_bias"].params["bias_range"] = (-0.005, 0.005)
 
-  cfg.events["foot_friction"].mode = "reset"
+  # Back to policy 0's form (2026-08-15): startup, shared across all envs. Per-env
+  # per-reset friction is a structurally different randomisation, not just a
+  # wider range -- every env got a new floor every episode instead of one floor
+  # per run, and the two runs that only ever changed this had a plateau or a
+  # runaway fell_down.
+  cfg.events["foot_friction"].mode = "startup"
   cfg.events["foot_friction"].params["ranges"] = (0.49, 0.91)
-  cfg.events["foot_friction"].params["shared_random"] = False
+  cfg.events["foot_friction"].params["shared_random"] = True
 
   # Mass and inertia together: body_mass alone leaves the inertia tensor, which
   # models a point mass rather than a density change.
