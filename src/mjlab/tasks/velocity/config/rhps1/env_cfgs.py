@@ -444,11 +444,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
   cfg.rewards["track_linear_velocity"].weight = 3.5
-  # Policy 0's kernel. Widened to 0.40 at some point, which left a motionless
-  # robot collecting 78% of the term; at 0.20 that drops to 43%.
-  cfg.rewards["track_linear_velocity"].params["std"] = 0.20
+  # Reverted to 0.40 (2026-08-15): std=0.20 alongside the tightened DR run
+  # produced a regime change around iteration 2300 where fell_down climbed from
+  # ~0 to >2 and kept rising, never plateauing, against the previous run's peak
+  # of 0.78 that settled under 0.5 by iteration 600. Two variables changed at
+  # once; isolating DR alone first.
+  cfg.rewards["track_linear_velocity"].params["std"] = 0.40
   cfg.rewards["track_angular_velocity"].weight = 3.5
-  cfg.rewards["track_angular_velocity"].params["std"] = 0.35
+  cfg.rewards["track_angular_velocity"].params["std"] = 0.45
 
   # The only term that says which way to move to fix a bad standing posture;
   # everything else about standing is a verdict, not a direction.
