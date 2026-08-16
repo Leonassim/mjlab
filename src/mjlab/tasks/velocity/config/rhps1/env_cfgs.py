@@ -1229,6 +1229,22 @@ def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # config runs before push_base is added, and named push_robot anyway.
     cfg.events.pop("push_base", None)
 
+    # enable_corruption=False only strips terms that declare `noise=`. Two
+    # observation perturbations do not, so they survived into play and ran
+    # WITHOUT the noise that always accompanied them during training -- a
+    # combination the policy never saw:
+    #   - sensor_bias, an event: a constant offset up to 0.03 m/s on
+    #     base_lin_vel, drawn once and never redrawn, since play never resets
+    #     (episode_length_s = 1e9). 15% standing error on a 0.2 m/s command.
+    #   - encoder_noise, a term parameter on joint_vel, so joint_vel stayed
+    #     noisy while every other channel went clean.
+    # "No corruption" now means no observation perturbation at all.
+    cfg.events.pop("sensor_bias", None)
+    play_actor = "policy" if "policy" in cfg.observations else "actor"
+    jv = cfg.observations[play_actor].terms.get("joint_vel")
+    if jv is not None and "encoder_noise" in jv.params:
+      jv.params["encoder_noise"] = 0.0
+
   return cfg
 
 
