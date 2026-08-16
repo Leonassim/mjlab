@@ -446,14 +446,13 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
   cfg.rewards["track_linear_velocity"].weight = 3.5
-  # Reverted to 0.40 (2026-08-15): std=0.20 alongside the tightened DR run
-  # produced a regime change around iteration 2300 where fell_down climbed from
-  # ~0 to >2 and kept rising, never plateauing, against the previous run's peak
-  # of 0.78 that settled under 0.5 by iteration 600. Two variables changed at
-  # once; isolating DR alone first.
-  cfg.rewards["track_linear_velocity"].params["std"] = 0.40
+  # Policy 0's kernel (2026-08-16). At 0.40 a motionless robot already collects
+  # 78% of this term against 43% at 0.20, so the wider kernel barely asks for
+  # anything. 0.20 was tried on 2026-08-15 and destabilised that run, but paired
+  # with the tightened randomisation this run drops -- so it goes back with it.
+  cfg.rewards["track_linear_velocity"].params["std"] = 0.20
   cfg.rewards["track_angular_velocity"].weight = 3.5
-  cfg.rewards["track_angular_velocity"].params["std"] = 0.45
+  cfg.rewards["track_angular_velocity"].params["std"] = 0.35
 
   # The only term that says which way to move to fix a bad standing posture;
   # everything else about standing is a verdict, not a direction.
@@ -1199,6 +1198,56 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
   critic.pop("gait_phase", None)
   # torque_guidance existed only for torque_guidance_coef, now zero.
   cfg.observations.pop("torque_guidance", None)
+
+  # --- 2026-08-16: back to policy 0's objective, minus its measurement bugs ---
+  #
+  # Policy 0 is the only configuration that ever walked on hardware. It is
+  # tempting to restore its reward weights verbatim, but commit 12b25ac9
+  # documents that six of its terms did not measure what they claimed:
+  # min_foot_height counted a landing on every corner touch (~77% noise), the
+  # foot sites sat 20 mm above the sole so every height was wrong by that much,
+  # flat_support charged the unavoidable roll of each step, foot_slip read sole
+  # centre velocity so a pivoting foot counted as sliding, and pose used
+  # exp(mean(.)) so one off-target joint silenced every other gradient.
+  #
+  # So policy 0 walked DESPITE those six, not because of them. The large weights
+  # carried today (foot_slip -28, flat_support -11, foot_clearance -35) are
+  # recalibrations onto corrected signals that return values orders of magnitude
+  # smaller, not a harsher objective. Those stay.
+  #
+  # What genuinely did not exist in policy 0 are the terms below, none of which
+  # has ever been isolated on hardware. They are what this run removes, keeping
+  # the six proximity terms because Leo asked for them explicitly as hardware
+  # protection.
+  for name in (
+    "action_jerk",
+    "standing_pose",
+    "standing_joint_vel",
+    "standing_base_motion",
+  ):
+    cfg.rewards.pop(name, None)
+
+  # Policy 0's randomisation, strictly: five events. Everything else added since
+  # was validated in simulation only, and two tightening attempts on 2026-08-15
+  # (v2, v3) both failed to reproduce its early walking.
+  for name in (
+    "link_inertia",
+    "link_com",
+    "actuator_gains",
+    "posture_filter",
+    "sensor_bias",
+    "push_base",
+  ):
+    cfg.events.pop(name, None)
+  cfg.events["foot_friction"].mode = "startup"
+  cfg.events["foot_friction"].params["ranges"] = (0.5, 0.9)
+  cfg.events["foot_friction"].params["shared_random"] = True
+  cfg.events["encoder_bias"].params["bias_range"] = (-0.015, 0.015)
+  cfg.events["reset_robot_joints"].params["position_range"] = (0.0, 0.0)
+
+  # The PostureTask filter itself is NOT removed: it lives in the actuator
+  # (_POSTURE_TASK_STIFFNESS = 1600) and modelling the QP's ~25 ms delay is the
+  # one deliberate addition this run carries over policy 0.
 
 
 def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
