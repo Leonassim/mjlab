@@ -1,5 +1,7 @@
 """RHPS1 velocity environment configurations."""
 
+import os
+
 from mjlab.asset_zoo.robots import RHPS1_ACTION_SCALE, get_rhps1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
@@ -1221,9 +1223,20 @@ def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     assert commands is not None
     twist_cmd = commands["twist"]
     assert isinstance(twist_cmd, UniformVelocityCommandCfg)
-    twist_cmd.ranges.lin_vel_x = (-0.3, 0.3)
-    twist_cmd.ranges.lin_vel_y = (-0.4, 0.4)
-    twist_cmd.ranges.ang_vel_z = (-0.45, 0.45)
+    # RHPS1_PLAY_CMD_SCALE scales the play command range, and so the maximum a
+    # full gamepad stick sends. 1.0 matches the curriculum's final range, which
+    # is the edge of what the policy ever saw; anything above is deliberately
+    # out of distribution and only meant to probe whether the robot reacts to a
+    # larger command at all.
+    play_cmd_scale = float(os.environ.get("RHPS1_PLAY_CMD_SCALE", "1.0"))
+    twist_cmd.ranges.lin_vel_x = (-0.3 * play_cmd_scale, 0.3 * play_cmd_scale)
+    twist_cmd.ranges.lin_vel_y = (-0.4 * play_cmd_scale, 0.4 * play_cmd_scale)
+    twist_cmd.ranges.ang_vel_z = (-0.45 * play_cmd_scale, 0.45 * play_cmd_scale)
+    if play_cmd_scale != 1.0:
+      print(
+        f"[RHPS1] play command range scaled x{play_cmd_scale}: "
+        f"lin_vel_x max {0.3 * play_cmd_scale:.3f} m/s (training max 0.3)"
+      )
 
     # Removed here, where the whole config exists: the play block in the rough
     # config runs before push_base is added, and named push_robot anyway.
