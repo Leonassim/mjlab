@@ -968,24 +968,21 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.events["actuator_gains"] = EventTermCfg(
     func=mdp.randomize_actuator_gains,
     mode="reset",
-    params={"stiffness_range": (0.90, 1.10), "damping_range": (0.90, 1.10)},
+    params={"stiffness_range": (0.85, 1.15), "damping_range": (0.85, 1.15)},
   )
 
-  # Per env and per episode. shared_random=False is the real change: with True
-  # all 4096 envs saw one ground, which randomises nothing. Range widened down
-  # to 0.4, the slippery case that makes it fall and was never sampled.
-  # +/-0.005 rad (0.29 deg) after homing, given by Leo. The 0.015 inherited from
-  # the base config is 0.86 deg, three times too wide for a 210:1 reducer.
-  cfg.events["encoder_bias"].params["bias_range"] = (-0.005, 0.005)
+  # Reverted to the 2026-08-12 value (2026-08-16): the tightened +/-0.005 was
+  # never isolated as the cause of anything, and matching the reference run
+  # exactly leaves friction as the one deliberate difference below.
+  cfg.events["encoder_bias"].params["bias_range"] = (-0.015, 0.015)
 
-  # Back to policy 0's form (2026-08-15): startup, shared across all envs. Per-env
-  # per-reset friction is a structurally different randomisation, not just a
-  # wider range -- every env got a new floor every episode instead of one floor
-  # per run, and the two runs that only ever changed this had a plateau or a
-  # runaway fell_down.
-  cfg.events["foot_friction"].mode = "startup"
-  cfg.events["foot_friction"].params["ranges"] = (0.49, 0.91)
-  cfg.events["foot_friction"].params["shared_random"] = True
+  # Everything else here matches 2026-08-12 exactly. Friction is the one
+  # deliberate change (2026-08-16): same per-env, per-reset form as that run,
+  # range narrowed to (0.5, 0.7) -- centered near the measured 0.7 for hard
+  # rubber on parquet/lino, without the low 0.4 tail or the high 1.0 tail.
+  cfg.events["foot_friction"].mode = "reset"
+  cfg.events["foot_friction"].params["ranges"] = (0.5, 0.7)
+  cfg.events["foot_friction"].params["shared_random"] = False
 
   # Mass and inertia together: body_mass alone leaves the inertia tensor, which
   # models a point mass rather than a density change.
@@ -995,18 +992,17 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.events["link_inertia"] = EventTermCfg(
     func=mdp.dr.pseudo_inertia,
     mode="startup",
-    params={"alpha_range": (-0.0256, 0.0244), "asset_cfg": SceneEntityCfg("robot")},
+    params={"alpha_range": (-0.0527, 0.0477), "asset_cfg": SceneEntityCfg("robot")},
   )
 
-  # All bodies, not just the torso. Tighter range because the segments are
-  # much smaller.
+  # All bodies, not just the torso.
   cfg.events["link_com"] = EventTermCfg(
     func=mdp.dr.body_com_offset,
     mode="startup",
     params={
       "asset_cfg": SceneEntityCfg("robot"),
       "operation": "add",
-      "ranges": {0: (-0.005, 0.005), 1: (-0.005, 0.005), 2: (-0.005, 0.005)},
+      "ranges": {0: (-0.01, 0.01), 1: (-0.01, 0.01), 2: (-0.01, 0.01)},
     },
   )
 
@@ -1016,12 +1012,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     func=mdp.push_by_setting_velocity,
     mode="interval",
     interval_range_s=(8.0, 12.0),
-    params={"velocity_range": {"x": (-0.25, 0.25), "y": (-0.25, 0.25)}},
+    params={"velocity_range": {"x": (-0.4, 0.4), "y": (-0.4, 0.4)}},
   )
 
   # Episodes used to start exactly at q0, so the policy never had to recover an
   # imperfect initial posture -- which is the case when it is armed on the robot.
-  cfg.events["reset_robot_joints"].params["position_range"] = (-0.03, 0.03)
+  cfg.events["reset_robot_joints"].params["position_range"] = (-0.05, 0.05)
 
   # The QP solves at 200 Hz on the robot against 1 kHz in validation sim, and is
   # not guaranteed stable under CPU load. Damping follows as 2*sqrt(K) in the
@@ -1029,7 +1025,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.events["posture_filter"] = EventTermCfg(
     func=mdp.randomize_posture_task_stiffness,
     mode="reset",
-    params={"stiffness_range": (0.85, 1.15)},
+    params={"stiffness_range": (0.75, 1.25)},
   )
 
   # A per-episode constant bias, not per-step noise: a five-frame history
@@ -1043,7 +1039,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     mode="reset",
     params={
       "bias_ranges": {
-        "base_lin_vel": (-0.03, 0.03),
+        "base_lin_vel": (-0.05, 0.05),
         "projected_gravity": (-0.01, 0.01),
       }
     },
