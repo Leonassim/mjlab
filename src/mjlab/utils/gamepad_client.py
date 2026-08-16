@@ -14,6 +14,20 @@ from typing import Any
 
 import inputs
 
+# Xbox 360/One pads (xpad driver) report ABS_X/Y/RX/RY as signed 16-bit,
+# -32768..32767, not the 0..255 this was originally written for. Remapped to
+# [0, 1] with 0.5 at centre, matching what _offset_and_scale expects.
+_ABS_MIN = -32768
+_ABS_RANGE = 65535.0
+
+
+def _normalize_axis(raw: int) -> float:
+  # Clamped hard: whatever the true native range of a given pad turns out to
+  # be, this value feeds directly into a velocity command with no downstream
+  # bound. An unclamped misread sends the policy an out-of-distribution
+  # command on the very first frame.
+  return max(0.0, min(1.0, (raw - _ABS_MIN) / _ABS_RANGE))
+
 
 class GamepadClient:
   # multiprocessing shared values; typed Any because SynchronizedBase
@@ -102,13 +116,13 @@ class GamepadClient:
         # print(event.ev_type, event.code, event.state)
         if event.ev_type == "Absolute":
           if event.code == "ABS_X":
-            leftJoystickX.value = event.state / 255.0
+            leftJoystickX.value = _normalize_axis(event.state)
           if event.code == "ABS_Y":
-            leftJoystickY.value = event.state / 255.0
+            leftJoystickY.value = _normalize_axis(event.state)
           if event.code == "ABS_RX":
-            rightJoystickX.value = event.state / 255.0
+            rightJoystickX.value = _normalize_axis(event.state)
           if event.code == "ABS_RY":
-            rightJoystickY.value = event.state / 255.0
+            rightJoystickY.value = _normalize_axis(event.state)
         if event.ev_type == "Key":
           if event.code == "BTN_START":
             startButton.value = event.state
