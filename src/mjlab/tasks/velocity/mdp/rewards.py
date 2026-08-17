@@ -1017,37 +1017,14 @@ def no_double_flight_penalty(
   return no_contact
 
 
-# StandingEngagement (a shared 0->1 ramp modulating the standing family over a
-# grace window) lived here on 2026-08-03 and was removed the same day. It was NOT
-# shown to be harmful -- the three runs that seemed to condemn it are void, see
-# below -- so this note records an open question, not a verdict.
+# Open question, not a verdict: the grace period applies to
+# standing_single_support alone, so for 1.5 s after every stop the reward
+# demands zero velocity while hopping on one foot is free. The cheapest answer
+# to that pairing is a violent stop, which is what the robot does in mc_mujoco.
 #
-# The problem it addressed is real and still unfixed: the grace period applies to
-# standing_single_support alone, so for 1.5 s after every stop the reward says
-# "your velocities must be zero NOW" (standing_joint_vel and standing_base_motion
-# at full weight) while "hopping on one foot is free" (single-support graced). The
-# cheapest answer to that pairing is a violent stop, which is what the robot does
-# in mc_mujoco: arms and legs thrown out, foot skidding, then a splayed stance.
-#
-# Runs 2026-08-03_19-42-43, _21-10-01 and _22-30-30 all trained with `num_envs` at
-# its default of 1 instead of 4096, because the launch command omitted
-# --env.scene.num-envs. 48 samples per PPO iteration instead of 196608: nothing
-# could have learned, and every conclusion drawn from them is worthless. Check the
-# "Number of environments" line printed at startup before trusting a comparison.
-#
-# One design caution that survives independently of those runs: a ramp keyed on
-# time-since-the-command-dropped is hidden state. It modulates the reward scale
-# while appearing nowhere in the observation, so the policy cannot tell a step
-# that costs 0.1x from one that costs 1.0x. That is an argument for exposing the
-# clock in the observation if the ramp is retried, not an experimental result.
-#
-# Sizing note for the "decelerate" penalty that was considered instead: measured
-# on the abl7 checkpoint standing at zero command (scratch/rollout_det.py), the
-# per-step positive speed increment sums to 13.4 over 8 s in its linear form and
-# 0.37 squared -- against standing_joint_vel realizing -0.47. A robot holding its
-# balance already generates that, so penalizing any increase in speed taxes
-# balance recovery itself. That measurement is off-run and stands.
-
+# A ramp keyed on time-since-the-command-dropped would be hidden state: it
+# scales the reward while appearing nowhere in the observation. Expose the clock
+# if it is retried.
 
 class standing_pose_penalty:
   """Pull selected joints back to the default posture at near-zero command.
@@ -1273,28 +1250,17 @@ class pd_demand_excess:
     env.extras["log"]["Metrics/pd_demand_ratio_max"] = ratio.max()
     env.extras["log"]["Metrics/pd_demand_ratio_mean"] = ratio.mean()
 
-    # Fraction of joint-steps whose commanded target is *not executable*: the
-    # demand exceeds the effort limit, so what the plant does is the clamp's
-    # decision rather than the policy's.
+    # Fraction of joint-steps whose commanded target is not executable.
     #
-    # Named for the command, not for the torque, because torque saturation is
-    # not by itself a defect here. This is high-gain position control: kp=20000
-    # against a 140 N.m hip is a linear range of 0.007 rad (0.4 deg), so the
-    # real robot rides its limit constantly and that is normal operation.
-    # Spending 100% of the available torque is fine.
+    # Torque saturation is not itself a defect: this is high-gain position control
+    # and the robot rides its limit as normal operation. Commanding outside the
+    # executable set is, and it is a learning defect first -- every command beyond
+    # the window executes identically, so the policy cannot tell them apart and
+    # what it learns will not hold at deployment, where mc_rtc has no clamp
+    # downstream of the PD.
     #
-    # What is not fine is commanding outside the executable set, and it is a
-    # *learning* defect before it is a hardware one: every command beyond the
-    # window produces the same execution, so the policy cannot tell them apart,
-    # and the mapping it learns is not the one that will hold at deployment
-    # (mc_rtc in position/QP mode has no clamp downstream of the PD). Measured
-    # deterministically on the previous run's checkpoint, five of six leg joints
-    # were outside the window 88-96% of the time -- a bang-bang controller whose
-    # commands carried almost no information.
-    #
-    # Watch this rather than pd_demand_ratio_mean, which is EMA-smoothed across
-    # substeps and read 3.34 on that same policy whose deterministic demand was
-    # 8.45x the limit.
+    # Watch this rather than pd_demand_ratio_mean, which is EMA-smoothed and read
+    # 3.34 on a policy whose deterministic demand was 8.45x the limit.
     instantaneous_ratio = torch.abs(demand) / torch.clamp(limit, min=1e-6)
     env.extras["log"]["Metrics/command_infeasible_fraction"] = (
       (instantaneous_ratio > 1.0).float().mean()
@@ -1561,22 +1527,12 @@ class split_feet_min_swing_height(split_feet_swing_height):
     split_found = found[:, :8].view(found.shape[0], 2, 4)
     foot_in_air = torch.all(split_found == 0, dim=2)
 
-    # A landing is the fully-airborne -> any-contact *edge*, not
-    # ContactSensor.compute_first_contact. That helper fires per split slot,
-    # so torch.any over a foot's four corners reports a "landing" every time
-    # any single corner re-touches -- and a foot that lands on its heel and
-    # then rolls onto the toe does that two or three times per real step
-    # (flat_support_contacts_mean sat at ~2.4/4, i.e. rolling is the norm).
-    # Only the first of those had ever been airborne; the rest carried
-    # peak_heights == 0, because peak only accumulates while all four corners
-    # are clear and it was zeroed on the preceding spurious landing. Those
-    # zero-peak events were charged the maximum one-sided deficit
-    # (clamp(1 - 0/min_height, 0) = 1.0), a penalty no amount of extra foot
-    # lift could reduce, and they dragged Metrics/peak_height_mean below even
-    # the ~0.021 m the site sits at while merely standing. Arithmetic on that
-    # metric puts the spurious share at ~80-88% of counted landings, which is
-    # why ramping this term's weight from -25 to -200 across earlier runs
-    # never moved the peak height it was supposed to control.
+    # A landing is the fully-airborne -> any-contact EDGE, not
+    # ContactSensor.compute_first_contact, which fires per split slot: a foot
+    # rolling heel to toe reports two or three landings per real step. Only the
+    # first had ever been airborne; the rest carry peak == 0 and were charged the
+    # maximum deficit, which no amount of foot lift could reduce. That is why
+    # ramping this weight from -25 to -200 never moved the peak height.
     landing = self.was_in_air & (~foot_in_air)
 
     self.peak_heights = torch.where(
@@ -1930,26 +1886,14 @@ class flat_support_penalty:
     if found.shape[1] < 8:
       raise RuntimeError("flat_support_penalty expects 8 split foot contacts.")
 
-    # Corner count by *relative* height, not by contact detection.
+    # Corner count by RELATIVE height, not contact detection. The sole is parallel
+    # to the ground to within 16 um in the default pose, yet only 2.15 of 4 corners
+    # registered: 130 um of toe-versus-heel offset per milliradian of ankle pitch
+    # lifts two clear of the solver threshold, so the term measured solver luck.
     #
-    # A binary contact test is unusable at this scale: the sole is parallel to
-    # the ground in the default pose to within 16 um, yet only 2.15 of 4 corners
-    # per loaded foot registered, because 130 um of toe-versus-heel offset per
-    # milliradian of ankle pitch is enough to lift two of them clear of the
-    # solver's threshold. flat_support is the largest single term in the
-    # objective, and it was measuring solver luck.
-    #
-    # A 1 mm geom margin fixed the count but changed what *every* contact
-    # consumer sees -- impact_vel fired a millimetre early (which at a 0.1 m/s
-    # touchdown halves the reading), standing_single_support stopped firing,
-    # foot_slip charged near-ground swing. Scoping the tolerance here instead
-    # leaves all of them on the baseline's behaviour.
-    #
-    # The four patches sit on one rigid body and therefore share a rotation, so
-    # the difference between their *centre* heights equals the difference
-    # between their lowest corners -- the tilt cancels and no orientation is
-    # needed. Take the lowest patch of a foot as the floor reference and count
-    # every patch within tolerance of it.
+    # A geom margin would fix the count but change what every other contact
+    # consumer sees. The four patches share a rigid body, so differences between
+    # centre heights equal differences between lowest corners and tilt cancels.
     asset: Entity = env.scene[self.asset_name]
     if corner_tolerance > 0.0:
       z = asset.data.geom_pos_w[:, self.geom_ids, 2].view(found.shape[0], 2, 4)
@@ -1968,18 +1912,10 @@ class flat_support_penalty:
     required = float(required_contacts_per_foot)
     deficit = torch.clamp(required - contact_count, min=0.0) / max(required, 1.0)
 
-    # Charging only loaded feet is right while walking -- a swing foot has no
-    # business being flat -- but at zero command it hands the policy a way to
-    # *avoid* this penalty by lifting a foot instead of fixing it. Measured on
-    # a standing robot: both feet down costs 11.72 per step (only ~1.5 of 4
-    # corners land passively), lifting one drops that to 5.86. That 5.86
-    # saving all but cancelled standing_single_support's 6.0, leaving a net
-    # 0.14 -- noise next to track_linear_velocity's 2.8, so the robot was
-    # effectively indifferent between one foot and two. So when the command is
-    # ~zero, an unloaded foot is charged the *full* deficit rather than
-    # nothing: it should be down, and not being down is the worst possible
-    # contact, not the absence of one. Standing on one foot now costs more
-    # than standing badly on two, which is the ordering we actually want.
+    # At zero command an unloaded foot is charged the FULL deficit, not nothing.
+    # Charging only loaded feet lets the policy dodge this penalty by lifting a
+    # foot: measured standing, both feet down costs 11.72 per step and lifting one
+    # drops it to 5.86, all but cancelling standing_single_support's 6.0.
     command = env.command_manager.get_command(command_name)
     assert command is not None
     total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
