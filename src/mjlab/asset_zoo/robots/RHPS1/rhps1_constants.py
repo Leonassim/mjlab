@@ -348,7 +348,7 @@ RHPS1_ACTUATOR_KNEE_L = FiniteDifferencePdActuatorCfg(
   target_names_expr=(r"L_KNEE_P",),
   stiffness=20000.0,
   damping=400.0,
-  effort_limit=70.0,
+  effort_limit=100.0,
   # Real armature: 0.27651
   armature=1.0,
   position_target_filter_alpha=0.0,
@@ -363,7 +363,7 @@ RHPS1_ACTUATOR_KNEE_R = FiniteDifferencePdActuatorCfg(
   target_names_expr=(r"R_KNEE_P",),
   stiffness=20000.0,
   damping=400.0,
-  effort_limit=70.0,
+  effort_limit=100.0,
   # Real armature: 0.27651
   armature=1.0,
   position_target_filter_alpha=0.0,
@@ -952,7 +952,25 @@ def get_rhps1_robot_cfg() -> EntityCfg:
 # something the deployment path can actually place in the same position.
 _POSTURE_TASK_STIFFNESS = None
 
-_TORQUE_FEASIBILITY_RATIO = 1.0
+# REMOVED 2026-08-17, back to policy 0, which had no projection at all.
+#
+# It is the other half of what made this policy undeployable. The projection
+# encodes a torque, not a pose: its correctness is the identity "clamping tau and
+# projecting q* onto tau's preimage are the same operation", which holds only for
+# the PD it was derived from. So the policy it trains learns to emit targets far
+# outside the feasible window on purpose -- measured on the real env, raw |a| rms
+# 6.4 and up to 21 action units, against a window of ~0.67 -- and depends on
+# something downstream clamping them. mc_rtc's PostureTask is not that PD, and
+# mc_mujoco clamps nothing, so nothing did.
+#
+# That is exactly "sans le QP et les ecretages elle peut pas fonctionner":
+# policy 0 emitted |a| <= 1.07 and needed no clamp, which is why it was stable
+# on the bypass path.
+#
+# What it was for is still true (a silent effort clamp makes the saturated region
+# one flat plateau in the return, invisible to PPO). If it comes back it needs a
+# deployment path that reproduces the same clamp.
+_TORQUE_FEASIBILITY_RATIO = None
 
 # Control period: one policy step. Must equal the env's step_dt
 # (sim.mujoco.timestep * decimation = 0.0025 * 2). env_cfgs.py asserts this
