@@ -52,14 +52,21 @@ def main() -> int:
   cmd = env_raw.command_manager.get_term("twist")
 
   for fwd in speeds:
+    # Injected in _update_command, the last thing to write vel_command_out before
+    # the observation is built. Writing cmd.command after env.step() instead is a
+    # no-op: command_manager.compute() runs inside step and overwrites it.
+    target = torch.tensor([fwd, 0.0, 0.0], device=device)
+
+    def forced_update(t: torch.Tensor = target) -> None:
+      cmd.vel_command_b[:] = t
+      cmd.vel_command_w[:] = t
+      cmd.vel_command_out[:] = t
+
+    cmd._update_command = forced_update  # type: ignore[method-assign]
+    cmd.is_standing_env[:] = False
+
     env.reset()
-
-    def force() -> None:
-      cmd.command[:, 0] = fwd
-      cmd.command[:, 1] = 0.0
-      cmd.command[:, 2] = 0.0
-
-    force()
+    cmd.is_standing_env[:] = False
     obs = env.get_observations()
     if isinstance(obs, tuple):
       obs = obs[0]
@@ -71,7 +78,7 @@ def main() -> int:
       with torch.inference_mode():
         action = policy(obs)
       obs = env.step(action)[0]
-      force()
+      cmd.is_standing_env[:] = False
 
     seen_t = torch.stack(seen)
     travelled = (robot.data.root_link_pos_w[:, 0] - x0).cpu().numpy()

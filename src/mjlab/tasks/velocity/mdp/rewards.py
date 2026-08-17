@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -1399,32 +1398,6 @@ def standing_base_motion(
   return cost
 
 
-def foot_flat_orientation(
-  env: ManagerBasedRlEnv,
-  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-  """Penalize sole tilt of the feet relative to the world horizontal.
-
-  The foot links' frames are world-aligned when the sole is flat (the leg
-  pitch chain sums to zero in the keyframe), so the XY components of gravity
-  projected into the foot frame measure sin(tilt). Applied in every phase,
-  unlike the contact-count-based flat_support_penalty which only fires at
-  touchdown.
-  """
-  asset: Entity = env.scene[asset_cfg.name]
-  body_quat_w = asset.data.body_link_quat_w[:, asset_cfg.body_ids, :]  # [B, N, 4]
-  batch, num_feet = body_quat_w.shape[0], body_quat_w.shape[1]
-  gravity_w = asset.data.gravity_vec_w  # [B, 3]
-  gravity_b = quat_apply_inverse(
-    body_quat_w.reshape(-1, 4),
-    gravity_w[:, None, :].expand(batch, num_feet, 3).reshape(-1, 3),
-  ).view(batch, num_feet, 3)
-  gravity_b = gravity_b / torch.clamp(
-    torch.norm(gravity_b, dim=-1, keepdim=True), min=1e-6
-  )
-  tilt = torch.norm(gravity_b[..., :2], dim=-1)  # [B, N], sin(tilt) per foot
-  env.extras["log"]["Metrics/foot_tilt_mean"] = torch.mean(tilt)
-  return torch.sum(tilt, dim=1)
 
 
 def feet_clearance_velocity_weighted(

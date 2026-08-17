@@ -81,7 +81,7 @@ def main() -> int:
   bias = torch.zeros((n, 3), device=device)
   for i, b in enumerate(BIASES):
     bias[i * REPEATS : (i + 1) * REPEATS, 0] = b
-  setattr(env_raw, "_rhps1_sensor_bias", {"base_lin_vel": bias})
+  env_raw._rhps1_sensor_bias = {"base_lin_vel": bias}  # type: ignore[attr-defined]
 
   obs = env.get_observations()
   if isinstance(obs, tuple):

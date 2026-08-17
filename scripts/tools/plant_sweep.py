@@ -142,8 +142,8 @@ def main() -> int:
   for e in winners:
     vals = "  ".join(f"{feats[k][e]:16.4f}" for k in feats)
     print(f"{e:5d} {p[e]:8.3f}m {v[e]:+8.3f}  {vals}")
-  print(f"\nnominal pour comparaison : masse 57.6 kg, friction 0.5, K 1600, "
-        f"gain 1.0, biais 0")
+  print("\nnominal pour comparaison : masse 57.6 kg, friction 0.5, K 1600, "
+        "gain 1.0, biais 0")
   return 0
 
 

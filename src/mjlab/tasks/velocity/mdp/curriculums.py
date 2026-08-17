@@ -193,30 +193,6 @@ def air_time_target_curriculum(
   return torch.tensor([reward_term_cfg.params["threshold_max"]])
 
 
-def min_foot_height_curriculum(
-  env: ManagerBasedRlEnv,
-  env_ids: torch.Tensor,
-  reward_name: str,
-  stages: list[dict],
-) -> torch.Tensor:
-  """Raise both the min_foot_height weight and its min_height target together.
-
-  Fixing min_height at the final target (0.08m) from the start and only
-  ramping the weight (tried first) plateaued Metrics/peak_height_mean at
-  ~0.006-0.009m for 5000+ iterations regardless of weight: the target was
-  simply out of reach the whole time, so a bigger weight just meant a bigger
-  constant penalty, not a closer target to actually climb toward. Same
-  break-even idea as ``air_time_target_curriculum``: each stage's target
-  should be within reach of the previous stage's converged behavior, not
-  fixed far ahead of it from step 0.
-  """
-  del env_ids  # Unused.
-  reward_term_cfg = env.reward_manager.get_term_cfg(reward_name)
-  for stage in stages:
-    if env.common_step_counter > stage["step"]:
-      reward_term_cfg.weight = stage["weight"]
-      reward_term_cfg.params["min_height"] = stage["min_height"]
-  return torch.tensor([reward_term_cfg.params["min_height"]])
 
 
 def velocity_damper_progress(
@@ -284,24 +260,6 @@ class PushStage(TypedDict):
   scale: float
 
 
-def push_curriculum(
-  env: ManagerBasedRlEnv,
-  env_ids: torch.Tensor,
-  event_name: str,
-  max_velocity_range: dict[str, tuple[float, float]],
-  stages: list[PushStage],
-) -> torch.Tensor:
-  """Scale push perturbation velocity range based on training progress."""
-  del env_ids
-  scale = 0.0
-  for stage in stages:
-    if env.common_step_counter > stage["step"]:
-      scale = stage["scale"]
-  event_cfg = env.event_manager.get_term_cfg(event_name)
-  event_cfg.params["velocity_range"] = {
-    k: (v[0] * scale, v[1] * scale) for k, v in max_velocity_range.items()
-  }
-  return torch.tensor([scale])
 
 
 class StandingEnvsStage(TypedDict):
@@ -309,18 +267,3 @@ class StandingEnvsStage(TypedDict):
   value: float
 
 
-def standing_envs_curriculum(
-  env: ManagerBasedRlEnv,
-  env_ids: torch.Tensor,
-  command_name: str,
-  stages: list[StandingEnvsStage],
-) -> torch.Tensor:
-  """Decrease the proportion of standing (zero-command) envs over training."""
-  del env_ids
-  value = stages[0]["value"]
-  for stage in stages:
-    if env.common_step_counter > stage["step"]:
-      value = stage["value"]
-  command_term = env.command_manager.get_term(command_name)
-  command_term.cfg.rel_standing_envs = value
-  return torch.tensor([value])

@@ -63,7 +63,7 @@ def main() -> int:
   policy = runner.get_inference_policy(device=device)
 
   mm = env_raw.metrics_manager
-  names = list(mm._term_names)  # noqa: SLF001
+  names = list(mm._term_names)
 
   if force:
     cmd = env_raw.command_manager.get_term("twist")
@@ -88,7 +88,7 @@ def main() -> int:
       action = policy(obs)
     obs = env.step(action)[0]
     if i >= WARMUP_STEPS:
-      acc += mm._step_values.mean(dim=0)  # noqa: SLF001
+      acc += mm._step_values.mean(dim=0)
       n += 1
 
   got = (acc / max(n, 1)).cpu().numpy()

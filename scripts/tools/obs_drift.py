@@ -52,7 +52,6 @@ def main() -> int:
 
   # Per-dimension names, so the offending term can be named.
   om = env_raw.observation_manager
-  group = "actor"
   terms: list[tuple[str, int]] = []
   names: list[str] = []
   for g in ("actor",):

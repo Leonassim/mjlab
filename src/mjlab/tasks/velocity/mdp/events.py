@@ -112,7 +112,7 @@ def randomize_sensor_bias(
 
   store: dict[str, torch.Tensor] = getattr(env, "_rhps1_sensor_bias", {})
   if not hasattr(env, "_rhps1_sensor_bias"):
-    setattr(env, "_rhps1_sensor_bias", store)
+    env._rhps1_sensor_bias = store
 
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device)

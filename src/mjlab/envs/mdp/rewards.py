@@ -130,24 +130,6 @@ class posture:
     return torch.exp(-torch.mean(error_squared / (self.std**2), dim=1))
 
 
-class electrical_power_cost:
-  """Penalize electrical power consumption of actuators."""
-
-  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
-    asset: Entity = env.scene[cfg.params["asset_cfg"].name]
-
-    joint_ids, _ = asset.find_joints(
-      cfg.params["asset_cfg"].joint_names,
-    )
-    self._joint_ids = torch.tensor(joint_ids, device=env.device, dtype=torch.long)
-
-  def __call__(self, env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
-    asset: Entity = env.scene[asset_cfg.name]
-    tau = asset.data.qfrc_actuator[:, self._joint_ids]
-    qd = asset.data.joint_vel[:, self._joint_ids]
-    mech = tau * qd
-    mech_pos = torch.clamp(mech, min=0.0)  # Don't penalize regen.
-    return torch.sum(mech_pos, dim=1)
 
 
 class joint_effort_l2:
@@ -210,17 +192,6 @@ def joint_torque_limit_margin_penalty(
   return torch.sum(excess, dim=1)
 
 
-def joints_action_acc_l2(
-  env: ManagerBasedRlEnv,
-  joint_indices: list[int],
-) -> torch.Tensor:
-  """Penalize action acceleration for a specific subset of joints."""
-  action_acc = (
-    env.action_manager.action
-    - 2 * env.action_manager.prev_action
-    + env.action_manager.prev_prev_action
-  )
-  return torch.sum(torch.square(action_acc[:, joint_indices]), dim=1)
 
 
 class joint_torque_rate_l2:
