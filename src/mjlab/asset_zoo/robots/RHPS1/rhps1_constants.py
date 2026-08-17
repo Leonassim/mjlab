@@ -348,7 +348,7 @@ RHPS1_ACTUATOR_KNEE_L = FiniteDifferencePdActuatorCfg(
   target_names_expr=(r"L_KNEE_P",),
   stiffness=20000.0,
   damping=400.0,
-  effort_limit=100.0,
+  effort_limit=70.0,
   # Real armature: 0.27651
   armature=1.0,
   position_target_filter_alpha=0.0,
@@ -363,7 +363,7 @@ RHPS1_ACTUATOR_KNEE_R = FiniteDifferencePdActuatorCfg(
   target_names_expr=(r"R_KNEE_P",),
   stiffness=20000.0,
   damping=400.0,
-  effort_limit=100.0,
+  effort_limit=70.0,
   # Real armature: 0.27651
   armature=1.0,
   position_target_filter_alpha=0.0,
