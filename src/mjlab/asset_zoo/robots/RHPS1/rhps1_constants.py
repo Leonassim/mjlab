@@ -932,14 +932,25 @@ def get_rhps1_robot_cfg() -> EntityCfg:
 # kp cannot be lowered to widen the window: it is the robot's low-level
 # position gain, not a simulation knob.
 
-# mc_rtc QP PostureTask stiffness, reproduced upstream of the PD.
+# mc_rtc QP PostureTask filter: REMOVED 2026-08-17. None sends the policy output
+# straight to the PD, as policy 0 did.
 #
-# 1600 is the same value on both sides of the transfer: on the robot and in
-# mc_mujoco. Both give sqrt(K)*dt = 0.20, the number governing discrete-time
-# stability -- 1600 at 200 Hz, 40000 at 1 kHz. Training previously sent the
-# policy output straight to the PD, skipping the ~25 ms this second order adds
-# on the robot.
-_POSTURE_TASK_STIFFNESS = 1600.0
+# It was a second-order stage at K=1600 meant to model the QP's ~25 ms delay, and
+# it is the only thing this line of runs added to policy 0's plant. Two reasons
+# it goes:
+#
+#   - deployment could not reproduce it. Training placed it UPSTREAM of the
+#     finite difference and the torque-feasibility projection, but mc_rtc's
+#     PostureTask is a QP task consuming the target, i.e. downstream of both.
+#     Nothing can be inserted after it, so the ordering was unreproducible by
+#     construction, and emulating the filter in the controller did not recover
+#     the behaviour.
+#   - the policy it produced is unstable in mc_mujoco even standing, with or
+#     without the QP, while policy 0 was stable and could walk without it.
+#
+# The delay it modelled is real. If it comes back, it has to come back as
+# something the deployment path can actually place in the same position.
+_POSTURE_TASK_STIFFNESS = None
 
 _TORQUE_FEASIBILITY_RATIO = 1.0
 

@@ -1227,27 +1227,30 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
   ):
     cfg.rewards.pop(name, None)
 
-  # Policy 0's randomisation, strictly: five events. Everything else added since
-  # was validated in simulation only, and two tightening attempts on 2026-08-15
-  # (v2, v3) both failed to reproduce its early walking.
-  for name in (
-    "link_inertia",
-    "link_com",
-    "actuator_gains",
-    "posture_filter",
-    "sensor_bias",
-    "push_base",
-  ):
-    cfg.events.pop(name, None)
+  # Policy 0's five events KEPT at policy 0's values, plus the wider set back on.
+  #
+  # Policy 0's objective and action scaling are what transferred; what it lacked
+  # was robustness, and it barely lifted its feet -- that part was a reward bug,
+  # fixed since. So this run keeps its randomisation exactly and adds the rest on
+  # top, rather than choosing between the two.
+  #
+  # posture_filter is the one v7 event that does NOT come back: it scaled a
+  # filter this run no longer has (_POSTURE_TASK_STIFFNESS = None).
+  cfg.events.pop("posture_filter", None)
   cfg.events["foot_friction"].mode = "startup"
   cfg.events["foot_friction"].params["ranges"] = (0.5, 0.9)
   cfg.events["foot_friction"].params["shared_random"] = True
   cfg.events["encoder_bias"].params["bias_range"] = (-0.015, 0.015)
-  cfg.events["reset_robot_joints"].params["position_range"] = (0.0, 0.0)
+  # v7's dispersion, the one part of its randomisation that touches the reset
+  # posture rather than the plant.
+  cfg.events["reset_robot_joints"].params["position_range"] = (-0.05, 0.05)
 
-  # The PostureTask filter itself is NOT removed: it lives in the actuator
-  # (_POSTURE_TASK_STIFFNESS = 1600) and modelling the QP's ~25 ms delay is the
-  # one deliberate addition this run carries over policy 0.
+  # The PostureTask filter is GONE, not just unrandomised. It was the only stage
+  # this line of runs added to policy 0's plant, and it is also what made the
+  # mc_rtc deployment inextricable: training put it upstream of the finite
+  # difference and the projection, while the QP's own PostureTask sits
+  # downstream of both, so the ordering could not be reproduced. Removing it
+  # deletes that inversion instead of working around it.
 
 
 def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
