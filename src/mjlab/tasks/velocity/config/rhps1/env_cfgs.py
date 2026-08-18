@@ -1115,10 +1115,18 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
     cfg.rewards.pop(name, None)
   cfg.curriculum.pop("raw_torque_peak_weight", None)
 
-  # Policy 0 terms with no successor.
+  # Policy 0 terms with no successor -- at policy 0's values, power included.
+  #
+  # power was 2.0 and weight 2.0 (2026-08-18). The payoff is
+  # (air_time/threshold_max)**power, so squaring crushes exactly the short air
+  # times a non-walking policy produces: at 0.05 s it paid 0.125 against policy
+  # 0's 1.25, ten times less, and at 0.02 s twenty-five times less. Worse, the
+  # derivative of x^2 vanishes at 0, so a standing policy gets no gradient to
+  # attempt a first short step -- the same defect touchdown_cost was zeroed for,
+  # in a different form.
   cfg.rewards["air_time"] = RewardTermCfg(
     func=mdp.split_feet_air_time,
-    weight=2.0,
+    weight=5.0,
     params={
       "sensor_name": _SPLIT_SENSOR,
       "command_name": "twist",
@@ -1126,7 +1134,7 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
       "threshold_max": 0.2,
       "command_threshold": 0.1,
       "overflow_threshold": 2.0,
-      "power": 2.0,
+      "power": 1.0,
       # Zero: the landing cost exactly cancelled the airborne payment, making a
       # short step net negative -- a lift reward that punished small lifts.
       "touchdown_cost": 0.0,
