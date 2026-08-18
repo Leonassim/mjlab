@@ -1243,26 +1243,38 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.rewards["action_rate_l2"] = RewardTermCfg(
     func=mdp.action_rate_l2, weight=-0.02
   )
+  # Groupes repris de policy 0 A L IDENTIQUE, exprimes par nom.
+  #
+  # Ses listes d'indices ne correspondaient pas aux noms des termes: l'ordre
+  # d'action commence par le torse et les bras, les jambes sont en 18-29. Donc
+  # "stance" ne touchait aucune jambe et "upper_body" couvrait les douze. Les
+  # renommer proprement (2026-08-18) a change l'objectif, pas repare un bug --
+  # le haut du corps est passe a 18 articulations pleines, -3.08 realises, le
+  # terme dominant, et le robot a cesse d'avancer.
+  #
+  # Ces trois listes sont extraites mecaniquement des indices de policy 0
+  # (run 2026-07-10_13-52-54) et de l'ordre articulaire, identique depuis.
+  # Regroupement arbitraire, conserve tel quel: c'est l'objectif qui a marche.
   cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
     func=mdp.stance_action_acc_l2,
     weight=-0.05,
     params={
       "sensor_name": _SPLIT_SENSOR,
-      "left_asset_cfg": SceneEntityCfg(
-        "robot", joint_names=(r"L_(CROTCH|KNEE|ANKLE).*",)
-      ),
-      "right_asset_cfg": SceneEntityCfg(
-        "robot", joint_names=(r"R_(CROTCH|KNEE|ANKLE).*",)
-      ),
+      "left_asset_cfg": SceneEntityCfg("robot", joint_names=(
+        "CHEST_Y", "CHEST_P", "HEAD_Y", "HEAD_P", "L_SHOULDER_P", "L_SHOULDER_R")),
+      "right_asset_cfg": SceneEntityCfg("robot", joint_names=(
+        "L_ELBOW_Y", "L_WRIST_R", "L_WRIST_Y",
+        "R_SHOULDER_P", "R_SHOULDER_R", "R_SHOULDER_Y")),
     },
   )
   cfg.rewards["upper_body_action_acc_l2"] = RewardTermCfg(
     func=mdp.joint_action_acc_l2,
     weight=-0.1,
     params={
-      "asset_cfg": SceneEntityCfg(
-        "robot", joint_names=(r"(CHEST|HEAD|.*SHOULDER|.*ELBOW|.*WRIST).*",)
-      )
+      "asset_cfg": SceneEntityCfg("robot", joint_names=(
+        "L_SHOULDER_Y", "L_ELBOW_P", "R_ELBOW_P", "R_ELBOW_Y", "R_WRIST_R", "R_WRIST_Y",
+        "L_CROTCH_Y", "L_CROTCH_R", "L_CROTCH_P", "L_KNEE_P", "L_ANKLE_R", "L_ANKLE_P",
+        "R_CROTCH_Y", "R_CROTCH_R", "R_CROTCH_P", "R_KNEE_P", "R_ANKLE_R", "R_ANKLE_P")),
     },
   )
   # Back to policy 0's -4e-5: the 2.5x cut was part of the same uniform rescale
