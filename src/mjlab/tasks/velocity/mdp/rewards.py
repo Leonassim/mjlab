@@ -1671,11 +1671,28 @@ class split_feet_slip:
     return cost
 
 
+def joint_action_acc_l2(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
+  """Action acceleration on a named joint subset.
+
+  Joints are named, not indexed. The action order is not stable between runs
+  (policy 0 put the legs first, the current order puts them last), so a
+  hardcoded index list silently penalises the wrong joints.
+  """
+  action_acc = (
+    env.action_manager.action
+    - 2 * env.action_manager.prev_action
+    + env.action_manager.prev_prev_action
+  )
+  return torch.sum(torch.square(action_acc[:, asset_cfg.joint_ids]), dim=1)
+
+
 def stance_action_acc_l2(
   env: ManagerBasedRlEnv,
   sensor_name: str,
-  left_joint_indices: list[int],
-  right_joint_indices: list[int],
+  left_asset_cfg: SceneEntityCfg,
+  right_asset_cfg: SceneEntityCfg,
 ) -> torch.Tensor:
   """Penalize action acceleration only for the joints of the stance (contact) leg.
 
@@ -1697,8 +1714,8 @@ def stance_action_acc_l2(
   contacts = (found[:, :8] > 0).float()
   left_stance = (contacts[:, :4].sum(dim=1) > 0).float()
   right_stance = (contacts[:, 4:8].sum(dim=1) > 0).float()
-  left_acc_sq = torch.sum(torch.square(action_acc[:, left_joint_indices]), dim=1)
-  right_acc_sq = torch.sum(torch.square(action_acc[:, right_joint_indices]), dim=1)
+  left_acc_sq = torch.sum(torch.square(action_acc[:, left_asset_cfg.joint_ids]), dim=1)
+  right_acc_sq = torch.sum(torch.square(action_acc[:, right_asset_cfg.joint_ids]), dim=1)
   return left_stance * left_acc_sq + right_stance * right_acc_sq
 
 

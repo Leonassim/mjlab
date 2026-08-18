@@ -1227,6 +1227,48 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
   ):
     cfg.rewards.pop(name, None)
 
+  # Popping action_jerk left the objective with NO smoothness term at all: the
+  # v9 branch above had already popped policy 0's three, action_jerk being their
+  # replacement. Measured on the 2026-08-17_23-05-46 checkpoint in mc_mujoco:
+  # the posture target slews at 6-25 rad/s against policy 0's 0.13-0.70, and the
+  # deployment PostureTask (omega = sqrt(1600) = 40 rad/s) passes ~6% of that.
+  # Its output then decouples from the command and parks 0.10 rad off, which is
+  # the hip splay. mjlab never sees it -- there is no PostureTask there, the
+  # tremor goes straight to the PD and the physics absorbs it.
+  #
+  # So policy 0's three come back, at policy 0's weights. Named joint subsets,
+  # not the index lists policy 0 used: its action order put the legs at 0-13,
+  # this one puts them at 18-29, and copying the indices across would have
+  # penalised the arms while calling them the stance leg.
+  cfg.rewards["action_rate_l2"] = RewardTermCfg(
+    func=mdp.action_rate_l2, weight=-0.02
+  )
+  cfg.rewards["stance_action_acc_l2"] = RewardTermCfg(
+    func=mdp.stance_action_acc_l2,
+    weight=-0.05,
+    params={
+      "sensor_name": _SPLIT_SENSOR,
+      "left_asset_cfg": SceneEntityCfg(
+        "robot", joint_names=(r"L_(CROTCH|KNEE|ANKLE).*",)
+      ),
+      "right_asset_cfg": SceneEntityCfg(
+        "robot", joint_names=(r"R_(CROTCH|KNEE|ANKLE).*",)
+      ),
+    },
+  )
+  cfg.rewards["upper_body_action_acc_l2"] = RewardTermCfg(
+    func=mdp.joint_action_acc_l2,
+    weight=-0.1,
+    params={
+      "asset_cfg": SceneEntityCfg(
+        "robot", joint_names=(r"(CHEST|HEAD|.*SHOULDER|.*ELBOW|.*WRIST).*",)
+      )
+    },
+  )
+  # Back to policy 0's -4e-5: the 2.5x cut was part of the same uniform rescale
+  # that introduced action_jerk, and that term is gone.
+  cfg.rewards["joint_torque_rate_l2"].weight = -4e-5
+
   # Policy 0's five events KEPT at policy 0's values, plus the wider set back on.
   #
   # Policy 0's objective and action scaling are what transferred; what it lacked
