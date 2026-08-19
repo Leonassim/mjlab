@@ -1,19 +1,24 @@
 """Ablation ladder from policy 0.
 
-Policy 0 (run 2026-07-10_13-52-54) is the only configuration that ever produced
-a walking gait on hardware. Everything added since is a deviation, and three
-consecutive runs carrying all of them at once failed to walk while policy 0 was
-already single-support by iteration 600. Guessing which deviation costs the gait
-has a poor record, so this selects them one at a time instead.
+Policy 0 is run 2026-07-10_20-59-17 -- the ONNX on hardware matches its
+checkpoint byte for byte. Branch `policy0-reference` reproduces it with an empty
+recursive diff on env.yaml and agent.yaml, and it walks: track_linear_velocity
+2.60 and stance_contacts_mean 2.81 at iteration 600, settling at 3.0 / 2.89.
+Runs that fail sit at 1.95 and 3.6-3.8, so one hour separates the two.
 
-  RHPS1_ABLATION=p0              policy 0, every deviation reverted
-  RHPS1_ABLATION=p0+obs246       ... plus the 5-step action history
-  RHPS1_ABLATION=p0+obs246+knee  ... several, applied in order
+  RHPS1_ABLATION=p0            policy 0's configuration on today's code
+  RHPS1_ABLATION=p0+rand       ... plus one rung
+  RHPS1_ABLATION=p0+rand+obs   ... cumulative, in ladder order
 
-Unset leaves the configuration untouched, so nothing changes for a normal run.
+Unset leaves the configuration untouched. Applying every rung in LADDER order
+must land back on the untouched configuration -- asserted by
+scripts/tools/check_ablation_ladder.py, which is what keeps the ladder honest:
+a deviation missing from every rung would otherwise never be tested.
 
-The discriminator is Metrics/stance_contacts_mean at iteration ~600: 4 means
-both feet planted, policy 0 sat at 2.33. One hour per rung at 609 it/h.
+`p0` here is not the reference tree. Nine reward functions were rewritten since
+July and their bodies cannot be reverted by configuration, so this rung tests
+exactly that: config identical, code current. If it walks, the rewrites are
+innocent and every rung above it is trustworthy.
 """
 
 from __future__ import annotations
@@ -22,14 +27,25 @@ import copy
 import os
 from typing import TYPE_CHECKING
 
+import torch
+
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.velocity import mdp
+from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 if TYPE_CHECKING:
-  from mjlab.envs import ManagerBasedRlEnvCfg
+  from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 
 ENV_VAR = "RHPS1_ABLATION"
+
+# Cumulative order. Value first: the two rungs the real robot cannot do without
+# come before the ones that only shape the gait, so an interrupted ladder still
+# answers the questions that matter. `static` is last because it is both the
+# most suspect single item -- 0.4 standing envs against policy 0's 0.1 -- and
+# the cheapest to act on.
+LADDER = ("rand", "obs", "knee", "feet", "prox", "pose", "mirror", "static")
 
 
 def selection() -> list[str] | None:
@@ -42,133 +58,327 @@ def selection() -> list[str] | None:
     raise ValueError(f"{ENV_VAR} must start with 'p0', got {raw!r}")
   unknown = set(steps[1:]) - set(DELTAS)
   if unknown:
-    raise ValueError(f"{ENV_VAR}: unknown steps {sorted(unknown)}, have {sorted(DELTAS)}")
+    raise ValueError(
+      f"{ENV_VAR}: unknown steps {sorted(unknown)}, have {sorted(DELTAS)}"
+    )
   return steps
 
 
 def mirror_enabled() -> bool:
-  """Mirror loss is a deviation: policy 0 trained without it."""
+  """Symmetry augmentation is a deviation: policy 0 trained without it."""
   steps = selection()
   return True if steps is None else "mirror" in steps
 
 
-# --------------------------------------------------------------------------
+##
+# Curriculum functions policy 0 used and that were deleted since. Kept local so
+# reverting the config does not reach into shared mdp code.
+##
+
+
+def air_time_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  reward_name: str,
+  param_name: str,
+  stages: list[dict],
+) -> torch.Tensor:
+  del env_ids
+  current = stages[0]["value"]
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      current = stage["value"]
+  env.reward_manager.get_term_cfg(reward_name).params[param_name] = current
+  return torch.tensor([current])
+
+
+def standing_envs_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  command_name: str,
+  stages: list[dict],
+) -> torch.Tensor:
+  del env_ids
+  value = stages[0]["value"]
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      value = stage["value"]
+  env.command_manager.get_term(command_name).cfg.rel_standing_envs = value
+  return torch.tensor([value])
+
+
+##
 # Baseline
+##
+
+EXTRA_EVENTS = ("actuator_gains", "link_com", "link_inertia", "sensor_bias")
+
+PROXIMITY_TERMS = (
+  "arm_torso_proximity",
+  "knee_proximity",
+  "leg_proximity",
+  "shoulder_body_proximity",
+  "shoulder_chest_proximity",
+  "wrist_thigh_proximity",
+)
+
+PROXIMITY_SENSORS = (
+  "knee_proximity",
+  "arm_torso_proximity",
+  "shoulder_chest_proximity",
+  "shoulder_body_proximity",
+  "wrist_thigh_proximity",
+)
+
+# Policy 0's gap: the three leg links at 12 mm, not the eight QP-pair links at
+# 25 mm. Widening it changes contact detection, so it belongs to `prox`.
+_P0_GAP = {r"^rhps1_collision_[LR]_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$": 0.012}
+
+_P0_POSE_STD = {
+  r".*CROTCH_P.*": 0.85,
+  r".*CROTCH_R.*": 0.45,
+  r".*CROTCH_Y.*": 0.45,
+  r".*KNEE.*": 0.95,
+  r".*ANKLE_P.*": 0.6,
+  r".*ANKLE_R.*": 0.05,
+  r".*CHEST.*": 0.18,
+  r".*SHOULDER_P.*": 0.08,
+  r".*SHOULDER_R.*": 0.08,
+  r".*SHOULDER_Y.*": 0.06,
+  r".*ELBOW.*": 0.08,
+  r".*WRIST.*": 0.05,
+  r".*HEAD.*": 0.03,
+}
 
 
 def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
   r = cfg.rewards
 
+  # -- rewards -------------------------------------------------------------
   r["angular_momentum"].weight = -0.2
   # Weight only. flat_support_penalty was a plain function in July and is a
   # three-component class now, with command_name required, so policy 0's params
-  # cannot be restored -- and would not restore its behaviour if they could.
-  # One of the nine reward functions rewritten since; see the note in
-  # apply_env on what this baseline can and cannot reproduce.
+  # cannot be restored. One of the nine rewrites this rung is testing.
   r["flat_support"].weight = -2.4
   r["foot_clearance"].weight = -4.0
   r["foot_slip"].weight = -0.3
   r["impact_vel"].weight = -0.5
   r["impact_vel"].params["limit"] = 0.1
   r["standing_single_support"].weight = -4.0
-  # Policy 0's air_time: weight 2.0, power 2.0, touchdown_cost 0.15. All three
-  # were "restored" to 5.0 / 1.0 / 0.0 on 2026-08-18 against run 13-52-54, which
-  # is not policy 0 -- the deployed ONNX matches 20-59-17 byte for byte.
+  # air_time weight and threshold_max are driven by curriculum below; these are
+  # the step-0 values it starts from.
   r["air_time"].weight = 2.0
   r["air_time"].params["power"] = 2.0
   r["air_time"].params["touchdown_cost"] = 0.15
+  r["air_time"].params["threshold_max"] = 0.2
 
   r["leg_proximity"].weight = -1.0
   r["leg_proximity"].params["min_dist"] = 0.01
 
-  r["ankle_pitch_torque"] = RewardTermCfg(
-    func=mdp.joint_effort_l2, weight=-0.0002,
-    params={"actuator_pattern": r"^[LR]_ANKLE_P$", "asset_cfg": SceneEntityCfg("robot")},
-  )
+  r["pose"].params["std_walking"] = dict(_P0_POSE_STD)
 
-  # Terms policy 0 carried that were dropped since. min_foot_height is the one
-  # that paid zero for standing and punished a short lift -- restored anyway:
-  # the baseline reproduces policy 0, defects included, because that is the
-  # configuration that walked.
-  r["min_foot_height"] = RewardTermCfg(
-    func=mdp.swing_foot_height, weight=-5.0,
-    params={"min_height": 0.08, "sensor_name": "feet_ground_contact",
-            "command_name": "twist", "command_threshold": 0.1,
-            "asset_cfg": SceneEntityCfg("robot", site_names=("left_foot", "right_foot"))},
-  )
-  r["flat_touchdown"] = RewardTermCfg(
-    func=mdp.flat_touchdown_penalty, weight=-1.8,
-    params={"sensor_name": "feet_ground_contact_split", "required_contacts_per_foot": 4,
-            "command_name": "twist", "command_threshold": 0.05},
+  r["ankle_pitch_torque"] = RewardTermCfg(
+    func=mdp.joint_effort_l2,
+    weight=-0.0002,
+    params={
+      "actuator_pattern": r"^[LR]_ANKLE_P$",
+      "asset_cfg": SceneEntityCfg("robot"),
+    },
   )
   r["ankle_roll_torque"] = RewardTermCfg(
-    func=mdp.joint_effort_l2, weight=-0.002,
-    params={"actuator_pattern": r"^[LR]_ANKLE_R$",
-            "asset_cfg": SceneEntityCfg("robot")},
+    func=mdp.joint_effort_l2,
+    weight=-0.002,
+    params={
+      "actuator_pattern": r"^[LR]_ANKLE_R$",
+      "asset_cfg": SceneEntityCfg("robot"),
+    },
   )
+
+  # Terms policy 0 carried that were dropped since. min_foot_height paid zero
+  # for standing and punished a short lift -- restored anyway: the baseline is
+  # policy 0, defects included, because that is what walked.
+  r["min_foot_height"] = RewardTermCfg(
+    func=mdp.swing_foot_height,
+    weight=-5.0,
+    params={
+      "min_height": 0.08,
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=("left_foot", "right_foot")),
+    },
+  )
+  r["flat_touchdown"] = RewardTermCfg(
+    func=mdp.flat_touchdown_penalty,
+    weight=-1.8,
+    params={
+      "sensor_name": "feet_ground_contact_split",
+      "required_contacts_per_foot": 4,
+      "command_name": "twist",
+      "command_threshold": 0.05,
+    },
+  )
+  # Zero weight, inert, but it keeps the diff against policy 0 empty.
+  r["action_acc_l2"] = RewardTermCfg(func=mdp.action_acc_l2, weight=0.0)
 
   for name in PROXIMITY_TERMS:
     if name != "leg_proximity":  # policy 0 carried this one, at -1.0
       r.pop(name, None)
 
+  # -- events --------------------------------------------------------------
   for name in EXTRA_EVENTS:
     cfg.events.pop(name, None)
   cfg.events["reset_robot_joints"].params["position_range"] = (0.0, 0.0)
 
-  cfg.observations["actor"].terms["actions"].history_length = 0
+  # -- observations --------------------------------------------------------
+  actor = cfg.observations["actor"].terms
+  actor["actions"].func = mdp.last_action
+  actor["actions"].history_length = 0
+  actor["base_lin_vel"].func = mdp.base_lin_vel
+  actor["base_lin_vel"].noise = None
+  actor["joint_pos"].params.pop("biased", None)
+  actor["joint_vel"].func = mdp.joint_vel_rel
+  actor["joint_vel"].noise = Unoise(n_min=-1.5, n_max=1.5)
+  actor["joint_vel"].params.pop("encoder_noise", None)
+  actor["projected_gravity"].func = mdp.projected_gravity
 
-  # Knee effort limit 100 N.m rather than 70, which is what the scale encodes.
-  # 0.0075, read from policy 0's params/env.yaml -- its ONNX metadata rounds to
-  # three decimals and reports 0.007, which is not the value.
+  critic = cfg.observations["critic"].terms
+  critic.pop("foot_height_scan", None)
+  critic.pop("joint_torques", None)
+  critic["joint_pos"].noise = Unoise(n_min=-0.01, n_max=0.01)
+  critic["joint_vel"].noise = Unoise(n_min=-1.5, n_max=1.5)
+  critic["projected_gravity"].func = mdp.projected_gravity
+
+  # -- commands and curriculum --------------------------------------------
+  # 0.2 falling to 0.1, not 0.4 held: policy 0 steady-state had a quarter of
+  # today's standing envs.
+  cfg.commands["twist"].rel_standing_envs = 0.2
+  cfg.curriculum["standing_envs"] = CurriculumTermCfg(
+    func=standing_envs_curriculum,
+    params={
+      "command_name": "twist",
+      "stages": [{"step": 0, "value": 0.2}, {"step": 24000, "value": 0.1}],
+    },
+  )
+  cfg.curriculum["air_time"] = CurriculumTermCfg(
+    func=air_time_curriculum,
+    params={
+      "reward_name": "air_time",
+      "param_name": "threshold_max",
+      "stages": [
+        {"step": 0, "value": 0.1},
+        {"step": 24000, "value": 0.3},
+        {"step": 96000, "value": 0.5},
+      ],
+    },
+  )
+  cfg.curriculum["air_time_weight"] = CurriculumTermCfg(
+    func=mdp.reward_weight,
+    params={
+      "reward_name": "air_time",
+      "weight_stages": [
+        {"step": 0, "weight": 2.0},
+        {"step": 24000, "weight": 5.0},
+      ],
+    },
+  )
+  cfg.curriculum["velocity_damper"] = CurriculumTermCfg(
+    func=mdp.velocity_damper_progress,
+    params={"start_step": 360000, "end_step": 612000},
+  )
+
+  # -- scene ---------------------------------------------------------------
+  ent = cfg.scene.entities["robot"]
+  ent.collisions[0].gap = dict(_P0_GAP)
+  cfg.scene.sensors = tuple(
+    s for s in cfg.scene.sensors if getattr(s, "name", None) not in PROXIMITY_SENSORS
+  )
+
+  # Knee effort limit 100 N.m, and the action scale that encodes it. The L/R
+  # split is representation only -- policy 0 had one `.*_KNEE_P` group, same
+  # velocity limits.
+  for act in ent.articulation.actuators:
+    if any("KNEE_P" in e for e in act.target_names_expr):
+      act.effort_limit = 100.0
+  scale = cfg.actions["joint_pos"].scale
   for j in ("L_KNEE_P", "R_KNEE_P"):
-    cfg.actions["joint_pos"].scale[j] = 0.0075
-
-  # Zero weight, so inert, but it keeps the baseline diff against policy 0 empty.
-  cfg.rewards["action_acc_l2"] = RewardTermCfg(func=mdp.action_acc_l2, weight=0.0)
+    scale.pop(j, None)
+  scale[r".*_KNEE_P"] = 0.0075
 
 
-EXTRA_EVENTS = ("actuator_gains", "link_com", "link_inertia", "sensor_bias")
-
-PROXIMITY_TERMS = (
-  "arm_torso_proximity", "knee_proximity", "leg_proximity",
-  "shoulder_body_proximity", "shoulder_chest_proximity", "wrist_thigh_proximity",
-)
-
-
-# --------------------------------------------------------------------------
-# Rungs. Each is baseline + this one deviation, so the cost of a change is
-# read directly rather than inferred from a run carrying all of them.
-
-
-def _obs246(cfg, full) -> None:
-  """5-step action history: observation 126 -> 246."""
-  cfg.observations["actor"].terms["actions"].history_length = 5
-
-
-def _knee(cfg, full) -> None:
-  """Knee effort limit 70 N.m instead of 100, through the action scale."""
-  for j in ("L_KNEE_P", "R_KNEE_P"):
-    cfg.actions["joint_pos"].scale[j] = 0.00525
-
-
-def _mirror(cfg, full) -> None:
-  """Handled in rl_cfg via mirror_enabled(); nothing to do on the env."""
+##
+# Rungs. Cumulative, one deviation each, so the cost of a change is read
+# directly rather than inferred from a run carrying all of them.
+##
 
 
 def _rand(cfg, full) -> None:
-  """The randomisation policy 0 did not have, at the softened values."""
+  """Domain randomisation and the sensor models it goes with.
+
+  Load-bearing for transfer, not just robustness margin: restoring these ranges
+  is what closed the train/play gap. First rung for that reason.
+  """
   for name in EXTRA_EVENTS:
     if name in full["events"]:
       cfg.events[name] = full["events"][name]
   cfg.events["reset_robot_joints"].params["position_range"] = (-0.05, 0.05)
 
+  actor = cfg.observations["actor"].terms
+  actor["base_lin_vel"].func = mdp.base_lin_vel_biased
+  actor["base_lin_vel"].noise = full["actor"]["base_lin_vel"].noise
+  actor["joint_pos"].params["biased"] = True
+  actor["joint_vel"].func = mdp.joint_vel_encoder_finite_difference
+  actor["joint_vel"].noise = None
+  actor["joint_vel"].params["encoder_noise"] = 5e-05
+  actor["projected_gravity"].func = mdp.projected_gravity_biased
+
+  critic = cfg.observations["critic"].terms
+  critic["joint_pos"].noise = None
+  critic["projected_gravity"].func = mdp.projected_gravity_biased
+
+
+def _obs(cfg, full) -> None:
+  """executed_action plus 5 frames of history: observation 126 -> 246.
+
+  The actuator carries hidden state (EMA, finite-difference qd*) and nothing in
+  policy 0's observation did. Required for the deployed stack to see what
+  training saw.
+  """
+  actor = cfg.observations["actor"].terms
+  actor["actions"].func = mdp.executed_action
+  actor["actions"].history_length = 5
+  critic = cfg.observations["critic"].terms
+  if "joint_torques" in full["critic"]:
+    critic["joint_torques"] = full["critic"]["joint_torques"]
+  if "foot_height_scan" in full["critic"]:
+    critic["foot_height_scan"] = full["critic"]["foot_height_scan"]
+
+
+def _knee(cfg, full) -> None:
+  """Knee effort limit 100 -> 70 N.m, with the matching action scale.
+
+  The real knee cannot do 100. Known suspect: at 70 the projection saturated at
+  91% and the policy traded advancing for cadence. Late in the ladder so
+  everything below it is already banked.
+  """
+  ent = cfg.scene.entities["robot"]
+  for act in ent.articulation.actuators:
+    if any("KNEE_P" in e for e in act.target_names_expr):
+      act.effort_limit = 70.0
+  scale = cfg.actions["joint_pos"].scale
+  scale.pop(r".*_KNEE_P", None)
+  for j in ("L_KNEE_P", "R_KNEE_P"):
+    scale[j] = 0.00525
+
 
 def _feet(cfg, full) -> None:
-  """The foot-reward recalibrations, as a block: they were tuned together."""
+  """Foot shaping, recalibrated as one block because it was tuned as one.
+
+  Drops min_foot_height -- the term that paid zero for standing and punished a
+  short lift -- and flat_touchdown, whose job the rewritten flat_support does.
+  """
   r = cfg.rewards
   r["flat_support"].weight = -11.0
-  r["flat_support"].params["command_name"] = "twist"
-  r["flat_support"].params["corner_tolerance"] = 0.001
   r["foot_clearance"].weight = -10.0
   r["foot_slip"].weight = -0.5
   r["impact_vel"].weight = -2.0
@@ -181,26 +391,58 @@ def _feet(cfg, full) -> None:
 
 
 def _prox(cfg, full) -> None:
-  """The six proximity terms, asked for as hardware protection."""
+  """Five proximity sensors and their penalties, plus the wider collision gap.
+
+  Hardware protection, matched to the QP's collision margins. The gap widening
+  goes here because it is what the sensors measure against.
+  """
+  # Restored whole rather than appended: the proximity sensors are interleaved
+  # with the scans and the manager keys observations by index.
+  cfg.scene.sensors = copy.deepcopy(full["sensors"])
   for name in PROXIMITY_TERMS:
     if name in full["rewards"]:
-      cfg.rewards[name] = full["rewards"][name]  # leg_proximity goes back to -2.0
+      cfg.rewards[name] = full["rewards"][name]  # leg_proximity goes to -2.0
+  cfg.scene.entities["robot"].collisions[0].gap = copy.deepcopy(full["gap"])
 
 
-def _angmom(cfg, full) -> None:
-  """angular_momentum -0.3 and ankle_roll_torque dropped."""
+def _pose(cfg, full) -> None:
+  """Looser pose targets, and the two objective softenings that came with them."""
+  cfg.rewards["pose"].params["std_walking"] = copy.deepcopy(
+    full["rewards"]["pose"].params["std_walking"]
+  )
   cfg.rewards["angular_momentum"].weight = -0.3
   cfg.rewards.pop("ankle_roll_torque", None)
+  cfg.rewards.pop("ankle_pitch_torque", None)
+
+
+def _mirror(cfg, full) -> None:
+  """Symmetry augmentation. Agent-side, via mirror_enabled(); no env change."""
+
+
+def _static(cfg, full) -> None:
+  """Drop policy 0's four curricula and hold rel_standing_envs at 0.4.
+
+  Last and most suspect: policy 0 walked with a tenth of the envs standing,
+  today's config holds four tenths, and air_time's weight and threshold reach
+  their end values at step 0 instead of ramping.
+  """
+  for name in ("standing_envs", "air_time", "air_time_weight", "velocity_damper"):
+    cfg.curriculum.pop(name, None)
+  cfg.commands["twist"].rel_standing_envs = 0.4
+  r = cfg.rewards
+  r["air_time"].weight = 5.0
+  r.pop("action_acc_l2", None)
 
 
 DELTAS = {
-  "obs246": _obs246,
-  "knee": _knee,
-  "mirror": _mirror,
   "rand": _rand,
+  "obs": _obs,
+  "knee": _knee,
   "feet": _feet,
   "prox": _prox,
-  "angmom": _angmom,
+  "pose": _pose,
+  "mirror": _mirror,
+  "static": _static,
 }
 
 
@@ -209,9 +451,17 @@ def apply_env(cfg: ManagerBasedRlEnvCfg) -> None:
   steps = selection()
   if steps is None:
     return
-  # Snapshot first: the rungs that re-add something restore it from here rather
-  # than redeclaring it, so a rung cannot drift from what the config really says.
-  full = {"rewards": copy.deepcopy(cfg.rewards), "events": copy.deepcopy(cfg.events)}
+  # Snapshot first: rungs that re-add something restore it from here rather
+  # than redeclaring it, so a rung cannot drift from what the config says.
+  full = {
+    "rewards": copy.deepcopy(cfg.rewards),
+    "events": copy.deepcopy(cfg.events),
+    "actor": copy.deepcopy(cfg.observations["actor"].terms),
+    "critic": copy.deepcopy(cfg.observations["critic"].terms),
+    "sensors": copy.deepcopy(cfg.scene.sensors),
+    "gap": copy.deepcopy(cfg.scene.entities["robot"].collisions[0].gap),
+  }
   _revert_to_policy0(cfg)
-  for step in steps[1:]:
-    DELTAS[step](cfg, full)
+  for step in LADDER:  # ladder order, not the order they were typed
+    if step in steps[1:]:
+      DELTAS[step](cfg, full)
