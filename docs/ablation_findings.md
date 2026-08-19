@@ -16,7 +16,27 @@ the runs concluded.
 | | **p0 v2** | 1.952 | 1.894 | 1.947 | 2.081 |
 | | p0 v1 | 3.152 | 3.018 | 3.019 | 2.953 |
 
-`stance_contacts_mean` matches to three decimals. The whole of v1's divergence
+At iteration 700 it lands within 1.5% of policy 0 on the metric that decides:
+
+| it700 | policy 0 | p0 v2 |
+|---|---|---|
+| `track_linear_velocity` | 2.492 | 2.456 |
+| `stance_contacts_mean` | 2.808 | 2.590 |
+| `air_time_mean` | 0.134 | 0.174 |
+| `torque_limit_ratio_mean` | 0.363 | 0.385 |
+| `error_vel_xy` | 0.266 | 0.275 |
+| `fell_down` | 0.003 | 0.001 |
+
+Same curriculum dip at iteration 600 and the same recovery. Torque demand runs
+~6% above policy 0, which is small but is the property the ladder exists to
+protect -- watch it as rungs stack.
+
+**`peak_height_mean` is not comparable across the two trees.** It comes from a
+`TerrainHeightSensor` whose ray origin is the `{prefix}_foot` site, and that site
+moved from z = -0.08 to -0.10 (the real sole plane) since July. Judge foot lift
+between rungs, all on today's code, never against policy 0.
+
+`stance_contacts_mean` matches to three decimals early on. The whole of v1's divergence
 was `flat_support.corner_tolerance = 0.001` in the baseline — counting foot
 corners by height inside a 1 mm band instead of by the solver's contact
 detection. Set to 0.0 and the reward is July's again.
