@@ -46,13 +46,21 @@ TASK = "Mjlab-Velocity-Flat-RHPS1"
 
 # The two that decide, then behaviour, then deployment feasibility.
 PRIMARY = ["Episode_Reward/track_linear_velocity", "Metrics/stance_contacts_mean"]
+# Ordered by what the robot is judged on: does it walk, are the actions
+# executable without the QP (policy 0's were), does the foot leave the ground,
+# does it follow the command. A rung that walks but pushes demand past the
+# effort limit is not an improvement -- that is the property being protected.
 SECONDARY = [
-  "Metrics/progress_ratio",
-  "Metrics/sole_height_p90",
-  "Metrics/foot_vel_max",
-  "Metrics/air_time_mean",
-  "Episode_Termination/fell_down",
   "Metrics/torque_limit_ratio_mean",
+  "Metrics/torque_limit_ratio_max",
+  "Metrics/sole_height_p90",
+  "Metrics/peak_height_mean",
+  "Metrics/air_time_mean",
+  "Metrics/foot_vel_max",
+  "Metrics/progress_ratio",
+  "Metrics/progress_walking_frac",
+  "Metrics/twist/error_vel_xy",
+  "Episode_Termination/fell_down",
   "Train/mean_episode_length",
   "Policy/mean_std",
 ]

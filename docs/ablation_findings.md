@@ -80,3 +80,54 @@ So was the plant — the actuator and foot-geometry comparisons in the v1 sectio
 still hold and remain useful.
 
 Rungs 1-8 can now be read.
+
+## Complementary studies, after the ladder
+
+The ladder answers "which deviation costs the gait". These answer "what should
+the objective actually be", and each needs its own run rather than a rung.
+
+### 1. `flat_support.corner_tolerance` and its weight
+
+Counting foot corners by relative height inside a 1 mm band, rather than by
+whether the solver reported a contact, is the better measurement: the sole is
+parallel to the ground to within 16 um in the default pose, yet only 2.15 of 4
+corners registered — 130 um of toe-versus-heel offset per milliradian of ankle
+pitch lifts two clear of the solver threshold, so the old term was measuring
+solver luck.
+
+It is neutralised in the `p0` baseline because policy 0 had no such behaviour,
+and restored by the `feet` rung. But the tolerance mechanically *shrinks* the
+penalty, so the weight carried alongside it no longer means what it did. The
+study is a weight sweep at fixed tolerance, judged on
+`Metrics/flat_support_contacts_mean` and `Metrics/peak_height_mean` together:
+the point is a flat sole at touchdown that still lifts.
+
+Do not compare `Train/mean_reward` across a tolerance change — the two runs are
+on different reward scales from iteration 0.
+
+### 2. Two real-robot defects with no metric
+
+Measured on hardware, both currently invisible to every logged quantity:
+
+- the robot stands too far back on its heels
+- it cannot walk backwards without falling immediately
+
+`Metrics/twist/error_vel_xy` aggregates over all directions and hides both. What
+is needed:
+
+- **per-direction tracking error**, at least `vx < 0` split from `vx > 0`, so a
+  policy that only walks forward stops reading as a policy that tracks the
+  command
+- **a support/posture metric** — base pitch, or the centre of pressure's position
+  along the foot, so "on the heels" becomes a number
+
+Add them as metrics terms (inert, logging only), then re-read the surviving
+checkpoints. Adding them mid-ladder would change what every rung is compared
+against, so they wait.
+
+### 3. Feasibility without the QP
+
+Policy 0's commands were executable by the robot *without* the QP, and that is
+the property the ladder is protecting, not just walking. `torque_limit_ratio_mean`
+and `_max` are recorded for every rung. A rung that buys motion by spending
+torque headroom is a regression even if it walks better.
