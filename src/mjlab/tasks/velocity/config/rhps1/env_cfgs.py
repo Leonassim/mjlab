@@ -456,7 +456,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   # The only term that says which way to move to fix a bad standing posture;
   # everything else about standing is a verdict, not a direction.
-  cfg.rewards["pose"].weight = 1.5
+  # 0.5, celui de policy 0 (etait 1.5): +1.29 realise contre +0.44 chez elle,
+  # soit 0.86 de recompense versee pour rester dans la posture nominale.
+  cfg.rewards["pose"].weight = 0.5
   cfg.rewards["pose"].params["command_name"] = "twist"
   cfg.rewards["pose"].params["walking_threshold"] = 0.05
   cfg.rewards["pose"].params["running_threshold"] = 1.5
@@ -734,7 +736,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["body_ang_vel"].weight = -0.5
   # Arm swing / torso counter-rotation is also how the stance leg and upper
   # body balance through a stride, not just unwanted spin.
-  cfg.rewards["angular_momentum"].weight = -0.1
+  # -0.3 (policy 0: -0.2, puis -0.1 sans raison liee a l objectif). C est le
+  # terme anti-oscillation, on le veut plus fort, pas plus faible.
+  cfg.rewards["angular_momentum"].weight = -0.3
   cfg.rewards["angular_momentum"].params["sensor_name"] = "robot/root_angmom"
   cfg.rewards["dof_pos_limits"].weight = -1.0
   # One consolidated torque term instead of three overlapping ones. Ankles
@@ -774,7 +778,8 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
   cfg.rewards["foot_slip"].func = mdp.split_feet_slip
-  cfg.rewards["foot_slip"].weight = -28.0
+  # -0.5 (etait -28.0, meme fonction et memes params que policy 0 a -0.3).
+  cfg.rewards["foot_slip"].weight = -0.5
   cfg.rewards.pop("action_acc_l2", None)
   
   # Smoothness is two terms, not five: action_jerk (second difference, so an
@@ -969,7 +974,9 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.events["actuator_gains"] = EventTermCfg(
     func=mdp.randomize_actuator_gains,
     mode="reset",
-    params={"stiffness_range": (0.85, 1.15), "damping_range": (0.85, 1.15)},
+    # +/-5% (etait +/-15%): on cherche d abord a retrouver la marche, la marge
+    # de robustesse vient apres.
+    params={"stiffness_range": (0.95, 1.05), "damping_range": (0.95, 1.05)},
   )
 
   # Reverted to the 2026-08-12 value (2026-08-16): the tightened +/-0.005 was
@@ -1234,6 +1241,11 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
     "standing_base_motion",
   ):
     cfg.rewards.pop(name, None)
+
+  # push_base retire pour l instant: pousser le robot a +/-0.4 m/s pendant qu il
+  # essaie encore d apprendre a tenir debout est le plus dur des cinq evenements
+  # ajoutes, et policy 0 n en avait aucun. A remettre une fois la marche acquise.
+  cfg.events.pop("push_base", None)
 
   # Popping action_jerk left the objective with NO smoothness term at all: the
   # v9 branch above had already popped policy 0's three, action_jerk being their
