@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Rungs 4-8 on the +rand base. Both obs and knee are out, for the same reason:
-# each stops the robot advancing, so stacking on top of one measures nothing.
+# One rung at a time on the +rand base, no longer cumulative.
 #
-#   obs   bundles three changes and feeds back executed_action without the
-#         torque projection it was validated with
-#   knee  effort 100 -> 70 N.m: the leg cannot flex enough to walk, so the
-#         policy locks it straight and stands on its toes (1.60 of 4 corners
-#         in contact, foot speed 7x down, progress 0.006 against 0.232
-#         commanded). This is a hardware constraint, not a rung to accept or
-#         reject -- the objective has to be adapted to it separately.
+# Cumulative stacking assumed rungs would survive. Three of four did not, and
+# each failure invalidates everything above it -- three restarts in one night.
+# With a majority failing, one-at-a-time is the design that actually attributes:
+# every run differs from +rand by exactly one block.
+#
+#   obs   pulled: bundles three changes, and executed_action is fed back without
+#         the torque projection it was validated with
+#   knee  pulled: 70 N.m gives a statue on tiptoe. A hardware constraint to
+#         design around, not a rung to accept or reject
+#   feet  pulled: plants both feet flat and stops lifting -- stance_contacts 3.79
+#         of 4, foot lift down 65%. This is the current config's own failure
+#         signature, reproduced from one block
 set -u
 cd /home/lmoussafir/mjlab-rhps1 || exit 1
 exec .venv/bin/python scripts/tools/ablation_series.py \
-  p0+rand+feet \
-  p0+rand+feet+prox \
-  p0+rand+feet+prox+pose \
-  p0+rand+feet+prox+pose+mirror \
-  p0+rand+feet+prox+pose+mirror+static
+  p0+rand+prox \
+  p0+rand+pose \
+  p0+rand+mirror \
+  p0+rand+static

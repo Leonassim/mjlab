@@ -252,3 +252,52 @@ rungs on the `+rand` base:
 rung no longer reconstructs today's configuration, so the third assertion in
 `check_ablation_ladder.py` is now a statement about the *definitions*, not about
 what was run.
+
+## Rung 4 — `+rand+feet`, run `2026-08-20_02-01-05` — **this is the current config's failure**
+
+| it700 | +rand | +rand+feet | |
+|---|---|---|---|
+| `stance_contacts_mean` | 2.577 | **3.793** | +47% |
+| `flat_support_contacts_mean` | 2.585 | 3.833 | +48% |
+| `sole_height_p90` | 0.0078 | 0.0035 | −55% |
+| `peak_height_mean` | 0.0019 | 0.0007 | −65% |
+| `progress_speed` | 0.149 | 0.049 | −67% |
+| `track_linear_velocity` | 2.675 | 1.728 | −35% |
+| `foot_vel_max` | 1.045 | 0.737 | −30% |
+| `air_time_mean` | 0.128 | 0.134 | normal |
+| `fell_down` | 0.0044 | 0.0000 | never falls |
+
+A different failure from `knee`'s: the feet stay **flat on the ground**, all four
+corners, and the robot shuffles without lifting. `stance_contacts_mean` 3.79 of 4
+is the exact signature recorded at the start of this investigation for the runs
+that would not walk ("1.95 and 3.6-3.8"). One block of the config reproduces it.
+
+`air_time_mean` is normal here, which separates this failure from the tiptoe one
+and confirms the 3.2-3.5 s reading is specific to that other mode.
+
+**The mechanism is the one Léo predicted.** `corner_tolerance = 0.001` makes the
+corner count generous, which mechanically shrinks the `flat_support` penalty, so
+the weight was raised −2.4 → −11 to compensate. Together they overshoot: keeping
+four corners down becomes worth more than stepping, and the policy stops lifting.
+The tolerance is the better measurement; the weight that belongs with it has not
+been found yet. That pairing is the first complementary study, and it now has a
+measured failure to calibrate against.
+
+The block also carries seven other changes (foot_clearance −4 → −10, impact_vel
+−0.5 → −2, standing_single_support −4 → −6, foot_slip −0.3 → −0.5, air_time
+power 2 → 1 and touchdown_cost 0.15 → 0, and dropping `min_foot_height` and
+`flat_touchdown`), so `flat_support` is the leading suspect, not a proven one.
+Splitting it is the natural follow-up.
+
+## Method correction: cumulative was the wrong design here
+
+Three of the first four rungs fail, and each failure invalidates everything
+stacked on top — three restarts in one night. The chain now runs **one rung at a
+time on the `+rand` base**, so every run differs from a walking configuration by
+exactly one block:
+
+    p0+rand+prox, p0+rand+pose, p0+rand+mirror, p0+rand+static
+
+Cumulative made sense when the expectation was that most rungs would survive and
+the ladder would end on today's configuration. With a majority failing, clean
+attribution is worth more than reaching the endpoint.
