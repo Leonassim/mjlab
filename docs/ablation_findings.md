@@ -233,12 +233,22 @@ not the other way round. Left out of the remaining chain for the same reason as
 Note the rung bundles two changes, effort limit and action scale, so which of
 the two costs the gait is still open.
 
-**Unresolved and worth chasing:** `air_time_mean` reads 3.45 s while the contact
-metrics say both feet are on the ground and nearly motionless. Those two cannot
-both be right. The same 3.2-3.5 s reading appears in every failing run
-(`p0` v1, `+obs`, `+rand+knee`) and never in a walking one, so it is a reliable
-alarm — but until the contradiction is explained it should not be read as
-literal air time.
+**Resolved — `air_time_mean` is a conditional mean, and I was reading it wrong.**
+`rewards.py:534` divides by the number of feet *currently airborne*, not by the
+number of feet:
+
+    foot_air_time = max(split_air, dim=2) * foot_in_air
+    mean_air_time = sum(foot_air_time) / clamp(sum(foot_in_air), min=1.0)
+
+So 3.45 s does not mean "feet spend 3.45 s in the air". It means "on the rare
+occasions a foot is airborne, it stays up 3.45 s". That is fully consistent with
+both feet planted and nearly motionless: the robot almost never lifts, and when
+it does, the foot does not come back down. No contradiction, and the reading is a
+genuine alarm — **a foot that leaves the ground and does not land**.
+
+This also explains why `+rand+feet` shows a normal 0.134: there the feet do land,
+every stride, they simply do not lift high. Two different failures, and the metric
+separates them correctly.
 
 ## Ladder structure, revised
 
