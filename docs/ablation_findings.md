@@ -3,9 +3,28 @@
 Results live in `logs/ablation_results.md`, which is gitignored. This keeps what
 the runs concluded.
 
-## Rung 0 — `p0`, 2026-08-19, run `2026-08-19_18-49-41`
+## Rung 0 — `p0`
 
-**Verdict: broken. The regression is in the code, not the configuration.**
+### v2, run `2026-08-19_21-25-37` — **tracks policy 0. Baseline is sound.**
+
+| iteration | | 50 | 100 | 150 | 200 |
+|---|---|---|---|---|---|
+| `air_time_mean` | policy 0 | 0.484 | 1.027 | 0.724 | 0.595 |
+| | **p0 v2** | 0.496 | 1.049 | 0.857 | 0.691 |
+| | p0 v1 | 0.544 | 1.410 | 1.825 | 2.321 |
+| `stance_contacts_mean` | policy 0 | 1.953 | 1.892 | 1.968 | 2.100 |
+| | **p0 v2** | 1.952 | 1.894 | 1.947 | 2.081 |
+| | p0 v1 | 3.152 | 3.018 | 3.019 | 2.953 |
+
+`stance_contacts_mean` matches to three decimals. The whole of v1's divergence
+was `flat_support.corner_tolerance = 0.001` in the baseline — counting foot
+corners by height inside a 1 mm band instead of by the solver's contact
+detection. Set to 0.0 and the reward is July's again.
+
+### v1, run `2026-08-19_18-49-41` — **superseded, the verdict below was wrong**
+
+Read it as a record of how the baseline was wrong, not of the code being wrong.
+The conclusion it reached — quoted next — does not hold.
 
 Policy 0's exact configuration on today's tree diverges from policy 0 itself,
 while `mjlab-p0` (July code, same configuration) tracks it to three decimals.
@@ -47,16 +66,17 @@ behavioural one, and it means **the `stance <= 3.0` half of the verdict rule is
 on a scale that moved**; `track_linear_velocity` is the half that stayed
 comparable. Behavioural divergence starts separately, around iteration 100.
 
-### Next test
+### Why v1 was wrong, and what the method missed
 
-Net diff on `src/mjlab/sensor/` between the two trees is one file, 19 lines:
-`contact_sensor.py`, where air time changes from differencing the float32 sim
-clock to accumulating the exact substep dt (upstream `ddc5e853`). Port that file
-alone into `mjlab-p0` and run ~400 iterations:
+The env.yaml diff records only what a `RewardTermCfg` sets explicitly, so a
+signature default that changed since July is invisible to it. Five parameters
+passed through that hole. Comparing *effective* parameters — explicit config
+plus the defaults in play — finds them; that comparison is now the check that
+matters, not the yaml diff alone.
 
-- air time climbs toward 3 s → the contact sensor is the cause, one file
-- air time stays near 0.21 → the sensor is innocent; bisect the nine rewritten
-  reward functions instead
+`contact_sensor.py` was the leading suspect and is innocent: the sensor change
+(upstream `ddc5e853`, accumulating the exact substep dt) never had to be tested.
+So was the plant — the actuator and foot-geometry comparisons in the v1 section
+still hold and remain useful.
 
-Until this is resolved, rungs 1-8 are built on a baseline that does not walk and
-measure nothing.
+Rungs 1-8 can now be read.
