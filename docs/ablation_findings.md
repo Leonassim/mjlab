@@ -311,3 +311,47 @@ exactly one block:
 Cumulative made sense when the expectation was that most rungs would survive and
 the ladder would end on today's configuration. With a majority failing, clean
 attribution is worth more than reaching the endpoint.
+
+## Rungs 5-8, isolated on `+rand`
+
+All at iteration 700, each differing from `+rand` by one block.
+
+| | `+rand` | `+prox` | `+pose` | `+mirror` | `+static` |
+|---|---|---|---|---|---|
+| `track_linear_velocity` | 2.675 | 2.474 | 2.727 | 2.539 | 2.032 |
+| `progress_speed` | 0.149 | 0.128 | 0.156 | 0.134 | **0.025** |
+| `torque_limit_ratio_mean` | 0.356 | 0.345 | **0.412** | 0.346 | **0.473** |
+| `peak_height_mean` | 0.0019 | 0.0014 | 0.0013 | 0.0016 | 0.0007 |
+| `stance_contacts_mean` | 2.577 | 3.077 | 2.311 | 2.780 | 1.796 |
+| `fell_down` | 0.0044 | 0.0104 | 0.0141 | 0.0049 | **0.0931** |
+
+**`+prox` — a trade, not a defect.** Walks, but lifts a quarter less and drifts
+toward flat feet (3.08). Hardware protection paid for in stride amplitude; torque
+is slightly better. A decision to take, not a bug to fix.
+
+**`+pose` — reject.** +1.9% speed for **+15.8% torque demand**. On walking alone
+it would have been kept; on the feasibility criterion it fails. The foot also
+lifts 35% less while air time doubles — a softer step, not a longer one. The
+`pose` reward itself is unchanged (0.484 → 0.486), so the policy pays the same
+price for a looser posture.
+
+**`+mirror` — insurance against a risk that is not present here.** It works:
+foot-speed asymmetry 0.51% → 0.03%, seventeen times more symmetric. But 0.51% was
+already symmetric, and the mirror loss was introduced against one-leg gaits with
+foot-speed ratios of 1.5-1.8; this is 1.005. Costs 10% progress and 17% foot
+lift. Leave it off for now, keep it available — not a rejection like `pose`.
+
+**`+static` — the worst rung, and the only one that makes the robot fall.**
+Progress down 83%, torque demand up 33%, falls up **21x** to 9.3%. It drops the
+four curricula and holds `rel_standing_envs` at 0.4 where policy 0 fell to 0.1 —
+four times as many environments told to stand still — and gives `air_time` its
+full weight of 5.0 from step 0 instead of ramping 2 → 5. `air_time_mean` 1.08
+puts it in the "foot lifts and does not land" mode: the landing bonus is worth
+too much too early, so the foot goes up to collect it.
+
+## Summary
+
+One rung of eight improves without a counterpart. Four break walking. The current
+configuration did not drift by accumulating small costs — it carries two blocks
+that break it outright (`feet`, `static`), one hardware constraint that breaks it
+(`knee`), and a set of changes ranging from neutral to unfavourable.
