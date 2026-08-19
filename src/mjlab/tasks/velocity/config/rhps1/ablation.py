@@ -71,8 +71,20 @@ def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
   r["impact_vel"].weight = -0.5
   r["impact_vel"].params["limit"] = 0.1
   r["standing_single_support"].weight = -4.0
-  r["air_time"].params.pop("power", None)
-  r["air_time"].params.pop("touchdown_cost", None)
+  # Policy 0's air_time: weight 2.0, power 2.0, touchdown_cost 0.15. All three
+  # were "restored" to 5.0 / 1.0 / 0.0 on 2026-08-18 against run 13-52-54, which
+  # is not policy 0 -- the deployed ONNX matches 20-59-17 byte for byte.
+  r["air_time"].weight = 2.0
+  r["air_time"].params["power"] = 2.0
+  r["air_time"].params["touchdown_cost"] = 0.15
+
+  r["leg_proximity"].weight = -1.0
+  r["leg_proximity"].params["min_dist"] = 0.01
+
+  r["ankle_pitch_torque"] = RewardTermCfg(
+    func=mdp.joint_effort_l2, weight=-0.0002,
+    params={"actuator_pattern": r"^[LR]_ANKLE_P$", "asset_cfg": SceneEntityCfg("robot")},
+  )
 
   # Terms policy 0 carried that were dropped since. min_foot_height is the one
   # that paid zero for standing and punished a short lift -- restored anyway:
@@ -96,7 +108,8 @@ def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
   )
 
   for name in PROXIMITY_TERMS:
-    r.pop(name, None)
+    if name != "leg_proximity":  # policy 0 carried this one, at -1.0
+      r.pop(name, None)
 
   for name in EXTRA_EVENTS:
     cfg.events.pop(name, None)
@@ -171,7 +184,7 @@ def _prox(cfg, full) -> None:
   """The six proximity terms, asked for as hardware protection."""
   for name in PROXIMITY_TERMS:
     if name in full["rewards"]:
-      cfg.rewards[name] = full["rewards"][name]
+      cfg.rewards[name] = full["rewards"][name]  # leg_proximity goes back to -2.0
 
 
 def _angmom(cfg, full) -> None:

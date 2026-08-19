@@ -1,8 +1,10 @@
 """Run the policy 0 ablation ladder, one rung at a time.
 
-Each rung trains from scratch to TARGET_IT and is then stopped: policy 0 was
-already single-support by iteration 600 while the runs carrying every deviation
-sat at 3.85, so the discriminator lands within the hour rather than overnight.
+Each rung trains from scratch to TARGET_IT and is then stopped: policy 0 (run
+2026-07-10_20-59-17, the run whose ONNX is the deployed one) reached
+track_linear_velocity 2.38 by iteration 600 and 3.09 later, while the runs
+carrying every deviation plateau at 1.95. The discriminator lands within the
+hour rather than overnight.
 
   uv run python scripts/tools/ablation_series.py                  # full ladder
   uv run python scripts/tools/ablation_series.py p0 p0+feet       # a subset
@@ -127,8 +129,9 @@ def write_results(rows: list[dict]) -> None:
   cols = ["ablation", "status", "stance_contacts_mean", "progress_ratio", "sole_height_p90",
           "track_linear_velocity", "mean_episode_length", "mean_std", "minutes", "run"]
   lines = [f"# Ablation depuis policy 0 -- mesure a l'iteration {TARGET_IT}", "",
-           "Reference policy 0 a l'iteration 600 : stance_contacts_mean = 2.33.",
-           "4 = les deux pieds au sol en permanence.", "",
+           "Policy 0 = run 2026-07-10_20-59-17 (son ONNX est celui deploye, md5 identique).",
+           "Ses reperes : it600 track_linear_velocity 2.38 / stance 2.80 ;",
+           "regime etabli 3.09 / 3.06. Les runs qui echouent plafonnent a 1.95 / 3.6-3.8.", "",
            "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
   for r in rows:
     lines.append("| " + " | ".join(str(r.get(c, "-")) for c in cols) + " |")
