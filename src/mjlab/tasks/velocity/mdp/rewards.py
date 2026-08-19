@@ -2392,3 +2392,94 @@ def raw_torque_peak_penalty(
         _parts, dim=1
       ).mean()
   return torch.sum(excess, dim=1)
+
+# --- Restored from eb2d9e4c^ for the policy 0 ablation baseline ---
+# Both were deleted as dead code when their terms were dropped. Policy 0 is
+# the only configuration that walked, so reproducing it needs them back.
+
+def swing_foot_height(
+  env: ManagerBasedRlEnv,
+  min_height: float,
+  sensor_name: str | None = None,
+  command_name: str | None = None,
+  command_threshold: float = 0.05,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize swing feet below min_height every step.
+
+  When sensor_name is provided, only penalizes feet that are NOT in contact
+  (i.e. in the swing phase), leaving the stance foot untouched.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
+  deficit = torch.clamp(min_height - foot_z, min=0.0)  # [B, N]
+  if sensor_name is not None:
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    in_air = (contact_sensor.data.found == 0).float()  # [B, N]
+    deficit = deficit * in_air
+  cost = torch.sum(deficit, dim=1)  # [B]
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      active = (total_command > command_threshold).float()
+      cost = cost * active
+  return cost
+
+
+def flat_touchdown_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  required_contacts_per_foot: int = 4,
+  command_name: str | None = None,
+  command_threshold: float = 0.0,
+) -> torch.Tensor:
+  """Penalize touchdowns that do not land with a flat foot.
+
+  For each foot, if any split contact slot registers a first-contact event on the
+  current step, the touchdown is considered active for that foot. The penalty is
+  then based on how many of the four split contact zones are touching at that
+  touchdown instant. This enforces a flat landing rather than heel-first or
+  toe-first roll-over.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  found = sensor.data.found
+  if found is None:
+    raise RuntimeError(
+      "Contact sensor must provide 'found' for flat touchdown penalty."
+    )
+  if found.shape[1] < 8:
+    raise RuntimeError("flat_touchdown_penalty expects 8 split foot contacts.")
+
+  first_contact = sensor.compute_first_contact(dt=env.step_dt)
+  contacts = (found[:, :8] > 0).float().view(found.shape[0], 2, 4)
+  contact_count = torch.sum(contacts, dim=2)  # [B, 2]
+
+  touchdown = torch.stack(
+    (
+      torch.any(first_contact[:, :4], dim=1),
+      torch.any(first_contact[:, 4:8], dim=1),
+    ),
+    dim=1,
+  ).float()
+
+  required_contacts = float(required_contacts_per_foot)
+  deficit = torch.clamp(required_contacts - contact_count, min=0.0) / max(
+    required_contacts, 1.0
+  )
+  cost = torch.sum(torch.square(deficit) * touchdown, dim=1)
+
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    total_command = linear_norm + angular_norm
+    cost = cost * (total_command > command_threshold).float()
+
+  env.extras["log"]["Metrics/flat_touchdown_contacts_mean"] = torch.sum(
+    contact_count * touchdown
+  ) / torch.clamp(torch.sum(touchdown), min=1.0)
+  return cost

@@ -5,6 +5,7 @@ import os
 from mjlab.asset_zoo.robots import RHPS1_ACTION_SCALE, get_rhps1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
+from mjlab.tasks.velocity.config.rhps1 import ablation
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.metrics_manager import MetricsTermCfg
@@ -1391,6 +1392,9 @@ def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if jv is not None and "encoder_noise" in jv.params:
       jv.params["encoder_noise"] = 0.0
 
+  # Ablation ladder, no-op unless RHPS1_ABLATION is set. Applied last so it sees
+  # the finished configuration and nothing downstream can undo it.
+  ablation.apply_env(cfg)
   return cfg
 
 

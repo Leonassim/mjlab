@@ -5,6 +5,7 @@ from mjlab.rl import (
   RslRlOnPolicyRunnerCfg,
 )
 from mjlab.tasks.velocity.config.rhps1.rl_ext import RhpsPpoAlgorithmCfg
+from mjlab.tasks.velocity.config.rhps1 import ablation
 
 
 def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
@@ -57,7 +58,7 @@ def rhps1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
           "mjlab.tasks.velocity.config.rhps1.rl_ext:rhps1_mirror"
         ),
         "use_data_augmentation": False,
-        "use_mirror_loss": True,
+        "use_mirror_loss": ablation.mirror_enabled(),
         "mirror_loss_coeff": 1.0,
       },
       class_name="mjlab.tasks.velocity.config.rhps1.rl_ext:TorqueGuidedPPO",
