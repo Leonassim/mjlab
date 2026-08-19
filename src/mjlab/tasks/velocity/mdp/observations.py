@@ -435,7 +435,10 @@ _SENSOR_BIAS_ATTR = "_rhps1_sensor_bias"
 
 
 def _apply_bias(env: ManagerBasedRlEnv, key: str, value: torch.Tensor) -> torch.Tensor:
-  """Add this episode's constant bias, if any."""
+  """Apply this episode's relative gain error and constant bias, if any."""
+  scale = getattr(env, "_rhps1_sensor_scale", {}).get(key)
+  if scale is not None:
+    value = value * (1.0 + scale)
   bias = getattr(env, _SENSOR_BIAS_ATTR, {}).get(key)
   return value if bias is None else value + bias
 

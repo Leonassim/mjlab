@@ -1046,10 +1046,12 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     func=mdp.randomize_sensor_bias,
     mode="reset",
     params={
-      "bias_ranges": {
-        "base_lin_vel": (-0.05, 0.05),
-        "projected_gravity": (-0.01, 0.01),
-      }
+      # base_lin_vel: relative, +/-5%. The robot's estimator is filtered to zero
+      # at standstill, so its error is a gain error, not an offset -- an additive
+      # bias would have it report motion while the robot is still.
+      # projected_gravity: no perturbation. The estimated attitude agrees with
+      # the encoders to 0.12 deg, there is nothing to model.
+      "scale_ranges": {"base_lin_vel": (-0.05, 0.05)},
     },
   )
 
@@ -1175,11 +1177,16 @@ def _apply_policy0_baseline(cfg: ManagerBasedRlEnvCfg) -> None:
   # foot reaches, the delta is constant and the term degenerates into a tax on
   # foot speed. The weight here is extrapolated, not measured: check
   # Episode_Reward/foot_clearance at the first milestone.
+  # target_height back to policy 0's 0.15 (was 0.04). The cost is
+  # |foot_z - target| * |horizontal foot speed|, an absolute value, so the target
+  # is not a floor: at 0.04 the term punished lifting ABOVE 4 cm, weighted 8.75x
+  # harder than policy 0. The term meant to raise the feet was set to keep them
+  # low. Weight -10, between policy 0's -4 and the -35 that went with 0.04.
   cfg.rewards["foot_clearance"] = RewardTermCfg(
     func=mdp.feet_clearance_velocity_weighted,
-    weight=-35.0,
+    weight=-10.0,
     params={
-      "target_height": 0.04,
+      "target_height": 0.15,
       "command_name": "twist",
       "command_threshold": 0.05,
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),

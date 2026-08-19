@@ -90,6 +90,7 @@ def randomize_sensor_bias(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | None,
   bias_ranges: dict[str, tuple[float, float]] | None = None,
+  scale_ranges: dict[str, tuple[float, float]] | None = None,
 ) -> None:
   """Draw a sensor bias held constant over an episode, per environment.
 
@@ -103,7 +104,9 @@ def randomize_sensor_bias(
   known = {"base_lin_vel": 3, "projected_gravity": 3, "base_ang_vel": 3}
   if bias_ranges is None:
     bias_ranges = {}
-  unknown = set(bias_ranges) - set(known)
+  if scale_ranges is None:
+    scale_ranges = {}
+  unknown = (set(bias_ranges) | set(scale_ranges)) - set(known)
   if unknown:
     raise ValueError(
       f"randomize_sensor_bias: unknown keys {sorted(unknown)}. "
@@ -123,6 +126,22 @@ def randomize_sensor_bias(
     if tensor is None:
       tensor = torch.zeros((env.num_envs, dim), device=env.device)
       store[key] = tensor
+    tensor[env_ids] = torch.empty(
+      (len(env_ids), dim), device=env.device
+    ).uniform_(lo, hi)
+
+  # Relative error, applied as value * (1 + scale). An estimator whose output is
+  # filtered to zero at standstill has a gain error, not an offset: an additive
+  # bias would make it report motion while the robot is still.
+  sstore: dict[str, torch.Tensor] = getattr(env, "_rhps1_sensor_scale", {})
+  if not hasattr(env, "_rhps1_sensor_scale"):
+    env._rhps1_sensor_scale = sstore
+  for key, (lo, hi) in scale_ranges.items():
+    dim = known[key]
+    tensor = sstore.get(key)
+    if tensor is None:
+      tensor = torch.zeros((env.num_envs, dim), device=env.device)
+      sstore[key] = tensor
     tensor[env_ids] = torch.empty(
       (len(env_ids), dim), device=env.device
     ).uniform_(lo, hi)
