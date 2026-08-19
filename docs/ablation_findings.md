@@ -204,3 +204,51 @@ Precedent also says not to call this one at 700: the July version read
 Carrying `obs` through the six remaining rungs would contaminate every verdict,
 so the chain was restarted on the `+rand` base. `obs` gets its own run
 afterwards, split into its three parts and long enough to see a recovery.
+
+## Rung 3 — `+rand+knee`, run `2026-08-20_00-52-02` — **breaks walking**
+
+Knee effort limit 100 → 70 N·m, with the action scale from 0.0075 to 0.00525.
+
+| it700 | +rand | +rand+knee |
+|---|---|---|
+| `progress_speed` (commanded 0.232) | 0.149 | **0.006** |
+| `left_foot_marker_speed` | 0.174 | 0.025 |
+| `right_foot_marker_speed` | 0.173 | 0.024 |
+| `flat_support_contacts_mean` | 2.586 | 1.604 |
+| `track_linear_velocity` | 2.674 | 1.332 |
+| `sole_height_p90` | 0.0078 | 0.0091 |
+
+The video settles it: legs straight and held together, robot planted on the
+front of its feet, not walking. `flat_support_contacts_mean` at 1.60 of 4 says
+only the toe corners touch. Both feet are symmetric and 7x slower than `+rand`,
+so this is not a foot parked in the air — it is a statue on tiptoe, the failure
+mode `ankle_pitch_torque` was added to discourage.
+
+This reproduces the July finding that the knee ceiling costs translation, this
+time cleanly. **It is a hardware constraint, not a rung to accept or reject**:
+the real knee cannot deliver 100 N·m, so the objective has to be adapted to 70,
+not the other way round. Left out of the remaining chain for the same reason as
+`obs` -- stacking on a base that does not walk measures nothing.
+
+Note the rung bundles two changes, effort limit and action scale, so which of
+the two costs the gait is still open.
+
+**Unresolved and worth chasing:** `air_time_mean` reads 3.45 s while the contact
+metrics say both feet are on the ground and nearly motionless. Those two cannot
+both be right. The same 3.2-3.5 s reading appears in every failing run
+(`p0` v1, `+obs`, `+rand+knee`) and never in a walking one, so it is a reliable
+alarm — but until the contradiction is explained it should not be read as
+literal air time.
+
+## Ladder structure, revised
+
+Cumulative stacking assumed each rung would survive. Two do not, and each one
+that fails invalidates everything above it. The chain now runs the remaining
+rungs on the `+rand` base:
+
+    p0+rand+feet → +prox → +pose → +mirror → +static
+
+`obs` and `knee` become their own studies. The consequence is that the final
+rung no longer reconstructs today's configuration, so the third assertion in
+`check_ablation_ladder.py` is now a statement about the *definitions*, not about
+what was run.
