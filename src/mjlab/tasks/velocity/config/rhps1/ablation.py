@@ -60,9 +60,12 @@ def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
   r = cfg.rewards
 
   r["angular_momentum"].weight = -0.2
+  # Weight only. flat_support_penalty was a plain function in July and is a
+  # three-component class now, with command_name required, so policy 0's params
+  # cannot be restored -- and would not restore its behaviour if they could.
+  # One of the nine reward functions rewritten since; see the note in
+  # apply_env on what this baseline can and cannot reproduce.
   r["flat_support"].weight = -2.4
-  r["flat_support"].params.pop("command_name", None)
-  r["flat_support"].params.pop("corner_tolerance", None)
   r["foot_clearance"].weight = -4.0
   r["foot_slip"].weight = -0.3
   r["impact_vel"].weight = -0.5
@@ -88,7 +91,8 @@ def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   r["ankle_roll_torque"] = RewardTermCfg(
     func=mdp.joint_effort_l2, weight=-0.002,
-    params={"actuator_pattern": r"^[LR]_ANKLE_R$"},
+    params={"actuator_pattern": r"^[LR]_ANKLE_R$",
+            "asset_cfg": SceneEntityCfg("robot")},
   )
 
   for name in PROXIMITY_TERMS:
