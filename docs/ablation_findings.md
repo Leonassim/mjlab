@@ -151,3 +151,56 @@ Policy 0's commands were executable by the robot *without* the QP, and that is
 the property the ladder is protecting, not just walking. `torque_limit_ratio_mean`
 and `_max` are recorded for every rung. A rung that buys motion by spending
 torque headroom is a regression even if it walks better.
+
+## Rung 1 — `+rand`, run `2026-08-19_22-31-51` — **keep**
+
+Better on every criterion, at iteration 700 against the `p0` v2 baseline:
+
+| | p0 v2 | +rand | |
+|---|---|---|---|
+| `track_linear_velocity` | 2.454 | 2.675 | +9.0% |
+| `torque_limit_ratio_mean` | 0.385 | 0.356 | **−7.6%** |
+| `sole_height_p90` | 0.0071 | 0.0078 | +10.0% |
+| `peak_height_mean` | 0.0015 | 0.0019 | +27.9% |
+| `progress_ratio` | 0.542 | 0.628 | +15.9% |
+| `error_vel_xy` | 0.276 | 0.227 | −17.7% |
+| `air_time_mean` | 0.174 | 0.128 | −26.8% |
+| `fell_down` | 0.0009 | 0.0044 | +363% |
+
+Randomisation does not spend torque headroom, it returns some: demand falls 7.6%
+while speed rises 9%. The foot also lifts higher for less time in the air — a
+firmer step, not a dragging one. `fell_down` triples but from 0.0009 to 0.0044,
+which is inside the range this quantity swings on its own; watch it, do not
+conclude from it.
+
+## Rung 2 — `+obs`, run `2026-08-19_23-39-10` — **removed from the ladder**
+
+| iteration | 100 | 200 | 400 | 700 |
+|---|---|---|---|---|
+| `air_time_mean` | 1.375 | 1.868 | 3.186 | 3.077 |
+| `progress_ratio` | 0.013 | 0.011 | 0.006 | 0.005 |
+| `track_linear_velocity` | 2.289 | 2.378 | 2.438 | 1.344 |
+
+The robot holds a foot up and stops advancing — `progress_ratio` two orders of
+magnitude below `+rand`'s 0.63, with no falls. This is the same signature as the
+v1 failure, reached by a different route.
+
+Two reasons it is pulled rather than judged:
+
+1. **The rung bundles three changes** — `last_action` → `executed_action`,
+   history 0 → 5, and two new critic terms — so a verdict cannot be attributed.
+2. **`executed_action` is being tested where it was never validated.** It exists
+   to feed back what the torque projection did, and `torque_feasibility_ratio` is
+   `None` in both the `p0` rung *and* today's production config. Its own
+   docstring promises a fallback to the raw action for actuators without the
+   projection, but `_executed_position_target` is allocated unconditionally
+   (`finite_difference_pd_actuator.py:249`), so the fallback never fires.
+   In July it was validated *together with* the projection at ratio 1.0, and the
+   note from then is explicit: "these two are one test, not two".
+
+Precedent also says not to call this one at 700: the July version read
+`swing_height` −93% at iteration 500 and had fully recovered by 1000.
+
+Carrying `obs` through the six remaining rungs would contaminate every verdict,
+so the chain was restarted on the `+rand` base. `obs` gets its own run
+afterwards, split into its three parts and long enough to see a recovery.
