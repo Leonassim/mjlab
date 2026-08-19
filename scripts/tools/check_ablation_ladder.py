@@ -33,8 +33,15 @@ EXPLAINED: dict[str, str] = {
   "commands.twist.vel_ramp_rate": "field added since, None is inert",
   "metrics.command_progress": "logging only",
   "metrics.sole_height": "logging only",
-  "rewards.flat_support.params.command_name": "function rewritten, irreducible",
-  "rewards.flat_support.params.corner_tolerance": "function rewritten, irreducible",
+  "rewards.flat_support.params.command_name": "required by the class, no July equivalent needed",
+  # Not irreducible after all -- every extension flat_support_penalty grew has a
+  # neutral setting, and the first p0 rung ran with corner_tolerance 0.001, i.e.
+  # counting corners by height rather than by the solver's contact detection.
+  "rewards.flat_support.params.corner_tolerance": "0.0 restores `contacts = found > 0`",
+  "rewards.flat_support.params.change_gain": "0.0 drops the corner-loss term July had not",
+  "rewards.flat_support.params.standing_threshold": "-1.0 makes `standing` never true",
+  "rewards.flat_support.params.load_threshold": "0.0 collapses `loaded` to `in_contact`",
+  "rewards.standing_single_support.params.grace_period": "0.0 is exactly July's formula",
   "rewards.stance_action_acc_l2.params": "index list -> asset_cfg, same 6+6 joints",
   "rewards.torque_limit_margin.params.asset_cfg": "default is every joint, inert",
   "rewards.upper_body_action_acc_l2.func": "renamed, same body",

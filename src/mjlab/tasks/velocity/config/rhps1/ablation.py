@@ -15,10 +15,13 @@ must land back on the untouched configuration -- asserted by
 scripts/tools/check_ablation_ladder.py, which is what keeps the ladder honest:
 a deviation missing from every rung would otherwise never be tested.
 
-`p0` here is not the reference tree. Nine reward functions were rewritten since
-July and their bodies cannot be reverted by configuration, so this rung tests
-exactly that: config identical, code current. If it walks, the rewrites are
-innocent and every rung above it is trustworthy.
+`p0` here is not the reference tree: nine reward functions were rewritten since
+July. They turn out to be reachable anyway -- each grew parameters with a
+neutral setting, and the baseline uses them (see flat_support and
+standing_single_support below). Comparing effective parameters rather than the
+dumped yaml is what found them: the yaml records only what a RewardTermCfg sets
+explicitly, so a signature default that changed is invisible there. Anything
+still not reachable is listed in check_ablation_ladder.py with its reason.
 """
 
 from __future__ import annotations
@@ -156,15 +159,30 @@ def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
 
   # -- rewards -------------------------------------------------------------
   r["angular_momentum"].weight = -0.2
-  # Weight only. flat_support_penalty was a plain function in July and is a
-  # three-component class now, with command_name required, so policy 0's params
-  # cannot be restored. One of the nine rewrites this rung is testing.
+  # flat_support_penalty is a class now, but every extension it grew has a
+  # neutral setting, so July's body is reachable after all -- the first p0 rung
+  # ran with corner_tolerance 0.001 and measured something else entirely.
+  #   corner_tolerance 0  -> contacts = (found > 0), the solver's own detection,
+  #                          instead of corner height within a 1 mm band
+  #   change_gain      0  -> drops the corner-loss/gain term
+  #   standing_thresh -1  -> `standing` is never true, so an unloaded foot is
+  #                          not charged a full deficit at zero command
+  #   load_threshold   0  -> `loaded` collapses to `in_contact`
+  # What is left is sum(square(deficit) * in_contact): July's line for line.
   r["flat_support"].weight = -2.4
+  r["flat_support"].params["corner_tolerance"] = 0.0
+  r["flat_support"].params["change_gain"] = 0.0
+  r["flat_support"].params["standing_threshold"] = -1.0
+  r["flat_support"].params["load_threshold"] = 0.0
   r["foot_clearance"].weight = -4.0
   r["foot_slip"].weight = -0.3
   r["impact_vel"].weight = -0.5
   r["impact_vel"].params["limit"] = 0.1
+  # grace_period 0 makes this exactly July's
+  # cost = (one_foot + 4*no_feet) * standing. At 1.5 s the penalty simply does
+  # not apply for the first 1.5 s of every standing episode.
   r["standing_single_support"].weight = -4.0
+  r["standing_single_support"].params["grace_period"] = 0.0
   # air_time weight and threshold_max are driven by curriculum below; these are
   # the step-0 values it starts from.
   r["air_time"].weight = 2.0
@@ -379,6 +397,19 @@ def _feet(cfg, full) -> None:
   """
   r = cfg.rewards
   r["flat_support"].weight = -11.0
+  # The extensions the baseline neutralises, back as the config really had them.
+  # Restore by deleting when the config left them implicit, so the dumped yaml
+  # matches too -- setting the signature default would still show as a new key.
+  for term, keys in (
+    ("flat_support",
+     ("corner_tolerance", "change_gain", "standing_threshold", "load_threshold")),
+    ("standing_single_support", ("grace_period",)),
+  ):
+    for p in keys:
+      if p in full["rewards"][term].params:
+        r[term].params[p] = full["rewards"][term].params[p]
+      else:
+        r[term].params.pop(p, None)
   r["foot_clearance"].weight = -10.0
   r["foot_slip"].weight = -0.5
   r["impact_vel"].weight = -2.0
