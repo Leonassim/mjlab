@@ -36,12 +36,15 @@ LADDER = ["p0"] + [
   "p0+" + "+".join(RUNGS[: i + 1]) for i in range(len(RUNGS))
 ]
 
-TARGET_IT = 700
+TARGET_IT = int(os.environ.get("RHPS1_TARGET_IT", "700"))
 CHECK_IT = 400  # second, earlier milestone -- one point is not a verdict
-WALL_LIMIT_S = 100 * 60
+WALL_LIMIT_S = int(os.environ.get("RHPS1_WALL_MIN", "100")) * 60
 POLL_S = 20
 LOG_ROOT = Path("logs/rsl_rl/rhps1_velocity")
-RESULTS = Path("logs/ablation_results.md")
+RESULTS = Path(os.environ.get("RHPS1_RESULTS", "logs/ablation_results.md"))
+# Rows accumulate here across invocations. The markdown is a rendering of it:
+# rebuilding the table from only the current series silently dropped five.
+ROWS = RESULTS.with_suffix(".jsonl")
 TASK = "Mjlab-Velocity-Flat-RHPS1"
 
 # The two that decide, then behaviour, then deployment feasibility.
@@ -122,7 +125,9 @@ def _stop(proc: subprocess.Popen) -> None:
 
 
 def run_rung(name: str) -> dict:
-  env = dict(os.environ, RHPS1_ABLATION=name)
+  # wandb init timed out at 90 s and killed a rung outright; give it room.
+  env = dict(os.environ, RHPS1_ABLATION=name,
+             WANDB_INIT_TIMEOUT="300", WANDB__SERVICE_WAIT="300")
   before = {p.name for p in LOG_ROOT.iterdir() if p.is_dir()}
   log = Path(f"logs/ablation_{name.replace('+', '_')}.log")
   started = time.time()
@@ -187,7 +192,24 @@ def _verdict(row: dict) -> str:
   return "between"
 
 
+def _all_rows(rows: list[dict]) -> list[dict]:
+  """Every row ever recorded for this results file, newest wins per ablation."""
+  seen: dict[str, dict] = {}
+  if ROWS.exists():
+    for line in ROWS.read_text().splitlines():
+      if line.strip():
+        r = json.loads(line)
+        seen[r["ablation"]] = r
+  for r in rows:
+    seen[r["ablation"]] = r
+  return list(seen.values())
+
+
 def write_results(rows: list[dict]) -> None:
+  for r in rows:
+    with ROWS.open("a") as fh:
+      fh.write(json.dumps(r) + "\n")
+  rows = _all_rows([])
   cols = ["ablation", "verdict", "status"] + [m.split("/")[-1] for m in METRICS]
   head = [
     "# Ablation depuis policy 0",
@@ -231,16 +253,23 @@ def write_results(rows: list[dict]) -> None:
 
 def main() -> None:
   ladder = sys.argv[1:] or LADDER
-  done = RESULTS.read_text() if RESULTS.exists() else ""
+  done = {r["ablation"] for r in _all_rows([])
+          if r["status"] not in ("crashed", "timeout")}
   rows: list[dict] = []
   for name in ladder:
-    if f"| {name} |" in done:
+    if name in done:
       print(f"=== {name}: already in {RESULTS}, skipped", flush=True)
       continue
     print(f"=== {name}", flush=True)
     row = run_rung(name)
+    if row["status"] == "crashed" and row.get("at400") in (None, {}):
+      # A rung that dies before its first milestone lost nothing worth keeping,
+      # and the one crash so far was a transient wandb timeout. Retry once.
+      print(f"=== {name}: crashed early, retrying once", flush=True)
+      time.sleep(60)
+      row = run_rung(name)
     rows.append(row)
-    write_results(rows)
+    write_results([row])
     print(json.dumps(row), flush=True)
     time.sleep(30)  # let the GPU drain before the next rung
 
