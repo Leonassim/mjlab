@@ -448,6 +448,9 @@ def _feet(cfg, full) -> None:
 # Which reward term a decomposition rung owns, for the `rung@weight` syntax.
 RUNG_TERM = {
   "fs": "flat_support",
+  "fsct": "flat_support",
+  "fscg": "flat_support",
+  "fsload": "flat_support",
   "air": "air_time",
   "sss": "standing_single_support",
   "imp": "impact_vel",
@@ -480,6 +483,40 @@ def _fs(cfg, full) -> None:
     else:
       cfg.rewards["flat_support"].params.pop(p, None)
   _w(cfg, "flat_support", -11.0)
+
+
+def _fsct(cfg, full) -> None:
+  """flat_support: corner_tolerance only, the measurement fix on its own.
+
+  The one Leo asked about. Counts corners by height inside a 1 mm band instead
+  of by solver detection -- the sole is parallel to within 16 um in the default
+  pose yet only 2.15 of 4 corners registered. Weight tunable.
+  """
+  cfg.rewards["flat_support"].params["corner_tolerance"] = 0.001
+  _w(cfg, "flat_support", -2.4)
+
+
+def _fscg(cfg, full) -> None:
+  """flat_support: change_gain only -- a new penalty, not a measurement fix.
+
+  Charges corners lost between two steps and credits corners gained, on feet
+  loaded in both. Nothing in July did this, so it cannot be calibrated against
+  a July value; it is a design choice to accept or drop.
+  """
+  cfg.rewards["flat_support"].params["change_gain"] = 1.0
+  _w(cfg, "flat_support", -2.4)
+
+
+def _fsload(cfg, full) -> None:
+  """flat_support: the load and standing thresholds only.
+
+  `loaded` becomes force > 140 N instead of any corner in contact, and a foot
+  that is unloaded at zero command is charged the full deficit rather than
+  nothing.
+  """
+  cfg.rewards["flat_support"].params["load_threshold"] = 140.0
+  cfg.rewards["flat_support"].params["standing_threshold"] = 0.1
+  _w(cfg, "flat_support", -2.4)
 
 
 def _air(cfg, full) -> None:
@@ -607,7 +644,7 @@ def _static(cfg, full) -> None:
 # Decomposition rungs are outside LADDER: they split blocks that LADDER already
 # covers, so including them would double-apply and break the completeness check.
 DECOMPOSED = {
-  "fs": _fs, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
+  "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
 }

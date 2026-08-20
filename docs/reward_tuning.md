@@ -84,10 +84,11 @@ four corners down is worth four times what it should be — a concrete mechanism
 for the feet block planting both feet, and confirmed by the `fs` rung alone
 reproducing the block's signature to 0.2%.
 
-`standing_single_support` goes the other way, and it is the one that took two
-wrong readings to find. `grace_period` makes the penalty **5× cheaper**; the
-weight moving −4 → −6 recovers only a third of that, so the term ends up 3.4×
-weaker than July. Nothing much now discourages standing on one foot.
+`standing_single_support` reads 3.4× weaker than July once the calibration bug
+is fixed — but **do not act on it**. Léo: the grace period was there for the
+sinusoidal gait gate, and there is no gate here, so it is not doing anything
+worth tuning. Dropped from the queue. The number stays recorded only because the
+bug that hid it is worth remembering.
 
 ### A trap in paired calibration: shared state
 
@@ -115,8 +116,8 @@ Ordered by shift, so by expected effect:
    too blunt and is exactly why the sweep exists.
 4. `imp`, `fs` — smaller realized shifts, but `fs` is now first in the queue
    anyway: it reproduces the whole block signature on its own.
-5. `sss` at **−20.31** — added after the calibration bug was fixed. The only term
-   that is too weak rather than too strong.
+5. ~~`sss`~~ — dropped: the grace period belongs to the sinusoidal gait gate,
+   which this configuration does not use.
 
 ## Runnable now
 
