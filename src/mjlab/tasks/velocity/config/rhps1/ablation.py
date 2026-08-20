@@ -454,6 +454,8 @@ RUNG_TERM = {
   "air": "air_time",
   "sss": "standing_single_support",
   "imp": "impact_vel",
+  "swt": "foot_swing_height", "mfhr": "min_foot_height",
+  "airtc": "air_time", "airT": "air_time",
 }
 
 _INLINE_WEIGHTS: dict[str, float] = {}
@@ -643,10 +645,78 @@ def _static(cfg, full) -> None:
 
 # Decomposition rungs are outside LADDER: they split blocks that LADDER already
 # covers, so including them would double-apply and break the completeness check.
+##
+# Repair rungs. Everything above restores or isolates what policy 0 already had;
+# these change the objective on purpose, on the diagnosis in docs/reward_map.md.
+# Untested by anyone -- judged on the same four criteria as the rest.
+##
+
+
+def _swt(cfg, full) -> None:
+  """foot_swing_height: bring the target down to where the policy lives.
+
+  Right shape already -- peak per swing, charged once at landing -- but the
+  0.15 m target sits two orders above the operating point, which pins the
+  squared relative error near 1.0 whatever the gait does. A term stuck at its
+  ceiling is a per-landing tax, and the only way to lower a tax on landing is to
+  land less.
+  """
+  t = float(os.environ.get("RHPS1_SWT_TARGET", "0.05"))
+  cfg.rewards["foot_swing_height"].params["target_height"] = t
+  _w(cfg, "foot_swing_height", -5.0)
+
+
+def _mfhr(cfg, full) -> None:
+  """min_foot_height: fade the charge in over the first 60 ms of flight.
+
+  Removes the liftoff discontinuity without removing the term. See
+  swing_foot_height's docstring for the barrier this dissolves.
+  """
+  r = cfg.rewards.get("min_foot_height")
+  if r is not None:
+    r.params["ramp_s"] = float(os.environ.get("RHPS1_MFH_RAMP", "0.06"))
+    _w(cfg, "min_foot_height", -5.0)
+
+
+def _fclr(cfg, full) -> None:
+  """Drop foot_clearance: it charges |z - 0.15| * horizontal foot speed.
+
+  The foot is never near 0.15 m, so the first factor is a near-constant ~0.10
+  and what the term actually taxes is swinging the foot forward. Named for
+  clearance, priced as a penalty on stepping.
+  """
+  cfg.rewards.pop("foot_clearance", None)
+
+
+def _airtc(cfg, full) -> None:
+  """air_time: drop touchdown_cost, keep the square.
+
+  touchdown_cost puts break-even at t = threshold_max * sqrt(0.15), so landing
+  short of that is punished. Removing it makes the payout non-negative
+  everywhere while the square keeps paying long flights disproportionately --
+  the amplitude incentive that linearising (`air`) threw away.
+  """
+  cfg.rewards["air_time"].params["touchdown_cost"] = 0.0
+  _w(cfg, "air_time", 2.0)
+
+
+def _airT(cfg, full) -> None:
+  """air_time: stop the curriculum walking threshold_max away from the gait.
+
+  The stages take it 0.1 -> 0.3 -> 0.5, moving break-even 0.039 -> 0.116 ->
+  0.194 s while nothing pulls the flight time after it. Pin it instead.
+  """
+  cfg.curriculum.pop("air_time", None)
+  cfg.rewards["air_time"].params["threshold_max"] = float(
+    os.environ.get("RHPS1_AIR_TMAX", "0.15"))
+  _w(cfg, "air_time", 2.0)
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
+  "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
 DELTAS = {

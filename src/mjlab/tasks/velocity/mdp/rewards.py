@@ -2403,12 +2403,20 @@ def swing_foot_height(
   sensor_name: str | None = None,
   command_name: str | None = None,
   command_threshold: float = 0.05,
+  ramp_s: float = 0.0,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
   """Penalize swing feet below min_height every step.
 
   When sensor_name is provided, only penalizes feet that are NOT in contact
   (i.e. in the swing phase), leaving the stance foot untouched.
+
+  The in-air gate makes the penalty discontinuous at liftoff: a foot resting on
+  the ground costs nothing, and the instant it leaves it is charged the whole
+  deficit -- so attempting a short step costs more than not stepping, and
+  raising the weight deepens the barrier instead of lifting the foot.
+  ``ramp_s`` fades the charge in over the first ``ramp_s`` seconds of flight,
+  making the term continuous. 0.0 keeps the original behaviour.
   """
   asset: Entity = env.scene[asset_cfg.name]
   foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
@@ -2416,6 +2424,11 @@ def swing_foot_height(
   if sensor_name is not None:
     contact_sensor: ContactSensor = env.scene[sensor_name]
     in_air = (contact_sensor.data.found == 0).float()  # [B, N]
+    if ramp_s > 0.0:
+      air_t = contact_sensor.data.current_air_time
+      if air_t is None:
+        raise RuntimeError("ramp_s needs a contact sensor with track_air_time=True.")
+      in_air = in_air * torch.clamp(air_t[:, : in_air.shape[1]] / ramp_s, max=1.0)
     deficit = deficit * in_air
   cost = torch.sum(deficit, dim=1)  # [B]
   if command_name is not None:
