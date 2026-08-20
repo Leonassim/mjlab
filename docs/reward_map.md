@@ -31,11 +31,22 @@ without the QP. Anything done to the foot block must not dilute it.
 
 ## Three foot terms measure something other than their name
 
-`air_time` pays `(min(t_air, 0.20)/0.20)**2 - 0.15` once at landing. The square
-crushes short flights and the flat `touchdown_cost` eats what is left: at the
-policy's ~0.1 s the net is +0.10, and **below 0.077 s landing costs**. Realized
-share 0.3% -- the term is off. Linearising it multiplies the payout 5x at the
-same flight time, which is why it moved so much.
+`air_time` pays `(min(t_air, threshold_max)/threshold_max)**2 - 0.15` once at
+landing, and **the curriculum moves the target away from the policy**:
+`threshold_max` steps 0.1 -> 0.3 -> 0.5, so break-even
+(`t = threshold_max * sqrt(0.15)`) walks 0.039 -> 0.116 -> 0.194 s while nothing
+makes the gait's flight time follow.
+
+Its effective weight is **5.0**, not the 2.0 in `env.yaml` -- a second curriculum
+term raises it. Read the weight from `Curriculum/air_time_weight`, never from the
+dump. At that weight the term still returns 0.3% of the positive budget, against
+9.7% for `foot_swing_height`, which is also charged per landing: a ~30x
+difference in what one landing is worth.
+
+Whether the gait sits above or below break-even is **not settled** by
+`Metrics/air_time_mean` -- that is a conditional mean over currently-airborne
+feet, not the flight duration at touchdown. `reward_audit.py` measures the
+landing distribution directly.
 
 `min_foot_height` charges `max(0.08 - z, 0)` on every airborne step. Foot down,
 zero. Foot up 2 cm, the gate flips and the penalty **jumps 0 -> -0.30**, and only

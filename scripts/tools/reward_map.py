@@ -41,6 +41,28 @@ def weights(run: Path) -> dict[str, float]:
   return out
 
 
+def effective_weights(run: Path, it: int, half: int = 25) -> dict[str, float]:
+  """Weights the curriculum actually had in force, from Curriculum/<t>_weight.
+
+  The dumped yaml holds the weight the run *started* with. air_time's curriculum
+  moves it 2.0 -> 5.0 at 1000 iterations, so reading the yaml understates it by
+  2.5x at every milestone past that -- the same trap as reading env.yaml instead
+  of the effective parameters.
+  """
+  ea = event_accumulator.EventAccumulator(
+    str(run), size_guidance={event_accumulator.SCALARS: 0})
+  ea.Reload()
+  out = {}
+  for tag in ea.Tags()["scalars"]:
+    if not tag.startswith("Curriculum/") or not tag.endswith("_weight"):
+      continue
+    term = tag[len("Curriculum/"):-len("_weight")]
+    w = [s.value for s in ea.Scalars(tag) if abs(s.step - it) <= half]
+    if w:
+      out[term] = sum(w) / len(w)
+  return out
+
+
 def realized(run: Path, it: int, half: int = 25) -> dict[str, float]:
   ea = event_accumulator.EventAccumulator(
     str(run), size_guidance={event_accumulator.SCALARS: 0})
@@ -72,7 +94,9 @@ def main() -> int:
       tags = [t for t in ea.Tags()["scalars"] if t.startswith("Episode_Reward/")]
       it = max(s.step for s in ea.Scalars(tags[0])) if tags else it
       v = realized(run, it)
-    cols.append((name, it, v, weights(run)))
+    w = weights(run)
+    w.update(effective_weights(run, it))
+    cols.append((name, it, v, w))
 
   terms = sorted({t for _, _, v, _ in cols for t in v})
   pos = [sum(x for x in v.values() if x > 0) for _, _, v, _ in cols]
