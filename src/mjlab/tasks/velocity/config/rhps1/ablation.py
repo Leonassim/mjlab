@@ -59,6 +59,20 @@ def selection() -> list[str] | None:
   steps = [s for s in raw.split("+") if s]
   if not steps or steps[0] != "p0":
     raise ValueError(f"{ENV_VAR} must start with 'p0', got {raw!r}")
+  # `fs@-3.24` runs the fs rung with flat_support at that weight, so a sweep is
+  # one string per point and the results table names its own weight.
+  _INLINE_WEIGHTS.clear()
+  bare = []
+  for s in steps[1:]:
+    if "@" in s:
+      name, _, w = s.partition("@")
+      if name not in RUNG_TERM:
+        raise ValueError(f"{ENV_VAR}: '{name}' owns no reward weight")
+      _INLINE_WEIGHTS[RUNG_TERM[name]] = float(w)
+      bare.append(name)
+    else:
+      bare.append(s)
+  steps = [steps[0]] + bare
   unknown = set(steps[1:]) - set(DELTAS)
   if unknown:
     raise ValueError(
@@ -431,8 +445,22 @@ def _feet(cfg, full) -> None:
 ##
 
 
+# Which reward term a decomposition rung owns, for the `rung@weight` syntax.
+RUNG_TERM = {
+  "fs": "flat_support",
+  "air": "air_time",
+  "sss": "standing_single_support",
+  "imp": "impact_vel",
+}
+
+_INLINE_WEIGHTS: dict[str, float] = {}
+
+
 def _w(cfg, term: str, default: float) -> None:
-  """Set a reward weight, letting RHPS1_W_<term> override it."""
+  """Set a reward weight. `rung@weight` wins, then RHPS1_W_<term>, then default."""
+  if term in _INLINE_WEIGHTS:
+    cfg.rewards[term].weight = _INLINE_WEIGHTS[term]
+    return
   raw = os.environ.get(f"RHPS1_W_{term}")
   cfg.rewards[term].weight = float(raw) if raw else default
 
