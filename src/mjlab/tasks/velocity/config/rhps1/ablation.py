@@ -421,6 +421,117 @@ def _feet(cfg, full) -> None:
   r.pop("flat_touchdown", None)
 
 
+##
+# Decomposition rungs. `feet` and `obs` each bundle several changes and each
+# broke walking as a block, so these split them into one change per run.
+#
+# Weights are overridable from the environment -- RHPS1_W_flat_support=-12.4 --
+# because a measurement change rescales a penalty and the weight that goes with
+# it has to be found rather than assumed. See docs/reward_tuning.md.
+##
+
+
+def _w(cfg, term: str, default: float) -> None:
+  """Set a reward weight, letting RHPS1_W_<term> override it."""
+  raw = os.environ.get(f"RHPS1_W_{term}")
+  cfg.rewards[term].weight = float(raw) if raw else default
+
+
+def _fs(cfg, full) -> None:
+  """flat_support: the corrected corner measurement, weight tunable.
+
+  corner_tolerance counts corners by height inside a 1 mm band instead of by the
+  solver's contact detection -- the better measurement, since the sole is
+  parallel to within 16 um yet only 2.15 of 4 corners registered. It shrinks the
+  penalty, so -2.4 no longer means what it did; -11 is roughly parity by
+  realized value, which is why this rung is weight-tunable rather than fixed.
+  """
+  for p in ("corner_tolerance", "change_gain", "standing_threshold", "load_threshold"):
+    if p in full["rewards"]["flat_support"].params:
+      cfg.rewards["flat_support"].params[p] = full["rewards"]["flat_support"].params[p]
+    else:
+      cfg.rewards["flat_support"].params.pop(p, None)
+  _w(cfg, "flat_support", -11.0)
+
+
+def _air(cfg, full) -> None:
+  """air_time: power 2 -> 1 and touchdown_cost 0.15 -> 0, weight tunable.
+
+  Largest realized shift of the block after min_foot_height: the landing bonus
+  pays 6.4x more per unit. A linear payout with no touchdown cost makes a short
+  hop profitable, which is the mechanism behind "the foot lifts and never lands".
+  """
+  cfg.rewards["air_time"].params["power"] = 1.0
+  cfg.rewards["air_time"].params["touchdown_cost"] = 0.0
+  _w(cfg, "air_time", 2.0)
+
+
+def _mfh(cfg, full) -> None:
+  """Drop min_foot_height, as the feet block does.
+
+  Worth its own run: it is the single biggest realized change in the block
+  (-0.303 per step removed). It was called a trap -- zero for standing, a
+  penalty for a short lift -- but it is also the only strong pressure to clear
+  8 cm, and the block that removes it lifts 65% less.
+  """
+  cfg.rewards.pop("min_foot_height", None)
+
+
+def _sss(cfg, full) -> None:
+  """standing_single_support: grace_period back, weight tunable.
+
+  1.5 s of grace plus -6 leaves a realized -0.011 against -0.065: the penalty
+  all but disappears.
+  """
+  if "grace_period" in full["rewards"]["standing_single_support"].params:
+    cfg.rewards["standing_single_support"].params["grace_period"] = full["rewards"][
+      "standing_single_support"
+    ].params["grace_period"]
+  else:
+    cfg.rewards["standing_single_support"].params.pop("grace_period", None)
+  _w(cfg, "standing_single_support", -6.0)
+
+
+def _imp(cfg, full) -> None:
+  """impact_vel: limit 0.1 -> 0.15, weight tunable."""
+  cfg.rewards["impact_vel"].params["limit"] = 0.15
+  _w(cfg, "impact_vel", -2.0)
+
+
+def _hist(cfg, full) -> None:
+  """Action history 0 -> 5 frames, nothing else. Observation 126 -> 246."""
+  cfg.observations["actor"].terms["actions"].history_length = 5
+
+
+def _exec(cfg, full) -> None:
+  """last_action -> executed_action, nothing else.
+
+  Only meaningful with the torque projection: it reports what the projection
+  executed, and torque_feasibility_ratio is None here, so pair it with `proj`.
+  """
+  cfg.observations["actor"].terms["actions"].func = mdp.executed_action
+
+
+def _proj(cfg, full) -> None:
+  """Torque feasibility projection at ratio 1.0, the way `exec` was validated."""
+  for act in cfg.scene.entities["robot"].articulation.actuators:
+    act.torque_feasibility_ratio = 1.0
+
+
+def _ctorque(cfg, full) -> None:
+  """Critic sees joint torques."""
+  if "joint_torques" in full["critic"]:
+    cfg.observations["critic"].terms["joint_torques"] = full["critic"]["joint_torques"]
+
+
+def _cscan(cfg, full) -> None:
+  """Critic sees the per-foot height scan."""
+  if "foot_height_scan" in full["critic"]:
+    cfg.observations["critic"].terms["foot_height_scan"] = full["critic"][
+      "foot_height_scan"
+    ]
+
+
 def _prox(cfg, full) -> None:
   """Five proximity sensors and their penalties, plus the wider collision gap.
 
@@ -465,7 +576,16 @@ def _static(cfg, full) -> None:
   r.pop("action_acc_l2", None)
 
 
+# Decomposition rungs are outside LADDER: they split blocks that LADDER already
+# covers, so including them would double-apply and break the completeness check.
+DECOMPOSED = {
+  "fs": _fs, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
+  "hist": _hist, "exec": _exec, "proj": _proj,
+  "ctorque": _ctorque, "cscan": _cscan,
+}
+
 DELTAS = {
+  **DECOMPOSED,
   "rand": _rand,
   "obs": _obs,
   "knee": _knee,
@@ -493,6 +613,13 @@ def apply_env(cfg: ManagerBasedRlEnvCfg) -> None:
     "gap": copy.deepcopy(cfg.scene.entities["robot"].collisions[0].gap),
   }
   _revert_to_policy0(cfg)
-  for step in LADDER:  # ladder order, not the order they were typed
-    if step in steps[1:]:
+  requested = steps[1:]
+  # Ladder rungs in ladder order, so a typo in the order cannot change the run.
+  for step in LADDER:
+    if step in requested:
+      DELTAS[step](cfg, full)
+  # Decomposition rungs in the order given: they are read as a sequence
+  # ("history, then executed_action, then the critic terms").
+  for step in requested:
+    if step in DECOMPOSED:
       DELTAS[step](cfg, full)
