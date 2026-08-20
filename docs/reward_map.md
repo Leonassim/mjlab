@@ -78,6 +78,38 @@ walking. Costs (value / weight), iteration 700:
 Exit B zeroes three terms at once -- 13.5% of the penalty budget -- because none
 of them can be charged if the foot never comes down.
 
+## flat_support: the whole term is gated on `loaded`
+
+`cost = sum(deficit^2 * charge_mask)` and, in July's parameterisation,
+`charge_mask = loaded`. An airborne foot carries no force, is not loaded, and is
+not charged at all. **Lifting a foot exits the penalty**, so any change that
+raises the price of standing on it pushes the policy off the ground. Split three
+ways at July's own weight of -2.4, two of the three do exactly that:
+
+| rung | change | verdict | air_time_mean |
+|---|---|---|---|
+| `fsct` | `corner_tolerance` 0 -> 0.001 | broken, hovers | 3.26 |
+| `fscg` | `change_gain` 0 -> 1.0 | **walks** | 0.118 |
+| `fsload` | `load_threshold` 0 -> 140 N, `standing_threshold` -1 -> 0.1 | broken, hovers | 4.39 |
+
+Different routes to the same exit:
+
+- `fsct` stops counting corners by solver contact and starts counting them
+  within 1 mm of the foot's own lowest corner -- a flatness measure, not a
+  contact one. Across a ~25 cm sole that is 4 mrad of ankle pitch, held for the
+  whole of stance, while a real gait rolls heel to toe. Being loaded got much
+  more expensive.
+- `fsload` charges nothing below 140 N. That is a threshold to duck under: keep
+  the foot grazing and the penalty is gone. It closes the standing dodge
+  (`standing_threshold` charges an unloaded foot the full deficit at zero
+  command) while opening a new one for every walking env.
+- `fscg` charges only *changes* in corner count on feet loaded in both steps.
+  No new escape route, and it telescopes to zero over a clean stance -- the only
+  one of the three that leaves walking intact.
+
+This is why `fs` failed at -11 and at -3.24 by opposite modes. It was never a
+dosage question.
+
 ## Consequences for the ladder
 
 - Do not tune weights on a term whose shape is wrong. `fs` failed at both -11 and
