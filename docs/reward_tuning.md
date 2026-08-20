@@ -71,22 +71,36 @@ cannot separate a change in measurement from a change in behaviour. Reading it, 
 concluded `flat_support` was already near parity. Phase 1 on identical
 trajectories says the opposite:
 
-| term | ratio corr./July | weight now | parity |
-|---|---|---|---|
-| `flat_support` | 0.740 | −11.00 | **−3.24** |
-| `impact_vel` | 0.445 | −2.00 | −1.12 |
-| `air_time` | 1.269 | +2.00 | +1.58 |
-| `standing_single_support` | 1.000 | −6.00 | −4.00 |
+| term | ratio corr./July | weight now | parity | off by |
+|---|---|---|---|---|
+| `flat_support` | 0.889 | −11.00 | **−2.70** | 4.1× too strong |
+| `impact_vel` | 0.445 | −2.00 | −1.12 | 1.8× too strong |
+| `air_time` | 1.216 | +2.00 | +1.64 | 1.2× too strong |
+| `standing_single_support` | 0.197 | −6.00 | **−20.31** | 3.4× too **weak** |
 
-`flat_support` runs at **3.4× parity**, `impact_vel` at 1.8×, `air_time` at 1.3×.
-So the corrected corner count is only 26% cheaper on a walking trajectory, not
-the 5× the confounded table implied, and the weight raised to −11 to compensate
-overshot badly. That is a concrete candidate for why `+feet` plants both feet:
-holding four corners down is worth three times what it should be.
+`flat_support` runs at 4.1× parity: the corrected corner count is only 11%
+cheaper on a walking trajectory, so raising −2.4 to −11 overshot badly. Holding
+four corners down is worth four times what it should be — a concrete mechanism
+for the feet block planting both feet, and confirmed by the `fs` rung alone
+reproducing the block's signature to 0.2%.
 
-`standing_single_support`'s 1.000 is not a result — no environment transitions
-into the standing regime during a 200-step rollout, so `grace_period` never
-fires. It needs a rollout with commands driven to zero, or a longer one.
+`standing_single_support` goes the other way, and it is the one that took two
+wrong readings to find. `grace_period` makes the penalty **5× cheaper**; the
+weight moving −4 → −6 recovers only a third of that, so the term ends up 3.4×
+weaker than July. Nothing much now discourages standing on one foot.
+
+### A trap in paired calibration: shared state
+
+The first two runs of this tool reported `standing_single_support` ratio
+**exactly 1.000**, twice, under different rollout settings. That looked like a
+fact about the reward. It was a bug in the tool: `RewardTermCfg.func` holds the
+*instance* the reward manager built, not the class, so `isinstance(func, type)`
+is False and both "variants" reused the same object — one `grace_left`, one
+`prev_count`. A correction that acts through state was measuring itself.
+
+**Give each variant its own instance** (`type(func)(cfg, env)`), and check that a
+stateful correction actually moves the ratio. A perfect 1.000 is a red flag, not
+a result.
 
 Ordered by shift, so by expected effect:
 
@@ -99,7 +113,10 @@ Ordered by shift, so by expected effect:
 3. `sss` — 1.5 s of grace plus −6 leaves a realized −0.011 against −0.065. The
    penalty all but disappeared; parity would put it near −36, which is likely
    too blunt and is exactly why the sweep exists.
-4. `imp`, `fs` — smaller shifts, test last.
+4. `imp`, `fs` — smaller realized shifts, but `fs` is now first in the queue
+   anyway: it reproduces the whole block signature on its own.
+5. `sss` at **−20.31** — added after the calibration bug was fixed. The only term
+   that is too weak rather than too strong.
 
 ## Runnable now
 

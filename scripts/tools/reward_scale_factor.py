@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import inspect
 import os
 from pathlib import Path
 
@@ -51,6 +52,12 @@ def main() -> int:
   ap.add_argument("--steps", type=int, default=400)
   ap.add_argument("--num-envs", type=int, default=256)
   ap.add_argument("--ablation", default="p0+rand")
+  ap.add_argument(
+    "--standing-frac", type=float, default=None,
+    help="override rel_standing_envs. Needed for standing_single_support: its "
+         "grace_period only fires on a transition into the standing regime, and "
+         "a default rollout has too few to measure. Use 1.0.",
+  )
   args = ap.parse_args()
 
   os.environ.setdefault("RHPS1_ABLATION", args.ablation)
@@ -65,6 +72,11 @@ def main() -> int:
   device = "cuda:0"
   cfg = load_env_cfg(task)
   cfg.scene.num_envs = args.num_envs
+  if args.standing_frac is not None:
+    # Set on the config, before the env is built. Forcing a command after
+    # env.step() does nothing -- the command term overwrites it on resample.
+    cfg.commands["twist"].rel_standing_envs = args.standing_frac
+    cfg.curriculum.pop("standing_envs", None)  # else the curriculum puts it back
   env = ManagerBasedRlEnv(cfg, device=device)
   wrapped = RslRlVecEnvWrapper(env)  # the runner needs num_actions from it
 
@@ -76,7 +88,11 @@ def main() -> int:
     def build(params):
       c = copy.deepcopy(term_cfg)
       c.params = {**term_cfg.params, **params}
-      inst = func(c, env) if isinstance(func, type) else func
+      # term_cfg.func is the *instance* the reward manager built, not the class,
+      # so isinstance(func, type) is False and reusing it would make both
+      # variants share one object -- and one grace_left, one prev_count. Any
+      # term whose correction acts through state would then measure itself.
+      inst = func if inspect.isfunction(func) else type(func)(c, env)
       return inst, c.params
     live[name] = (build(july), build(corrected))
 
