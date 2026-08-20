@@ -106,7 +106,10 @@ def main() -> int:
         f if inspect.isfunction(f) else type(f)(c, env), c.params)
 
   robot = env.scene["robot"]
-  feet_ids = [robot.data.site_names.index(n) for n in ("left_foot", "right_foot")]
+  # The reward manager already resolved site names to ids; EntityData exposes no
+  # name lookup of its own.
+  feet_ids = env.reward_manager.get_term_cfg(
+    "min_foot_height").params["asset_cfg"].site_ids
   contact = env.scene["feet_ground_contact"]
 
   runner = load_runner_cls(task)(wrapped, asdict(load_rl_cfg(task)), device=device)
@@ -124,7 +127,7 @@ def main() -> int:
         f.reset()
 
     costs = {k: 0.0 for k in live}
-    swing_z, air_frac, stance, torque, prog = [], [], [], [], []
+    swing_z, air_frac, stance, torque, prog, land_t = [], [], [], [], [], []
     with torch.inference_mode():
       for i in range(args.steps):
         obs, _, _, _, _ = env.step(policy(obs))
@@ -137,11 +140,22 @@ def main() -> int:
         if in_air.any():
           swing_z.append(z[in_air].detach().clone())
         air_frac.append(in_air.float().mean())
+        fc = contact.data.last_air_time
+        if fc is not None:
+          landed = contact.compute_first_contact(dt=env.step_dt)
+          if landed.any():
+            land_t.append(fc[landed].detach().clone())
         stance.append((contact.data.found > 0).float().sum(dim=1).mean())
-        torque.append(
-          (robot.data.actuator_force.abs()
-           / robot.data.actuator_force_limit.clamp(min=1e-6)).mean())
-        prog.append(robot.data.root_link_lin_vel_b[:, 0].abs().mean())
+        try:
+          torque.append(
+            (robot.data.actuator_force.abs()
+             / robot.data.actuator_force_limit.clamp(min=1e-6)).mean())
+        except AttributeError:
+          pass
+        try:
+          prog.append(robot.data.root_link_lin_vel_b[:, 0].abs().mean())
+        except AttributeError:
+          pass
 
     n = args.steps - 50
     sz = torch.cat(swing_z) if swing_z else torch.zeros(1, device=device)
@@ -150,9 +164,11 @@ def main() -> int:
       "swing_p50": pct(sz, 0.5), "swing_p90": pct(sz, 0.9),
       "swing_max": float(sz.max()),
       "air_frac": float(torch.stack(air_frac).mean()),
+      "land_t_p50": pct(torch.cat(land_t), 0.5) if land_t else float("nan"),
+      "land_t_p90": pct(torch.cat(land_t), 0.9) if land_t else float("nan"),
       "stance": float(torch.stack(stance).mean()),
-      "torque": float(torch.stack(torque).mean()),
-      "speed": float(torch.stack(prog).mean()),
+      "torque": float(torch.stack(torque).mean()) if torque else float("nan"),
+      "speed": float(torch.stack(prog).mean()) if prog else float("nan"),
     }
     print(f"done {label}")
 
@@ -161,8 +177,8 @@ def main() -> int:
   print(f"\n=== gait, {args.steps - 50} steps, {args.num_envs} envs, "
         f"ablation={os.environ['RHPS1_ABLATION']} ===\n")
   print(f"{'':<22}" + "".join(f"{k:>{w}}" for k in labels))
-  for stat in ("swing_p50", "swing_p90", "swing_max", "air_frac", "stance",
-               "torque", "speed"):
+  for stat in ("swing_p50", "swing_p90", "swing_max", "air_frac",
+               "land_t_p50", "land_t_p90", "stance", "torque", "speed"):
     print(f"{stat:<22}" + "".join(f"{out[k][stat]:>{w}.4f}" for k in labels))
 
   good = [k for k in labels if k in ("policy0", "p0+rand")]
