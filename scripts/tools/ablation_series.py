@@ -125,8 +125,11 @@ def _stop(proc: subprocess.Popen) -> None:
 
 
 def run_rung(name: str) -> dict:
+  # `p0+rand#7` = the p0+rand config at agent seed 7, kept as its own row. Every
+  # run so far used the default seed 42, so nothing here measured its own noise.
+  abl, _, seed = name.partition("#")
   # wandb init timed out at 90 s and killed a rung outright; give it room.
-  env = dict(os.environ, RHPS1_ABLATION=name,
+  env = dict(os.environ, RHPS1_ABLATION=abl,
              WANDB_INIT_TIMEOUT="300", WANDB__SERVICE_WAIT="300")
   before = {p.name for p in LOG_ROOT.iterdir() if p.is_dir()}
   log = Path(f"logs/ablation_{name.replace('+', '_')}.log")
@@ -134,7 +137,8 @@ def run_rung(name: str) -> dict:
   with log.open("w") as fh:
     proc = subprocess.Popen(
       [sys.executable, ".venv/bin/train", TASK,
-       "--env.scene.num-envs", "4096", "--video", "True"],
+       "--env.scene.num-envs", "4096", "--video", "True"]
+      + (["--agent.seed", seed] if seed else []),
       stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
       env=env, start_new_session=True,
     )

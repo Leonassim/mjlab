@@ -712,10 +712,52 @@ def _airT(cfg, full) -> None:
   _w(cfg, "air_time", 2.0)
 
 
+def _lift(cfg, full) -> None:
+  """Raise the swing foot and lengthen the flight, on measured numbers.
+
+  reward_audit on policy 0's own checkpoint: swing foot z p50 5.6 mm, p90 8.7,
+  max 16.6; landing flight time p50 0.178 s, p90 0.238 s.
+
+  Both height terms sit at their ceiling at that operating point, so neither
+  carries gradient:
+    min_foot_height   cost 0.063 of a 0.069 maximum -- 92%, a flat tax on being
+                      airborne, which is also a tax on the air time we want.
+                      min_height 0.08 -> 0.02 restores range (cost 0.063 ->
+                      0.012 across the same gait) and ramp_s dissolves the
+                      liftoff cliff.
+    foot_swing_height squared *relative* error saturates at 1.0 for any target
+                      well above the peak: dropping 0.15 -> 0.02 moves the cost
+                      only 11%. Set 0.03 anyway -- it is free gradient -- but do
+                      not expect it to carry the change.
+
+  air_time is worse than idle: the curriculum walks threshold_max 0.1 -> 0.3 ->
+  0.5, and break-even is threshold_max*sqrt(touchdown_cost). At 0.5 that is
+  0.194 s, above policy 0's median landing, so the median landing is paid
+  -0.024. Pinned at 0.25 the median pays +0.354 and the p90 +0.752, both on the
+  rising part of the curve. touchdown_cost stays at 0.15: with break-even down
+  at 0.097 s it no longer punishes normal landings, and it is what stops the
+  cadence exploit that linearising the payout produced.
+
+  Knee stays at 100 N.m and torque_limit_margin is untouched: the point is to
+  lift the foot without spending the property policy 0 was kept for.
+  """
+  r = cfg.rewards
+  mfh = r.get("min_foot_height")
+  if mfh is not None:
+    mfh.params["min_height"] = float(os.environ.get("RHPS1_MFH_MIN", "0.02"))
+    mfh.params["ramp_s"] = float(os.environ.get("RHPS1_MFH_RAMP", "0.06"))
+  r["foot_swing_height"].params["target_height"] = float(
+    os.environ.get("RHPS1_SWT_TARGET", "0.03"))
+  cfg.curriculum.pop("air_time", None)
+  r["air_time"].params["threshold_max"] = float(
+    os.environ.get("RHPS1_AIR_TMAX", "0.25"))
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
+  "lift": _lift,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 

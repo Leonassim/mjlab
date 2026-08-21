@@ -122,9 +122,10 @@ def main() -> int:
     runner.load(ckpt, map_location=device)
     policy = runner.get_inference_policy(device=device)
     obs, _ = env.reset()
+    all_ids = torch.arange(env.num_envs, device=device)
     for f, _ in live.values():
       if hasattr(f, "reset"):
-        f.reset()
+        f.reset(all_ids)
 
     costs = {k: 0.0 for k in live}
     swing_z, air_frac, stance, torque, prog, land_t = [], [], [], [], [], []
