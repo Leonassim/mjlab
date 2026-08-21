@@ -810,11 +810,29 @@ def _tq(cfg, full) -> None:
   _w(cfg, "joint_torques_l2", -2e-5)
 
 
+def _nodamp(cfg, full) -> None:
+  """Drop the velocity damper entirely. Leo's call, 2026-08-21.
+
+  The curriculum ramps velocity_damper_progress 0 -> 1 between iterations 7500
+  and 12750, and progress 0 is a no-op, so a three-hour run never reaches it
+  anyway -- removing it changes nothing about what comes out of one. What it
+  changes is the intent: the damper is a projection of the position target that
+  matches the mc_rtc KinematicsConstraint, so this makes it explicit that we
+  train on a different plant than the robot runs.
+
+  The QP applies it at deployment regardless, and the mismatch is largest
+  exactly where `stride` aims: di is 0.4 of the joint *range*, so a longer step
+  walks further into the damped zone than the 2.8 cm shuffle ever did. Recorded
+  as a rung rather than by deleting the curriculum, so it reads as a choice.
+  """
+  cfg.curriculum.pop("velocity_damper", None)
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
-  "lift": _lift, "stride": _stride, "tq": _tq,
+  "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
