@@ -189,6 +189,13 @@ def joint_torque_limit_margin_penalty(
 
   env.extras["log"]["Metrics/torque_limit_ratio_mean"] = torch.mean(normalized)
   env.extras["log"]["Metrics/torque_limit_ratio_max"] = torch.max(normalized)
+  # Per actuator: the aggregate hides that the load is concentrated. A raw cost
+  # of 3.06 against a mean ratio of 0.36 means a handful of joints ride the
+  # limit while the rest cruise, and which ones decides whether a global torque
+  # penalty is even the right tool.
+  per_joint = torch.mean(normalized, dim=0)
+  for k, local_id in enumerate(active_local_ids):
+    env.extras["log"][f"TorqueRatio/{actuator_names[local_id]}"] = per_joint[k]
   return torch.sum(excess, dim=1)
 
 

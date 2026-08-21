@@ -453,7 +453,7 @@ RUNG_TERM = {
   "fsload": "flat_support",
   "air": "air_time",
   "sss": "standing_single_support",
-  "imp": "impact_vel",
+  "imp": "impact_vel", "tq": "joint_torques_l2",
   "swt": "foot_swing_height", "mfhr": "min_foot_height",
   "airtc": "air_time", "airT": "air_time",
 }
@@ -786,11 +786,35 @@ def _stride(cfg, full) -> None:
   r["feet_distance"].params["max_distance"] = 0.30
 
 
+def _tq(cfg, full) -> None:
+  """Hold the torque down while the stride grows, by widening the barrier.
+
+  torque_limit_margin is clamp((|tau|/limit - soft_ratio)/(1 - soft_ratio), 0)^2
+  summed over joints, so it charges nothing below 80% of the limit. Its raw cost
+  is 3.06 against a mean ratio of 0.357: roughly three joints ride at the limit
+  while the other thirty cruise at a third of it. The load is concentrated.
+
+  That rules out raising its weight. A joint pinned at the limit has normalized
+  capped at 1.0 and excess capped at 1.0, so more weight buys a bigger constant
+  with no gradient -- the same saturation pathology as foot_swing_height at an
+  unreachable target. Lower soft_ratio instead: at 0.6 a joint at 0.8 goes from
+  paying nothing to paying 0.25, while a joint at 1.0 still pays exactly 1.0.
+  Gradient appears below the cap and nothing escalates at it.
+
+  joint_torques_l2 doubles as the global counterpart. It is the literal
+  "minimise the torque" term, and at 4.7% of the penalty budget it is small
+  enough that doubling it is the modest change it looks like.
+  """
+  cfg.rewards["torque_limit_margin"].params["soft_ratio"] = float(
+    os.environ.get("RHPS1_SOFT_RATIO", "0.6"))
+  _w(cfg, "joint_torques_l2", -2e-5)
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
-  "lift": _lift, "stride": _stride,
+  "lift": _lift, "stride": _stride, "tq": _tq,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
