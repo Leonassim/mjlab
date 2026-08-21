@@ -859,12 +859,62 @@ def _steplen(cfg, full) -> None:
   )
 
 
+def _freevel(cfg, full) -> None:
+  """Stop paying for the command's exact velocity vector; pay for its direction.
+
+  Leo\'s framing: given a forward command, the robot should move that way at
+  whatever speed suits it, free to spend the step on a real weight transfer.
+
+  track_linear_velocity scores exp(-|c - v|^2 / 0.20^2) on the *instantaneous*
+  velocity. A long step is oscillatory by construction -- decelerate at heel
+  strike, accelerate at push-off, CoM rises and falls, weight swings onto the
+  stance hip. Under a kernel that narrow every excursion is error: the measured
+  error_vel_xy of ~0.17 already costs half the term at weight 3.5. The shuffle
+  is not what the policy settled for, it is what the kernel selects.
+
+  direction_progress low-passes velocity over a gait cycle first, then scores
+  it anisotropically -- saturating ramp along the command, wide kernel across
+  it, nothing on vertical. Most of the weight moves there; a widened
+  track_linear_velocity keeps the speed command meaningful for deployment, so
+  the operator can still slow the robot down.
+  """
+  tlv = cfg.rewards["track_linear_velocity"]
+  w = tlv.weight
+  share = float(os.environ.get("RHPS1_FREEVEL_SHARE", "0.7"))
+  cfg.rewards["direction_progress"] = RewardTermCfg(
+    func=mdp.direction_progress,
+    weight=w * share,
+    params={
+      "command_name": "twist",
+      "tau": float(os.environ.get("RHPS1_FREEVEL_TAU", "0.4")),
+      "lateral_std": 0.35,
+      "command_threshold": 0.1,
+    },
+  )
+  tlv.weight = w * (1.0 - share)
+  tlv.params["std"] = float(os.environ.get("RHPS1_FREEVEL_STD", "0.45"))
+
+
+def _freeroll(cfg, full) -> None:
+  """Widen the roll/pitch kernel of track_angular_velocity, leave yaw alone.
+
+  Same pathology as _freevel on the angular side: one std covers both the
+  tracked yaw command and the untracked roll/pitch, which for a walking
+  humanoid is the lateral weight transfer. At 0.35 a 0.3 rad/s roll excursion
+  costs ~52% of a weight-3.5 term -- the hip swing Leo wants is priced like a
+  tracking failure. Yaw keeps its 0.35.
+  """
+  cfg.rewards["track_angular_velocity"].params["std_xy"] = float(
+    os.environ.get("RHPS1_FREEROLL_STD", "0.8")
+  )
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
-  "steplen": _steplen,
+  "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 

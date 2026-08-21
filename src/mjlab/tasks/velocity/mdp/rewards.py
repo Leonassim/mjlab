@@ -48,11 +48,19 @@ def track_angular_velocity(
   env: ManagerBasedRlEnv,
   std: float,
   command_name: str,
+  std_xy: float | None = None,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
   """Reward heading error for heading-controlled envs, angular velocity for others.
 
   The commanded xy angular velocities are assumed to be zero.
+
+  ``std_xy`` widens the roll/pitch kernel without touching yaw. They share one
+  std by default, which conflates two different things: yaw is the tracked
+  command, while roll is the lateral weight transfer onto the stance hip that a
+  long step needs. At std 0.35 a 0.3 rad/s roll excursion costs half the term.
+  Splitting them is exactly equivalent to the single-std form when std_xy is
+  None.
   """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
@@ -60,8 +68,9 @@ def track_angular_velocity(
   actual = asset.data.root_link_ang_vel_b
   z_error = torch.square(command[:, 2] - actual[:, 2])
   xy_error = torch.sum(torch.square(actual[:, :2]), dim=1)
-  ang_vel_error = z_error + xy_error
-  return torch.exp(-ang_vel_error / std**2)
+  if std_xy is None:
+    return torch.exp(-(z_error + xy_error) / std**2)
+  return torch.exp(-z_error / std**2) * torch.exp(-xy_error / std_xy**2)
 
 
 class upright:
@@ -2496,6 +2505,75 @@ def flat_touchdown_penalty(
     contact_count * touchdown
   ) / torch.clamp(torch.sum(touchdown), min=1.0)
   return cost
+
+class direction_progress:
+  """Pay for going *where* the command points, not for holding its exact vector.
+
+  ``track_linear_velocity`` scores exp(-|c - v|^2 / std^2) on the raw
+  instantaneous velocity, with std 0.20. A real step is oscillatory in all
+  three components -- it decelerates at heel strike, accelerates at push-off,
+  the CoM rises and falls, and the weight swings onto the stance hip. Every one
+  of those excursions reads as tracking error under an isotropic kernel that
+  narrow. The only gait holding v near-constant is a shuffle, so the term
+  prices the long step out before any other reward gets a say.
+
+  Here the velocity is low-passed over roughly one gait cycle first, so
+  intra-step oscillation is invisible. What is left is scored anisotropically:
+
+    along the command  linear ramp to 1.0 at the commanded speed, then flat --
+                       going faster is never punished, going slower degrades
+                       gracefully instead of falling off a narrow exponential
+    across it          wide kernel, enough to stop crabbing, not enough to
+                       forbid the lateral weight shift a step needs
+    vertical           dropped; CoM rise and fall is part of stepping
+
+  Below ``command_threshold`` the term pays for standing still instead, on the
+  same wide kernel, so stand-still stability is unchanged.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    self.v_f = torch.zeros(env.num_envs, 2, device=env.device)
+    self.step_dt = env.step_dt
+
+  def reset(self, env_ids: torch.Tensor | None = None) -> None:
+    if env_ids is None:
+      self.v_f.zero_()
+    else:
+      self.v_f[env_ids] = 0.0
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    tau: float = 0.4,
+    lateral_std: float = 0.35,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    assert command is not None, f"Command '{command_name}' not found."
+
+    v = asset.data.root_link_lin_vel_b[:, :2]
+    a = self.step_dt / max(tau, self.step_dt)
+    self.v_f = self.v_f + a * (v - self.v_f)
+
+    lin = command[:, :2]
+    speed = torch.norm(lin, dim=1)
+    heading = lin / speed.clamp(min=1e-6).unsqueeze(1)
+    along = (self.v_f * heading).sum(dim=1)
+    across = self.v_f[:, 0] * (-heading[:, 1]) + self.v_f[:, 1] * heading[:, 0]
+
+    progress = torch.clamp(along / speed.clamp(min=1e-6), 0.0, 1.0)
+    on_axis = torch.exp(-torch.square(across) / lateral_std**2)
+    still = torch.exp(-torch.sum(torch.square(self.v_f), dim=1) / lateral_std**2)
+    moving = (speed + torch.abs(command[:, 2])) > command_threshold
+
+    env.extras["log"]["Metrics/vel_sway_rms"] = torch.sqrt(
+      torch.mean(torch.square(v[:, 1] - self.v_f[:, 1]))
+    )
+    return torch.where(moving, progress * on_axis, still)
+
 
 class com_step_progress:
   """Pay for the ground covered *per step*, not per second.
