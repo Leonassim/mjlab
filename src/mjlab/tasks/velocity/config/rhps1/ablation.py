@@ -848,18 +848,21 @@ def _steplen(cfg, full) -> None:
   """
   cfg.rewards["com_step_progress"] = RewardTermCfg(
     func=mdp.com_step_progress,
-    # ~0.4 * ~4.8 debounced landings/s = ~1.9/s at full stride, against a 9.6
-    # budget. Sized against the measured step_rate, not an assumed one: the
-    # first sizing used 3.3/s while the sensor was reporting 9.06, so the term
-    # came out ~3x hot and the policy paid for it in torque.
-    weight=float(os.environ.get("RHPS1_W_STEPLEN", "0.4")),
+    # Size the CEILING, not the starting pull. weight * step_rate is what the
+    # term is worth once the target is reached, and that is what keeps pulling
+    # as the policy improves. The run that drove torque to 0.47 started at a
+    # perfectly reasonable 0.79 but had a ceiling of 3.6/s -- 37% of the budget,
+    # still pulling hard at the point where the gait had already stopped being
+    # feasible. 0.3 * 5.94 measured landings/s = 1.78/s, 18% of budget.
+    weight=float(os.environ.get("RHPS1_W_STEPLEN", "0.3")),
     params={
       "sensor_name": "feet_ground_contact",
       "command_name": "twist",
-      # Debounced step length runs ~2x the chattering measurement, so 0.08
-      # keeps the ratio near 0.5 -- gradient present, ceiling still out of
-      # reach. Re-measure Metrics/step_length_mean before moving it again.
-      "target_distance": float(os.environ.get("RHPS1_STEP_TARGET", "0.08")),
+      # 0.05 against a debounced 2.9 cm: reachable, and worth 72% more stride
+      # if reached. A target the policy can actually hit is the point -- the
+      # clamp then stops the pull instead of dragging it into the torque wall.
+      # Raise it only after Metrics/step_length_mean saturates.
+      "target_distance": float(os.environ.get("RHPS1_STEP_TARGET", "0.05")),
       "power": 2.0,
       "command_threshold": 0.1,
     },
