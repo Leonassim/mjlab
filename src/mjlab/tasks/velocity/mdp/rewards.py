@@ -2496,3 +2496,67 @@ def flat_touchdown_penalty(
     contact_count * touchdown
   ) / torch.clamp(torch.sum(touchdown), min=1.0)
   return cost
+
+class com_step_progress:
+  """Pay for the ground covered *per step*, not per second.
+
+  Velocity tracking cannot tell two gaits apart: short fast steps and long slow
+  ones average the same speed and collect the same reward, so the policy picks
+  whichever is cheaper elsewhere -- which is the shuffle. Rewarding CoM
+  displacement does not fix that, because displacement per unit time is the
+  velocity again.
+
+  What breaks the tie is paying at touchdown, superlinearly. Two half-length
+  steps pay 2*(0.5)^power and one full step pays 1.0, so at power 2 the same
+  distance in the same time earns twice as much when it is taken in one stride.
+  Same structure as split_feet_air_time's square, on the quantity actually
+  wanted -- distance -- instead of the duration that only stood in for it.
+
+  Unlike slowing the cadence, this asks nothing of single-support balance: the
+  flight time can stay where the plant allows it.
+
+  The accumulator integrates base velocity projected on the commanded heading,
+  so it measures progress *along the command* and ignores drift across it.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    self.accum = torch.zeros(env.num_envs, device=env.device)
+    self.step_dt = env.step_dt
+
+  def reset(self, env_ids: torch.Tensor | None = None) -> None:
+    if env_ids is None:
+      self.accum.zero_()
+    else:
+      self.accum[env_ids] = 0.0
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    command_name: str,
+    target_distance: float = 0.10,
+    power: float = 2.0,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    lin = command[:, :2]
+    speed = torch.norm(lin, dim=1)
+    heading = lin / speed.clamp(min=1e-6).unsqueeze(1)
+    v_body = asset.data.root_link_lin_vel_b[:, :2]
+    self.accum = self.accum + (v_body * heading).sum(dim=1) * self.step_dt
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    landed = sensor.compute_first_contact(dt=self.step_dt).any(dim=1)
+    ratio = torch.clamp(self.accum / max(target_distance, 1e-6), 0.0, 1.0)
+    active = (speed + torch.abs(command[:, 2]) > command_threshold).float()
+    reward = torch.pow(ratio, power) * landed.float() * active
+
+    n = torch.clamp(torch.sum(landed.float()), min=1.0)
+    env.extras["log"]["Metrics/step_length_mean"] = (
+      torch.sum(self.accum * landed.float()) / n
+    )
+    self.accum = torch.where(landed, torch.zeros_like(self.accum), self.accum)
+    return reward

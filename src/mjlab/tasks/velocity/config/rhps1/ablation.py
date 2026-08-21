@@ -828,11 +828,43 @@ def _nodamp(cfg, full) -> None:
   cfg.curriculum.pop("velocity_damper", None)
 
 
+def _steplen(cfg, full) -> None:
+  """Add com_step_progress: pay for ground covered per step, not per second.
+
+  Leo's idea, sharpened. Velocity tracking cannot separate a short fast step
+  from a long slow one -- both average the commanded speed -- so the policy
+  takes whichever is cheaper elsewhere. Rewarding CoM displacement does not
+  separate them either: displacement per unit time is the velocity again. Paying
+  at touchdown with power 2 does: two half-steps collect 2*(0.5)^2 = 0.5 against
+  1.0 for one full step over the same distance and time.
+
+  It asks nothing of single-support balance, which is what blocked the cadence
+  lever: air_time's reward went from -0.21 to +0.03 while air_time_mean stayed
+  flat at 0.128 for six hundred iterations. The plant would not give a slower
+  cycle; this does not ask for one.
+
+  target_distance 0.10 m against a measured ~3 cm step: reachable in three
+  strides' worth of growth, and the clamp means overshooting pays nothing extra.
+  """
+  cfg.rewards["com_step_progress"] = RewardTermCfg(
+    func=mdp.com_step_progress,
+    weight=float(os.environ.get("RHPS1_W_STEPLEN", "3.0")),
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "target_distance": float(os.environ.get("RHPS1_STEP_TARGET", "0.10")),
+      "power": 2.0,
+      "command_threshold": 0.1,
+    },
+  )
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
+  "steplen": _steplen,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
