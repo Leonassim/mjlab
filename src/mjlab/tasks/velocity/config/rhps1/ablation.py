@@ -871,17 +871,21 @@ def _steplen(cfg, full) -> None:
     },
   )
   # 4.5x slower and 4x longer is not a nudge, so it gets a ladder rather than a
-  # target. Stages land ~600 iterations apart at 4096 envs.
+  # target. `step` is common_step_counter, which counts environment steps at
+  # ~24 per iteration -- the same scale the standing_envs and air_time ladders
+  # already use. The first version read it as env-instances and set 15e6, which
+  # is ~300x too far: the run sat on stage 0 for 1930 iterations and plateaued
+  # at 91% of it. Stages here land ~500 iterations apart.
   cfg.curriculum["step_target"] = CurriculumTermCfg(
     func=mdp.step_target_curriculum,
     params={
       "reward_name": "com_step_progress",
       "stages": [
         {"step": 0, "target_distance": 0.05, "target_period": 0.25},
-        {"step": 15_000_000, "target_distance": 0.08, "target_period": 0.35},
-        {"step": 30_000_000, "target_distance": 0.11, "target_period": 0.50},
-        {"step": 45_000_000, "target_distance": 0.14, "target_period": 0.65},
-        {"step": 60_000_000, "target_distance": 0.16, "target_period": 0.80},
+        {"step": 12_000, "target_distance": 0.08, "target_period": 0.35},
+        {"step": 24_000, "target_distance": 0.11, "target_period": 0.50},
+        {"step": 36_000, "target_distance": 0.14, "target_period": 0.65},
+        {"step": 48_000, "target_distance": 0.16, "target_period": 0.80},
       ],
     },
   )

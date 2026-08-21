@@ -23,5 +23,5 @@ export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True --video-interval 250 \
   --agent.resume True \
-  --agent.load-run 2026-08-21_11-47-31 \
-  --agent.load-checkpoint model_2100.pt
+  --agent.load-run ${LOAD_RUN:-2026-08-21_11-47-31} \
+  --agent.load-checkpoint ${LOAD_CKPT:-model_2100.pt}
