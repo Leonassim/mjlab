@@ -753,11 +753,44 @@ def _lift(cfg, full) -> None:
     os.environ.get("RHPS1_AIR_TMAX", "0.25"))
 
 
+def _stride(cfg, full) -> None:
+  """Longer steps, by paying for a slower cycle rather than a faster foot.
+
+  Measured on policy 0: flight 0.178 s, per-foot air fraction 0.43, speed
+  0.136 m/s -- a 0.414 s cycle, so a 2.8 cm step at 2.4 Hz. Step length is
+  speed / (2 * cycle frequency) and the speed is commanded, so the policy is
+  free to meet it with a short fast step or a long slow one. Nothing in the
+  objective pays for the stride, and four action-rate terms plus foot_clearance
+  tax it, so it picks the shuffle. Correctly.
+
+  The one term that pays for cycle time is air_time, capped at threshold_max:
+  0.25 buys a 3.9 cm step, 0.5 buys 7.9 cm. The curriculum already aimed at 0.5
+  and could not get there because touchdown_cost put break-even at
+  0.387*threshold_max = 0.194 s, above the gait. Remove the forfeit instead of
+  lowering the cap.
+
+  No cadence exploit: with power 2, two 0.1 s flights pay 2*(0.2)^2 = 0.08 and
+  one 0.2 s flight pays (0.4)^2 = 0.16, so amplitude wins by construction. That
+  is what `air` broke by linearising -- at power 1 both pay 0.40 and the policy
+  goes indifferent. The square was the guard, not the forfeit.
+
+  feet_distance rides along: both policy 0 (0.1944) and the current run (0.2003)
+  sit on max_distance = 0.20, and while the penalty there is small enough not to
+  bind today, an 8 cm step would put the mean well past it.
+  """
+  _lift(cfg, full)
+  r = cfg.rewards
+  r["air_time"].params["threshold_max"] = float(
+    os.environ.get("RHPS1_AIR_TMAX", "0.5"))
+  r["air_time"].params["touchdown_cost"] = 0.0
+  r["feet_distance"].params["max_distance"] = 0.30
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
-  "lift": _lift,
+  "lift": _lift, "stride": _stride,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
