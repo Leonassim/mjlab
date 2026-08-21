@@ -196,6 +196,18 @@ def joint_torque_limit_margin_penalty(
   per_joint = torch.mean(normalized, dim=0)
   for k, local_id in enumerate(active_local_ids):
     env.extras["log"][f"TorqueRatio/{actuator_names[local_id]}"] = per_joint[k]
+
+  # actuator_force is what MuJoCo applied, already clamped to forcerange, so
+  # normalized cannot exceed 1 and the max reads 1.0000 on every line whether
+  # one sample clips or half of them do. The level of torque is not the problem
+  # -- a longer step costs more, and riding the limit is fine. Demanding past it
+  # is not: the action is silently truncated and the policy is controlling a
+  # plant it cannot feel. This is that fraction.
+  saturated = (normalized >= 0.99).float()
+  env.extras["log"]["Metrics/torque_saturated_frac"] = torch.mean(saturated)
+  per_joint_sat = torch.mean(saturated, dim=0)
+  for k, local_id in enumerate(active_local_ids):
+    env.extras["log"][f"TorqueSat/{actuator_names[local_id]}"] = per_joint_sat[k]
   return torch.sum(excess, dim=1)
 
 

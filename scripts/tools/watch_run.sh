@@ -11,7 +11,8 @@
 set -u
 cd /home/lmoussafir/mjlab-rhps1 || exit 1
 MILESTONE=${MILESTONE:-300}
-TORQUE_MAX=${TORQUE_MAX:-0.45}
+TORQUE_MAX=${TORQUE_MAX:-0.60}   # backstop only; the reward barrier starts here
+SAT_MAX=${SAT_MAX:-0.05}         # fraction of joint-samples clipped by forcerange
 POLL=${POLL:-300}
 TSV=logs/watch_$(date +%m%d_%H%M).tsv
 START=$(date +%s)
@@ -40,8 +41,8 @@ for _ in $(seq 1 60); do
   sleep 20
 done
 [ -z "$RUN" ] && { echo "GUARD: no run directory newer than this watch"; exit 5; }
-echo "watching pid $PID  run $RUN  milestone $MILESTONE  torque_max $TORQUE_MAX"
-printf 'it\tstep_len\tpeak_h\tair_t\ttorque\ttq_max\tsway\tvel_err\tfell\taction\n' > "$TSV"
+echo "watching pid $PID  run $RUN  milestone $MILESTONE  sat_max $SAT_MAX  torque_max $TORQUE_MAX"
+printf 'it\tstep_len\tpeak_h\tair_t\ttorque\tsat\tsway\tvel_err\tfell\taction\n' > "$TSV"
 
 STRIKES=0
 while :; do
@@ -50,14 +51,18 @@ while :; do
   ROW=$(.venv/bin/python scripts/tools/watch_probe.py "$RUN" 2>/dev/null)
   [ -z "$ROW" ] && continue
   echo "$ROW" >> "$TSV"; echo "$ROW"
-  IT=$(echo "$ROW" | cut -f1); TQ=$(echo "$ROW" | cut -f5)
+  IT=$(echo "$ROW" | cut -f1); TQ=$(echo "$ROW" | cut -f5); SAT=$(echo "$ROW" | cut -f6)
   if [ "${PREV_IT:-0}" = "$IT" ]; then
     echo "GUARD: iteration stuck at $IT -- wrong run directory or trainer hung"; exit 6
   fi
   PREV_IT=$IT
-  if awk -v a="$TQ" -v b="$TORQUE_MAX" 'BEGIN{exit !(a+0>b+0)}'; then
+  # The guard is on clipping, not on level. Torque is allowed to rise -- a
+  # longer step costs more -- but an action truncated by forcerange is an
+  # action the robot never executes.
+  if awk -v a="$SAT" -v b="$SAT_MAX" 'BEGIN{exit !(a+0>b+0)}' ||
+     awk -v a="$TQ" -v b="$TORQUE_MAX" 'BEGIN{exit !(a+0>b+0)}'; then
     STRIKES=$((STRIKES+1))
-    [ "$STRIKES" -ge 2 ] && { echo "GUARD: torque $TQ over $TORQUE_MAX twice"; exit 3; }
+    [ "$STRIKES" -ge 2 ] && { echo "GUARD: sat $SAT / torque $TQ over $SAT_MAX / $TORQUE_MAX twice"; exit 3; }
   else STRIKES=0; fi
   if [ "${IT%.*}" -ge "$MILESTONE" ] 2>/dev/null; then echo "MILESTONE $IT"; exit 0; fi
 done

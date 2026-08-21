@@ -10,7 +10,7 @@ TAGS = [
   "Metrics/peak_height_mean",
   "Metrics/air_time_mean",
   "Metrics/torque_limit_ratio_mean",
-  "Metrics/torque_limit_ratio_max",
+  "Metrics/torque_saturated_frac",
   "Metrics/vel_sway_rms",
   "Metrics/twist/error_vel_xy",
   "Episode_Termination/fell_down",
