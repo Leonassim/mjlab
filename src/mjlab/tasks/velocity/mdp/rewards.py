@@ -2636,5 +2636,12 @@ class com_step_progress:
     env.extras["log"]["Metrics/step_length_mean"] = (
       torch.sum(self.accum * landed.float()) / n
     )
+    env.extras["log"]["Metrics/step_rate"] = torch.mean(landed.float()) / self.step_dt
     self.accum = torch.where(landed, torch.zeros_like(self.accum), self.accum)
-    return reward
+
+    # RewardManager returns raw * weight * dt: every term is a per-second rate.
+    # An impulse paid once per touchdown gets that dt too, which divided this
+    # term by ~50 and left it at 0.1% of the positive budget -- inert. Divide it
+    # back out so `weight` means what it means everywhere else, and the term is
+    # worth weight * (landings per second) at full stride.
+    return reward / self.step_dt

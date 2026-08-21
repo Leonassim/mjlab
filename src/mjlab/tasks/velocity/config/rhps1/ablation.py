@@ -848,11 +848,16 @@ def _steplen(cfg, full) -> None:
   """
   cfg.rewards["com_step_progress"] = RewardTermCfg(
     func=mdp.com_step_progress,
-    weight=float(os.environ.get("RHPS1_W_STEPLEN", "3.0")),
+    # ~0.6 * ~3.3 landings/s = ~2.0/s at full stride, against a 9.6 budget --
+    # a real prize. At the measured 2.3 cm it pays ~0.4/s, which is a gradient
+    # rather than the 0.009 it was worth before the dt fix.
+    weight=float(os.environ.get("RHPS1_W_STEPLEN", "0.6")),
     params={
       "sensor_name": "feet_ground_contact",
       "command_name": "twist",
-      "target_distance": float(os.environ.get("RHPS1_STEP_TARGET", "0.10")),
+      # 0.05 against a measured 2.3 cm. 0.10 put the ratio at 0.23, where the
+      # square delivers 5% -- the shape was right and the operating point wrong.
+      "target_distance": float(os.environ.get("RHPS1_STEP_TARGET", "0.05")),
       "power": 2.0,
       "command_threshold": 0.1,
     },
