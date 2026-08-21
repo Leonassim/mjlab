@@ -40,7 +40,15 @@ for _ in $(seq 1 60); do
   fi
   sleep 20
 done
-[ -z "$RUN" ] && { echo "GUARD: no run directory newer than this watch"; exit 5; }
+# Attaching to a run that started before this watch is the normal case when
+# re-arming mid-flight, and rejecting it cost a milestone. Fall back to the
+# newest directory: the stale-iteration guard below catches the case this
+# timestamp check was written for.
+if [ -z "$RUN" ]; then
+  RUN=$(ls -dt logs/rsl_rl/rhps1_velocity/*/ 2>/dev/null | head -1)
+  echo "note: attaching to pre-existing run $RUN"
+fi
+[ -z "$RUN" ] && { echo "GUARD: no run directory at all"; exit 5; }
 echo "watching pid $PID  run $RUN  milestone $MILESTONE  sat_max $SAT_MAX  torque_max $TORQUE_MAX"
 printf 'it\tstep_len\tpeak_h\tair_t\ttorque\tsat\tsway\tvel_err\tfell\taction\n' > "$TSV"
 
