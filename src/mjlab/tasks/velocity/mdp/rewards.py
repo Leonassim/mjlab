@@ -2615,6 +2615,7 @@ class com_step_progress:
     target_distance: float = 0.10,
     power: float = 2.0,
     command_threshold: float = 0.1,
+    min_air_time: float = 0.05,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   ) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
@@ -2626,8 +2627,17 @@ class com_step_progress:
     v_body = asset.data.root_link_lin_vel_b[:, :2]
     self.accum = self.accum + (v_body * heading).sum(dim=1) * self.step_dt
 
+    # Debounce. compute_first_contact fires on contact chatter too: measured
+    # 9.06 events/s against the ~4.8 a two-foot gait at air_time 0.165 can
+    # produce, so roughly every footfall was counted twice. That paid the term
+    # twice over AND reset the accumulator mid-step, halving the step length it
+    # reports. A landing counts only after a real flight phase.
     sensor: ContactSensor = env.scene[sensor_name]
-    landed = sensor.compute_first_contact(dt=self.step_dt).any(dim=1)
+    first = sensor.compute_first_contact(dt=self.step_dt)
+    air = sensor.data.last_air_time
+    if air is not None:
+      first = first & (air[:, : first.shape[1]] > min_air_time)
+    landed = first.any(dim=1)
     ratio = torch.clamp(self.accum / max(target_distance, 1e-6), 0.0, 1.0)
     active = (speed + torch.abs(command[:, 2]) > command_threshold).float()
     reward = torch.pow(ratio, power) * landed.float() * active
