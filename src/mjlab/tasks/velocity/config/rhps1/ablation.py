@@ -865,6 +865,24 @@ def _steplen(cfg, full) -> None:
       "target_distance": float(os.environ.get("RHPS1_STEP_TARGET", "0.05")),
       "power": 2.0,
       "command_threshold": 0.1,
+      # Leo wants ~0.8 s per step against a measured 0.18. Both targets are
+      # walked by the curriculum; these are stage 0.
+      "target_period": 0.25,
+    },
+  )
+  # 4.5x slower and 4x longer is not a nudge, so it gets a ladder rather than a
+  # target. Stages land ~600 iterations apart at 4096 envs.
+  cfg.curriculum["step_target"] = CurriculumTermCfg(
+    func=mdp.step_target_curriculum,
+    params={
+      "reward_name": "com_step_progress",
+      "stages": [
+        {"step": 0, "target_distance": 0.05, "target_period": 0.25},
+        {"step": 15_000_000, "target_distance": 0.08, "target_period": 0.35},
+        {"step": 30_000_000, "target_distance": 0.11, "target_period": 0.50},
+        {"step": 45_000_000, "target_distance": 0.14, "target_period": 0.65},
+        {"step": 60_000_000, "target_distance": 0.16, "target_period": 0.80},
+      ],
     },
   )
 
@@ -890,7 +908,7 @@ def _freevel(cfg, full) -> None:
   """
   tlv = cfg.rewards["track_linear_velocity"]
   w = tlv.weight
-  share = float(os.environ.get("RHPS1_FREEVEL_SHARE", "0.7"))
+  share = float(os.environ.get("RHPS1_FREEVEL_SHARE", "0.9"))
   cfg.rewards["direction_progress"] = RewardTermCfg(
     func=mdp.direction_progress,
     weight=w * share,
@@ -902,7 +920,7 @@ def _freevel(cfg, full) -> None:
     },
   )
   tlv.weight = w * (1.0 - share)
-  tlv.params["std"] = float(os.environ.get("RHPS1_FREEVEL_STD", "0.45"))
+  tlv.params["std"] = float(os.environ.get("RHPS1_FREEVEL_STD", "0.70"))
 
 
 def _freeroll(cfg, full) -> None:

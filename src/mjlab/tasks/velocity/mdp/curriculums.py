@@ -267,3 +267,30 @@ class StandingEnvsStage(TypedDict):
   value: float
 
 
+
+
+def step_target_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  reward_name: str,
+  stages: list[dict],
+) -> torch.Tensor:
+  """Walk com_step_progress's targets up in stages.
+
+  A fixed target stops pulling the moment it is reached -- the clamp is there
+  precisely so it cannot drag the policy past feasibility, which means the
+  target has to move if the stride is to keep growing. Measured 3.9 cm against
+  a 5 cm target: ratio 0.78, the pull was about to die.
+
+  Same mutate-in-place mechanism as air_time_target_curriculum, and the same
+  discipline: each stage only fires after the gait has had a window to
+  consolidate at the previous one, so the current behaviour never becomes
+  suddenly unprofitable.
+  """
+  del env_ids
+  cfg = env.reward_manager.get_term_cfg(reward_name)
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      cfg.params["target_distance"] = stage["target_distance"]
+      cfg.params["target_period"] = stage["target_period"]
+  return torch.tensor([cfg.params["target_distance"]])

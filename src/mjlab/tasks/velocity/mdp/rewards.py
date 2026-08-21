@@ -2599,13 +2599,16 @@ class com_step_progress:
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
     self.accum = torch.zeros(env.num_envs, device=env.device)
+    self.elapsed = torch.zeros(env.num_envs, device=env.device)
     self.step_dt = env.step_dt
 
   def reset(self, env_ids: torch.Tensor | None = None) -> None:
     if env_ids is None:
       self.accum.zero_()
+      self.elapsed.zero_()
     else:
       self.accum[env_ids] = 0.0
+      self.elapsed[env_ids] = 0.0
 
   def __call__(
     self,
@@ -2613,6 +2616,7 @@ class com_step_progress:
     sensor_name: str,
     command_name: str,
     target_distance: float = 0.10,
+    target_period: float = 0.0,
     power: float = 2.0,
     command_threshold: float = 0.1,
     min_air_time: float = 0.05,
@@ -2626,6 +2630,7 @@ class com_step_progress:
     heading = lin / speed.clamp(min=1e-6).unsqueeze(1)
     v_body = asset.data.root_link_lin_vel_b[:, :2]
     self.accum = self.accum + (v_body * heading).sum(dim=1) * self.step_dt
+    self.elapsed = self.elapsed + self.step_dt
 
     # Debounce. compute_first_contact fires on contact chatter too: measured
     # 9.06 events/s against the ~4.8 a two-foot gait at air_time 0.165 can
@@ -2639,15 +2644,28 @@ class com_step_progress:
       first = first & (air[:, : first.shape[1]] > min_air_time)
     landed = first.any(dim=1)
     ratio = torch.clamp(self.accum / max(target_distance, 1e-6), 0.0, 1.0)
+    scored = torch.pow(ratio, power)
+    if target_period > 0.0:
+      # Distance alone does not slow the gait: at a given speed the policy can
+      # collect the same distance in fast small steps. Pay for the period too,
+      # averaged rather than multiplied so one lagging half does not zero the
+      # term. Stance time counts, so the cadence can slow by standing longer --
+      # which is the cheap half of "one real ample slow step".
+      p_ratio = torch.clamp(self.elapsed / target_period, 0.0, 1.0)
+      scored = 0.5 * (scored + torch.pow(p_ratio, power))
     active = (speed + torch.abs(command[:, 2]) > command_threshold).float()
-    reward = torch.pow(ratio, power) * landed.float() * active
+    reward = scored * landed.float() * active
 
     n = torch.clamp(torch.sum(landed.float()), min=1.0)
     env.extras["log"]["Metrics/step_length_mean"] = (
       torch.sum(self.accum * landed.float()) / n
     )
     env.extras["log"]["Metrics/step_rate"] = torch.mean(landed.float()) / self.step_dt
+    env.extras["log"]["Metrics/step_period_mean"] = (
+      torch.sum(self.elapsed * landed.float()) / n
+    )
     self.accum = torch.where(landed, torch.zeros_like(self.accum), self.accum)
+    self.elapsed = torch.where(landed, torch.zeros_like(self.elapsed), self.elapsed)
 
     # RewardManager returns raw * weight * dt: every term is a per-second rate.
     # An impulse paid once per touchdown gets that dt too, which divided this
