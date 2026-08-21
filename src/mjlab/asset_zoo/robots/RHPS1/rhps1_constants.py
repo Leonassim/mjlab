@@ -569,6 +569,14 @@ RHPS1_ACTUATORS: tuple[FiniteDifferencePdActuatorCfg, ...] = (
 # parallel-cylinder attachment-point geometry, which isn't in any file we have access to
 # (see RHPS1_gains/README.md "Actuator Limits (Real Values, All Joints)").
 #
+# torque_constant corrected 2026-08-21 from
+# Leonassim/RHPS1_gains FromRealRobot/joint_torque_limits_rotate.csv, which now
+# carries Kt: CROTCH_Y 0.0582 -> 0.116, KNEE_P 0.101 -> 0.424, SHOULDER_P and
+# CHEST 0.047 -> 0.246. The three factors are 2.0x, 4.2x and 5.2x, so there was
+# no general rule to apply and the joints the csv does not cover -- HEAD,
+# SHOULDER_R/Y, ELBOW, WRIST -- still carry the old, unverified family
+# (0.0458/0.0487) and must not be trusted until sourced.
+#
 # All numeric values below are real, from RHPS1_gains/FromRealRobot/drive_gains_map.csv
 # (Kp_pos<-KP3, Kp_vel<-KP2, Ki_vel<-KI2, gear_ratio<-gear_ratio_N, torque_constant<-
 # torque_constant_Nm_per_Arms, current_limit_continuous<-current_limit_continuous_A,
@@ -582,42 +590,42 @@ RHPS1_ACTUATORS: tuple[FiniteDifferencePdActuatorCfg, ...] = (
 RHPS1_ELMO_ACTUATOR_L_CROTCH_Y = ElmoReplicaActuatorCfg(
   target_names_expr=("L_CROTCH_Y",),
   Kp_pos=30.0, Kp_vel=1.1e-6, Ki_vel=45.0,
-  gear_ratio=159.0907, torque_constant=0.0582,
+  gear_ratio=159.0907, torque_constant=0.116,
   current_limit_continuous=0.88, current_limit_peak=2.55,
   armature=1.0,
 )
 RHPS1_ELMO_ACTUATOR_R_CROTCH_Y = ElmoReplicaActuatorCfg(
   target_names_expr=("R_CROTCH_Y",),
   Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0,
-  gear_ratio=159.0907, torque_constant=0.0582,
+  gear_ratio=159.0907, torque_constant=0.116,
   current_limit_continuous=2.16, current_limit_peak=4.24,
   armature=1.0,
 )
 RHPS1_ELMO_ACTUATOR_L_KNEE_P = ElmoReplicaActuatorCfg(
   target_names_expr=("L_KNEE_P",),
   Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0,
-  gear_ratio=210.0, torque_constant=0.101,
+  gear_ratio=210.0, torque_constant=0.424,
   current_limit_continuous=2.94, current_limit_peak=6.79,
   armature=1.0,
 )
 RHPS1_ELMO_ACTUATOR_R_KNEE_P = ElmoReplicaActuatorCfg(
   target_names_expr=("R_KNEE_P",),
   Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0,
-  gear_ratio=210.0, torque_constant=0.101,
+  gear_ratio=210.0, torque_constant=0.424,
   current_limit_continuous=2.16, current_limit_peak=4.24,
   armature=1.0,
 )
 RHPS1_ELMO_ACTUATOR_L_SHOULDER_P = ElmoReplicaActuatorCfg(
   target_names_expr=("L_SHOULDER_P",),
   Kp_pos=39.0, Kp_vel=1.1e-6, Ki_vel=45.0,
-  gear_ratio=200.0, torque_constant=0.0470,
+  gear_ratio=200.0, torque_constant=0.246,
   current_limit_continuous=0.88, current_limit_peak=1.68,
   armature=1.0,
 )
 RHPS1_ELMO_ACTUATOR_R_SHOULDER_P = ElmoReplicaActuatorCfg(
   target_names_expr=("R_SHOULDER_P",),
   Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0,
-  gear_ratio=199.9998, torque_constant=0.0470,
+  gear_ratio=199.9998, torque_constant=0.246,
   current_limit_continuous=2.94, current_limit_peak=6.79,
   armature=1.0,
 )
@@ -626,11 +634,11 @@ RHPS1_ELMO_ACTUATOR_CHEST = ElmoReplicaDifferentialActuatorCfg(
   # dof order (target_names_expr) = (CHEST_P, CHEST_Y); ch_a=ChestYPL=P+Y, ch_b=ChestYPR=P-Y
   target_names_expr=("CHEST_P", "CHEST_Y"),
   channel_a=ElmoChannelParams(
-    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=160.0, torque_constant=0.0470,
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=160.0, torque_constant=0.246,
     current_limit_continuous=2.94, current_limit_peak=6.79,
   ),
   channel_b=ElmoChannelParams(
-    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=160.0, torque_constant=0.0470,
+    Kp_pos=60.0, Kp_vel=5.0e-6, Ki_vel=2.0, gear_ratio=160.0, torque_constant=0.246,
     current_limit_continuous=2.94, current_limit_peak=6.79,
   ),
   armature=1.0,
