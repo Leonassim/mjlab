@@ -915,16 +915,21 @@ def _calm(cfg, full) -> None:
   Rescoped to the real upper body and weighted up.
 
   Action acceleration alone permits a large slow sweep, which is what the video
-  shows, so joint velocity is penalised over the same set. Weight is a first
-  estimate: check Episode_Reward/upper_body_vel_l2 against the ~0.5 the other
-  mid-sized penalties sit at, and move it rather than assuming.
+  shows, so joint velocity is penalised over the same set.
+
+  Both weights are set from measured raw values, not guessed. The first pass
+  guessed and was wrong in both directions at once: action_acc came out at
+  -578.5 against a total negative budget of 7.6, and vel at -0.0023, inert.
+  The raw action acceleration over the arms is ~390x the legs' at equal weight,
+  which is the flailing itself, quantified. Both now land near -0.5, alongside
+  the torque penalties.
   """
   ub = SceneEntityCfg("robot", joint_names=_UPPER_BODY)
   cfg.rewards["upper_body_action_acc_l2"].params["asset_cfg"] = ub
-  _w(cfg, "upper_body_action_acc_l2", -float(os.environ.get("RHPS1_W_UBACC", "0.3")))
+  _w(cfg, "upper_body_action_acc_l2", -float(os.environ.get("RHPS1_W_UBACC", "0.00026")))
   cfg.rewards["upper_body_vel_l2"] = RewardTermCfg(
     func=mdp.joint_vel_l2,
-    weight=-float(os.environ.get("RHPS1_W_UBVEL", "0.002")),
+    weight=-float(os.environ.get("RHPS1_W_UBVEL", "0.43")),
     params={"asset_cfg": SceneEntityCfg("robot", joint_names=_UPPER_BODY)},
   )
 
