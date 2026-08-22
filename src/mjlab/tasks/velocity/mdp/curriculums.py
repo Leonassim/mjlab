@@ -321,15 +321,20 @@ def reward_param_curriculum(
   # ladder lands on its last stage immediately -- which is exactly the failure
   # this ladder exists to avoid, since stage 0 is deliberately set near what the
   # gait already does. Count from the first call instead.
+  # `step` counts CALLS to this function -- one per iteration -- not
+  # common_step_counter. Two attempts to offset that counter failed for the
+  # same reason: it is restored from the checkpoint *after* the curriculum's
+  # first call, so a base captured then reads 0 while the counter itself jumps
+  # to 417820, and every stage fires at once. A call counter owes nothing to
+  # checkpoint state, and stages read as iterations, which is how they are
+  # reasoned about anyway.
   if relative:
-    # Module state, not setattr on env (which did not persist, so the base was
-    # recaptured every call and the offset stayed 0) and not cfg.params, whose
-    # keys are splatted into this function's kwargs on the next call.
     key = (reward_name, param)
-    base = _RELATIVE_BASE.setdefault(key, env.common_step_counter)
+    calls = _RELATIVE_BASE.get(key, 0) + 1
+    _RELATIVE_BASE[key] = calls
   else:
-    base = 0
+    calls = env.common_step_counter
   for stage in stages:
-    if env.common_step_counter - base > stage["step"]:
+    if calls > stage["step"]:
       cfg.params[param] = stage["value"]
-  return torch.tensor([cfg.params[param]])
+  return torch.tensor([float(cfg.params[param])])
