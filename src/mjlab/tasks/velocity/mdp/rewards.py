@@ -2548,7 +2548,10 @@ def flat_touchdown_penalty(
   env.extras["log"]["Metrics/flat_touchdown_contacts_mean"] = torch.sum(
     contact_count * touchdown
   ) / torch.clamp(torch.sum(touchdown), min=1.0)
-  return cost
+  # Impulse, paid only on the touchdown step, so RewardManager's dt scaling
+  # divides it by ~50 -- the same defect that left com_step_progress inert.
+  # Divide it back out so `weight` means what it means for every other term.
+  return cost / env.step_dt
 
 class direction_progress:
   """Pay for going *where* the command points, not for holding its exact vector.

@@ -13,6 +13,7 @@ TAGS = [
   "Metrics/torque_saturated_frac",
   "Metrics/vel_sway_rms",
   "Metrics/twist/error_vel_xy",
+  "Metrics/stance_contacts_mean",
   "Episode_Termination/fell_down",
   "Episode_Metrics/mean_action_acc",
 ]

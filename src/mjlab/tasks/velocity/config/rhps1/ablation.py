@@ -941,6 +941,15 @@ def _dense(cfg, full) -> None:
   cfg.curriculum.pop("swing_height_target", None)
   cfg.curriculum.pop("min_foot_height_target", None)
 
+  # flat_touchdown was -0.012 because it is an impulse crushed by the dt
+  # scaling, not because the landing is good. It is now a rate, so the weight
+  # has to come down by roughly that factor to land near the other mid-sized
+  # penalties. Measured 2.887 of 4 corners at touchdown against 2.418 in
+  # support: the foot lands nearly flat and rolls onto an edge afterwards, so
+  # flat_support is where the remaining deficit is -- raised with it.
+  _w(cfg, "flat_touchdown", -float(os.environ.get("RHPS1_W_FLATTD", "1.2")))
+  _w(cfg, "flat_support", -float(os.environ.get("RHPS1_W_FLATSUP", "4.0")))
+
 
 def _footladder(cfg, full) -> None:
   """Ladder the foot-height targets up from where the gait actually is.

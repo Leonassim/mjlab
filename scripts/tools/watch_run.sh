@@ -50,7 +50,7 @@ if [ -z "$RUN" ]; then
 fi
 [ -z "$RUN" ] && { echo "GUARD: no run directory at all"; exit 5; }
 echo "watching pid $PID  run $RUN  milestone $MILESTONE  sat_max $SAT_MAX  torque_max $TORQUE_MAX"
-printf 'it\tstep_len\tpeak_h\tair_t\ttorque\tsat\tsway\tvel_err\tfell\taction\n' > "$TSV"
+printf 'it\tstep_len\tpeak_h\tair_t\ttorque\tsat\tsway\tvel_err\tstance\tfell\taction\n' > "$TSV"
 
 STRIKES=0
 while :; do
