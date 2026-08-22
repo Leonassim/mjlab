@@ -927,6 +927,13 @@ def _calm(cfg, full) -> None:
   ub = SceneEntityCfg("robot", joint_names=_UPPER_BODY)
   cfg.rewards["upper_body_action_acc_l2"].params["asset_cfg"] = ub
   _w(cfg, "upper_body_action_acc_l2", -float(os.environ.get("RHPS1_W_UBACC", "0.00026")))
+  # Penalising motion backfired: upper_body_action_acc_l2 fell -0.50 -> -0.011,
+  # i.e. the policy cut arm action acceleration 45x, and arm clipping rose
+  # anyway, 0.239 -> 0.288. Moving less, it held the arms in strained static
+  # postures instead, which clip just as hard. Torque is the thing to charge
+  # for, not movement. torque_limit_margin is the only term that prices the
+  # zone clipping comes from -- above soft_ratio 0.8 -- and it sat at -0.16.
+  _w(cfg, "torque_limit_margin", -float(os.environ.get("RHPS1_W_TQMARGIN", "0.40")))
   cfg.rewards["upper_body_vel_l2"] = RewardTermCfg(
     func=mdp.joint_vel_l2,
     weight=-float(os.environ.get("RHPS1_W_UBVEL", "0.43")),
