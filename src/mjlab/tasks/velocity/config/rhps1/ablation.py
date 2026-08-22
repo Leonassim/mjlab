@@ -891,6 +891,53 @@ def _steplen(cfg, full) -> None:
   )
 
 
+def _dense(cfg, full) -> None:
+  """Leo's call: pay air time and foot height densely, and lift the ceilings.
+
+  air_time's threshold_max is 0.25 s against a flight time already at ~0.20 --
+  the bonus caps almost where the gait sits, so most of what is being asked for
+  is past its ceiling. Raise it to 0.60 and switch to the potential-based dense
+  form: same total over a swing, credited every step instead of at touchdown,
+  which is what a term this slow to pay off needs.
+
+  Height gets a positive term for the first time. foot_swing_height,
+  min_foot_height and foot_clearance are all penalties against 30, 20 and
+  150 mm targets while the peak is 3.7 mm -- constants, not goals. Linear, so
+  the gradient does not vanish where the gait actually is.
+
+  Both are affordable now in a way they were not: velocity tracking no longer
+  pays for a constant velocity vector, so taking longer over a step costs
+  almost nothing elsewhere.
+  """
+  r = cfg.rewards
+  air = r["air_time"]
+  air.func = mdp.split_feet_air_time_dense
+  air.params["threshold_max"] = float(os.environ.get("RHPS1_AIR_MAX", "0.60"))
+  air.params.pop("ramp_s", None)
+  # The key is air_time_weight, not air_time: the curriculum overrides the
+  # weight at runtime and would put it straight back to 5.0.
+  cfg.curriculum.pop("air_time_weight", None)
+  _w(cfg, "air_time", float(os.environ.get("RHPS1_W_AIR", "6.0")))
+
+  r["swing_height_bonus"] = RewardTermCfg(
+    func=mdp.swing_foot_height_bonus,
+    weight=float(os.environ.get("RHPS1_W_HEIGHT", "2.0")),
+    params={
+      "target_height": float(os.environ.get("RHPS1_HEIGHT_TARGET", "0.04")),
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "power": 1.0,
+      "asset_cfg": r["min_foot_height"].params["asset_cfg"],
+    },
+  )
+  # The height ladder walked its target to 30 mm on a schedule while the foot
+  # stayed at 3.7 -- stages advanced on time, not on achievement. Drop it; the
+  # bonus is what should move the foot now.
+  cfg.curriculum.pop("swing_height_target", None)
+  cfg.curriculum.pop("min_foot_height_target", None)
+
+
 def _footladder(cfg, full) -> None:
   """Ladder the foot-height targets up from where the gait actually is.
 
@@ -991,7 +1038,7 @@ DECOMPOSED = {
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
-  "footladder": _footladder,
+  "footladder": _footladder, "dense": _dense,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 

@@ -2406,6 +2406,44 @@ def raw_torque_peak_penalty(
 # Both were deleted as dead code when their terms were dropped. Policy 0 is
 # the only configuration that walked, so reproducing it needs them back.
 
+def swing_foot_height_bonus(
+  env: ManagerBasedRlEnv,
+  target_height: float,
+  sensor_name: str,
+  command_name: str | None = None,
+  command_threshold: float = 0.05,
+  power: float = 1.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Pay, every step, for how high the swing foot actually is.
+
+  All three existing foot-height terms are penalties measured against a target
+  the gait is nowhere near -- 30 mm and 150 mm against a 3.7 mm peak. A deficit
+  that large is a constant: the policy pays it whatever it does, and lifting by
+  a millimetre changes it by 3%. Nothing in the budget ever paid for lifting.
+
+  Linear by default, deliberately. The squared forms elsewhere exist to break a
+  tie between two gaits that achieve the same total; here there is no tie to
+  break, only a quantity that has to start moving from far below target, and a
+  square would hand back a gradient of nearly zero exactly where the gait sits.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  in_air = (contact_sensor.data.found == 0).float()[:, : foot_z.shape[1]]
+  ratio = torch.clamp(foot_z / max(target_height, 1e-6), 0.0, 1.0)
+  bonus = torch.sum(torch.pow(ratio, power) * in_air, dim=1)
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      total = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+      bonus = bonus * (total > command_threshold).float()
+  env.extras["log"]["Metrics/swing_foot_z_mean"] = torch.sum(
+    foot_z * in_air
+  ) / torch.clamp(torch.sum(in_air), min=1.0)
+  return bonus
+
+
 def swing_foot_height(
   env: ManagerBasedRlEnv,
   min_height: float,
