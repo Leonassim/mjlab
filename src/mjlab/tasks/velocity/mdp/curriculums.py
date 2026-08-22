@@ -296,7 +296,7 @@ def step_target_curriculum(
   return torch.tensor([cfg.params["target_distance"]])
 
 
-_RELATIVE_BASE: dict[tuple[str, str], int] = {}
+_RELATIVE_BASE: dict[tuple[str, str], tuple[int, int]] = {}
 
 
 def reward_param_curriculum(
@@ -329,9 +329,21 @@ def reward_param_curriculum(
   # checkpoint state, and stages read as iterations, which is how they are
   # reasoned about anyway.
   if relative:
+    # Two failed attempts before this one. common_step_counter is restored from
+    # the checkpoint *after* the curriculum's first call, so a base captured
+    # there reads 0 against a counter already at 417820 and every stage fires
+    # at once. Counting calls instead was worse: the manager calls this ~25x
+    # per iteration, so the ladder crossed three stages in 40.
+    #
+    # Use the counter, and re-baseline when it jumps by more than a step's
+    # worth -- which is exactly and only the restore.
     key = (reward_name, param)
-    calls = _RELATIVE_BASE.get(key, 0) + 1
-    _RELATIVE_BASE[key] = calls
+    counter = env.common_step_counter
+    base, last = _RELATIVE_BASE.get(key, (counter, counter))
+    if counter - last > 1000:
+      base = counter
+    _RELATIVE_BASE[key] = (base, counter)
+    calls = counter - base
   else:
     calls = env.common_step_counter
   for stage in stages:

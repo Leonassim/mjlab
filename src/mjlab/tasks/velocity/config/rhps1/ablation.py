@@ -910,10 +910,10 @@ def _footladder(cfg, full) -> None:
       "relative": True,
       "stages": [
         {"step": 0, "value": 0.006},
-        {"step": 500, "value": 0.010},
-        {"step": 1000, "value": 0.016},
-        {"step": 1500, "value": 0.022},
-        {"step": 2000, "value": 0.030},
+        {"step": 24_000, "value": 0.010},
+        {"step": 48_000, "value": 0.016},
+        {"step": 72_000, "value": 0.022},
+        {"step": 96_000, "value": 0.030},
       ],
     },
   )
@@ -926,10 +926,10 @@ def _footladder(cfg, full) -> None:
         "relative": True,
         "stages": [
           {"step": 0, "value": 0.004},
-          {"step": 500, "value": 0.007},
-          {"step": 1000, "value": 0.011},
-          {"step": 1500, "value": 0.015},
-          {"step": 2000, "value": 0.020},
+          {"step": 24_000, "value": 0.007},
+          {"step": 48_000, "value": 0.011},
+          {"step": 72_000, "value": 0.015},
+          {"step": 96_000, "value": 0.020},
         ],
       },
     )
