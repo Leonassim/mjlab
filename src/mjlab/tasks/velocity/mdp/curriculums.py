@@ -296,6 +296,9 @@ def step_target_curriculum(
   return torch.tensor([cfg.params["target_distance"]])
 
 
+_RELATIVE_BASE: dict[tuple[str, str], int] = {}
+
+
 def reward_param_curriculum(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,
@@ -319,11 +322,11 @@ def reward_param_curriculum(
   # this ladder exists to avoid, since stage 0 is deliberately set near what the
   # gait already does. Count from the first call instead.
   if relative:
-    key = f"_curr_base_{reward_name}_{param}"
-    base = getattr(env, key, None)
-    if base is None:
-      base = env.common_step_counter
-      setattr(env, key, base)
+    # Module state, not setattr on env (which did not persist, so the base was
+    # recaptured every call and the offset stayed 0) and not cfg.params, whose
+    # keys are splatted into this function's kwargs on the next call.
+    key = (reward_name, param)
+    base = _RELATIVE_BASE.setdefault(key, env.common_step_counter)
   else:
     base = 0
   for stage in stages:
