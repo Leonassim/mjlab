@@ -891,6 +891,44 @@ def _steplen(cfg, full) -> None:
   )
 
 
+_UPPER_BODY = (
+  "CHEST_P", "CHEST_Y", "HEAD_P", "HEAD_Y",
+  "L_SHOULDER_P", "L_SHOULDER_R", "L_SHOULDER_Y", "L_ELBOW_P", "L_ELBOW_Y",
+  "L_WRIST_R", "L_WRIST_Y",
+  "R_SHOULDER_P", "R_SHOULDER_R", "R_SHOULDER_Y", "R_ELBOW_P", "R_ELBOW_Y",
+  "R_WRIST_R", "R_WRIST_Y",
+)
+
+
+def _calm(cfg, full) -> None:
+  """Quiet the arms and head. They do not help the gait and they clip the most.
+
+  Measured: arms 23.2% of joint-samples clipped at 0.512 mean torque, head
+  17.2% at 0.513 -- the head works as hard as the arms -- against legs at 14.9%
+  and 0.394, which is policy 0's level exactly. The excess torque is entirely
+  above the waist.
+
+  upper_body_action_acc_l2 was supposed to cover this and does not. Its joint
+  set holds all twelve leg joints and six arm joints, with no head, no chest,
+  no shoulder P/R and no left wrist -- so it mostly penalises the legs while
+  the two worst-clipping joints in the robot (L_WRIST_R/Y, ~42%) pay nothing.
+  Rescoped to the real upper body and weighted up.
+
+  Action acceleration alone permits a large slow sweep, which is what the video
+  shows, so joint velocity is penalised over the same set. Weight is a first
+  estimate: check Episode_Reward/upper_body_vel_l2 against the ~0.5 the other
+  mid-sized penalties sit at, and move it rather than assuming.
+  """
+  ub = SceneEntityCfg("robot", joint_names=_UPPER_BODY)
+  cfg.rewards["upper_body_action_acc_l2"].params["asset_cfg"] = ub
+  _w(cfg, "upper_body_action_acc_l2", -float(os.environ.get("RHPS1_W_UBACC", "0.3")))
+  cfg.rewards["upper_body_vel_l2"] = RewardTermCfg(
+    func=mdp.joint_vel_l2,
+    weight=-float(os.environ.get("RHPS1_W_UBVEL", "0.002")),
+    params={"asset_cfg": SceneEntityCfg("robot", joint_names=_UPPER_BODY)},
+  )
+
+
 def _dense(cfg, full) -> None:
   """Leo's call: pay air time and foot height densely, and lift the ceilings.
 
@@ -1051,7 +1089,7 @@ DECOMPOSED = {
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
-  "footladder": _footladder, "dense": _dense,
+  "footladder": _footladder, "dense": _dense, "calm": _calm,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
