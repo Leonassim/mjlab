@@ -914,6 +914,10 @@ def _dense(cfg, full) -> None:
   air.func = mdp.split_feet_air_time_dense
   air.params["threshold_max"] = float(os.environ.get("RHPS1_AIR_MAX", "0.60"))
   air.params.pop("ramp_s", None)
+  # touchdown_cost set a break-even for the sparse form. Kept here it charged
+  # ~0.15 per landing at 2.5 landings/s against weight 6, which is why the term
+  # netted -0.024: the whole flight bonus was going straight back out.
+  air.params["touchdown_cost"] = 0.0
   # The key is air_time_weight, not air_time: the curriculum overrides the
   # weight at runtime and would put it straight back to 5.0.
   cfg.curriculum.pop("air_time_weight", None)

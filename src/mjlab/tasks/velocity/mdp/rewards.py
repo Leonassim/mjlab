@@ -2431,15 +2431,21 @@ def swing_foot_height_bonus(
   foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
   contact_sensor: ContactSensor = env.scene[sensor_name]
   in_air = (contact_sensor.data.found == 0).float()[:, : foot_z.shape[1]]
-  ratio = torch.clamp(foot_z / max(target_height, 1e-6), 0.0, 1.0)
+  # Floor-relative, same convention as observations.log_sole_height:
+  # site_pos_w is absolute world z and the site sits ~20 mm up even with the
+  # foot down, so scoring it raw pays a large constant for standing still and
+  # leaves only a fraction of the term responding to an actual lift.
+  floor = torch.quantile(foot_z.flatten(), 0.01)
+  rel = torch.clamp(foot_z - floor, min=0.0)
+  ratio = torch.clamp(rel / max(target_height, 1e-6), 0.0, 1.0)
   bonus = torch.sum(torch.pow(ratio, power) * in_air, dim=1)
   if command_name is not None:
     command = env.command_manager.get_command(command_name)
     if command is not None:
       total = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
       bonus = bonus * (total > command_threshold).float()
-  env.extras["log"]["Metrics/swing_foot_z_mean"] = torch.sum(
-    foot_z * in_air
+  env.extras["log"]["Metrics/swing_foot_lift_mean"] = torch.sum(
+    rel * in_air
   ) / torch.clamp(torch.sum(in_air), min=1.0)
   return bonus
 
