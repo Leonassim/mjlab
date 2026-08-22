@@ -294,3 +294,39 @@ def step_target_curriculum(
       cfg.params["target_distance"] = stage["target_distance"]
       cfg.params["target_period"] = stage["target_period"]
   return torch.tensor([cfg.params["target_distance"]])
+
+
+def reward_param_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  reward_name: str,
+  param: str,
+  stages: list[dict],
+  relative: bool = False,
+) -> torch.Tensor:
+  """Walk one reward parameter through stages. Same mechanism as the others.
+
+  Written for foot height, where the target sat at 30 mm against a measured
+  3.1 mm peak. A target that far out is not a goal, it is a constant: the
+  policy pays the penalty and the gradient tells it nothing about which way is
+  cheaper. The step-length ladder only worked because its first target was near
+  what the gait already did.
+  """
+  del env_ids
+  cfg = env.reward_manager.get_term_cfg(reward_name)
+  # common_step_counter carries over when a run is resumed, so an absolute
+  # ladder lands on its last stage immediately -- which is exactly the failure
+  # this ladder exists to avoid, since stage 0 is deliberately set near what the
+  # gait already does. Count from the first call instead.
+  if relative:
+    key = f"_curr_base_{reward_name}_{param}"
+    base = getattr(env, key, None)
+    if base is None:
+      base = env.common_step_counter
+      setattr(env, key, base)
+  else:
+    base = 0
+  for stage in stages:
+    if env.common_step_counter - base > stage["step"]:
+      cfg.params[param] = stage["value"]
+  return torch.tensor([cfg.params[param]])

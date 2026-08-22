@@ -891,6 +891,50 @@ def _steplen(cfg, full) -> None:
   )
 
 
+def _footladder(cfg, full) -> None:
+  """Ladder the foot-height targets up from where the gait actually is.
+
+  Measured peak height 3.1 mm against foot_swing_height's 30 mm target and
+  min_foot_height's 20 mm. Ten times out is not a goal, it is a constant cost
+  the policy pays without learning which way is cheaper -- the same mistake the
+  first step-length target made at 0.10 m against a 2.3 cm step.
+
+  Start just above the current peak and walk up, ~500 iterations a stage, same
+  cadence as step_target.
+  """
+  cfg.curriculum["swing_height_target"] = CurriculumTermCfg(
+    func=mdp.reward_param_curriculum,
+    params={
+      "reward_name": "foot_swing_height",
+      "param": "target_height",
+      "relative": True,
+      "stages": [
+        {"step": 0, "value": 0.006},
+        {"step": 12_000, "value": 0.010},
+        {"step": 24_000, "value": 0.016},
+        {"step": 36_000, "value": 0.022},
+        {"step": 48_000, "value": 0.030},
+      ],
+    },
+  )
+  if "min_foot_height" in cfg.rewards:
+    cfg.curriculum["min_foot_height_target"] = CurriculumTermCfg(
+      func=mdp.reward_param_curriculum,
+      params={
+        "reward_name": "min_foot_height",
+        "param": "min_height",
+        "relative": True,
+        "stages": [
+          {"step": 0, "value": 0.004},
+          {"step": 12_000, "value": 0.007},
+          {"step": 24_000, "value": 0.011},
+          {"step": 36_000, "value": 0.015},
+          {"step": 48_000, "value": 0.020},
+        ],
+      },
+    )
+
+
 def _freevel(cfg, full) -> None:
   """Stop paying for the command's exact velocity vector; pay for its direction.
 
@@ -947,6 +991,7 @@ DECOMPOSED = {
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
+  "footladder": _footladder,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
