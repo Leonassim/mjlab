@@ -947,7 +947,7 @@ def _dense(cfg, full) -> None:
   # penalties. Measured 2.887 of 4 corners at touchdown against 2.418 in
   # support: the foot lands nearly flat and rolls onto an edge afterwards, so
   # flat_support is where the remaining deficit is -- raised with it.
-  _w(cfg, "flat_touchdown", -float(os.environ.get("RHPS1_W_FLATTD", "1.2")))
+  _w(cfg, "flat_touchdown", -float(os.environ.get("RHPS1_W_FLATTD", "0.6")))
   _w(cfg, "flat_support", -float(os.environ.get("RHPS1_W_FLATSUP", "4.0")))
 
 
