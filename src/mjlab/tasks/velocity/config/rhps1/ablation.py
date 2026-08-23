@@ -938,7 +938,7 @@ def _calm(cfg, full) -> None:
   # rather than being averaged into eighteen joints.
   cfg.rewards["head_vel_l2"] = RewardTermCfg(
     func=mdp.joint_vel_l2,
-    weight=-float(os.environ.get("RHPS1_W_HEADVEL", "2.0")),
+    weight=-float(os.environ.get("RHPS1_W_HEADVEL", "20.0")),
     params={"asset_cfg": SceneEntityCfg("robot", joint_names=("HEAD_P", "HEAD_Y"))},
   )
   cfg.rewards["upper_body_vel_l2"] = RewardTermCfg(
