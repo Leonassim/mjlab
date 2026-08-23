@@ -934,6 +934,13 @@ def _calm(cfg, full) -> None:
   # for, not movement. torque_limit_margin is the only term that prices the
   # zone clipping comes from -- above soft_ratio 0.8 -- and it sat at -0.16.
   _w(cfg, "torque_limit_margin", -float(os.environ.get("RHPS1_W_TQMARGIN", "0.40")))
+  # The head still moves visibly at 0.108 clipping, so it gets its own weight
+  # rather than being averaged into eighteen joints.
+  cfg.rewards["head_vel_l2"] = RewardTermCfg(
+    func=mdp.joint_vel_l2,
+    weight=-float(os.environ.get("RHPS1_W_HEADVEL", "2.0")),
+    params={"asset_cfg": SceneEntityCfg("robot", joint_names=("HEAD_P", "HEAD_Y"))},
+  )
   cfg.rewards["upper_body_vel_l2"] = RewardTermCfg(
     func=mdp.joint_vel_l2,
     weight=-float(os.environ.get("RHPS1_W_UBVEL", "0.43")),
@@ -962,7 +969,15 @@ def _dense(cfg, full) -> None:
   r = cfg.rewards
   air = r["air_time"]
   air.func = mdp.split_feet_air_time_dense
-  air.params["threshold_max"] = float(os.environ.get("RHPS1_AIR_MAX", "0.60"))
+  # air_time_mean reached 0.759 against a 0.793 s step period: the foot is
+  # airborne nearly the whole cycle, which is the hover Leo sees -- lift, wait,
+  # then put it down. Cap the bonus at 0.40 so nothing is paid past it, and set
+  # the overflow guard just above, at 0.45. It was 2.0 and could never fire.
+  #
+  # touchdown_cost stays 0: it charges for landing *often*, which is the
+  # opposite lever. What has to be expensive is staying up, not coming down.
+  air.params["threshold_max"] = float(os.environ.get("RHPS1_AIR_MAX", "0.40"))
+  air.params["overflow_threshold"] = float(os.environ.get("RHPS1_AIR_OVF", "0.45"))
   air.params.pop("ramp_s", None)
   # touchdown_cost set a break-even for the sparse form. Kept here it charged
   # ~0.15 per landing at 2.5 landings/s against weight 6, which is why the term
