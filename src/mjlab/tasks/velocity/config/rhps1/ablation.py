@@ -921,8 +921,13 @@ def _stable(cfg, full) -> None:
   that does. Trimmed so the terms still carrying gradient have more of the
   budget.
   """
-  cfg.rewards["termination_penalty"].func = mdp.is_terminated_rate
-  _w(cfg, "termination_penalty", -float(os.environ.get("RHPS1_W_TERM", "500.0")))
+  # termination_penalty left alone. I read its Episode_Reward of -0.004 as
+  # "falls are free" and converted it to a rate -- but for a terminal penalty
+  # the time-average measures nothing: it fires once and PPO propagates it
+  # through the value function. The per-step spike is what matters, and the
+  # original -2000 impulse already delivers -40 on the terminating step against
+  # per-step rewards of order 0.2. As a rate at -500 the spike became -500 and
+  # fell_down climbed 0.00 -> 0.17 -> 0.44 -> 0.79 within sixty iterations.
   _w(cfg, "standing_single_support",
      -float(os.environ.get("RHPS1_W_SSS", "16.0")))
   _w(cfg, "track_linear_velocity", float(os.environ.get("RHPS1_W_TLV", "1.2")))
