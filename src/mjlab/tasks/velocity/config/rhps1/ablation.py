@@ -922,7 +922,7 @@ def _stable(cfg, full) -> None:
   budget.
   """
   cfg.rewards["termination_penalty"].func = mdp.is_terminated_rate
-  _w(cfg, "termination_penalty", -float(os.environ.get("RHPS1_W_TERM", "1.0")))
+  _w(cfg, "termination_penalty", -float(os.environ.get("RHPS1_W_TERM", "500.0")))
   _w(cfg, "standing_single_support",
      -float(os.environ.get("RHPS1_W_SSS", "16.0")))
   _w(cfg, "track_linear_velocity", float(os.environ.get("RHPS1_W_TLV", "1.2")))
