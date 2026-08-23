@@ -929,7 +929,7 @@ def _stable(cfg, full) -> None:
   # per-step rewards of order 0.2. As a rate at -500 the spike became -500 and
   # fell_down climbed 0.00 -> 0.17 -> 0.44 -> 0.79 within sixty iterations.
   _w(cfg, "standing_single_support",
-     -float(os.environ.get("RHPS1_W_SSS", "16.0")))
+     -float(os.environ.get("RHPS1_W_SSS", "40.0")))
   _w(cfg, "track_linear_velocity", float(os.environ.get("RHPS1_W_TLV", "1.2")))
   _w(cfg, "track_angular_velocity", float(os.environ.get("RHPS1_W_TAV", "2.2")))
 
