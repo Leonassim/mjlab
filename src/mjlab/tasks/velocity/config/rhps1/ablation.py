@@ -900,6 +900,35 @@ _UPPER_BODY = (
 )
 
 
+def _stable(cfg, full) -> None:
+  """Leo's five deployment criteria, the three the budget was not serving.
+
+  1. Falls were free. termination_penalty realized -0.004 against a -2000
+     weight: is_terminated is an impulse and takes the dt scaling. As a rate it
+     is worth ~-0.5, which is what an 8% fall rate should cost.
+
+  2. standing_single_support_rate reads 0.986 -- the robot stands on ONE FOOT
+     98.6% of the time it is given no command, against 0.019 for policy 0 and
+     0.153 for lift. The penalty exists and is paid; it is simply cheaper than
+     whatever the policy gets from it. Weight up 4x.
+
+  3. error_vel_xy 0.53: an operator has almost no authority over speed, which
+     is freevel's counterpart. The slow regime is consolidated now, so
+     track_linear_velocity can come back up without buying the shuffle again.
+
+  track_angular_velocity sits at 92% realized and 32% of the positive budget --
+  a saturated term is a constant that steers nothing and dilutes everything
+  that does. Trimmed so the terms still carrying gradient have more of the
+  budget.
+  """
+  cfg.rewards["termination_penalty"].func = mdp.is_terminated_rate
+  _w(cfg, "termination_penalty", -float(os.environ.get("RHPS1_W_TERM", "1.0")))
+  _w(cfg, "standing_single_support",
+     -float(os.environ.get("RHPS1_W_SSS", "16.0")))
+  _w(cfg, "track_linear_velocity", float(os.environ.get("RHPS1_W_TLV", "1.2")))
+  _w(cfg, "track_angular_velocity", float(os.environ.get("RHPS1_W_TAV", "2.2")))
+
+
 def _calm(cfg, full) -> None:
   """Quiet the arms and head. They do not help the gait and they clip the most.
 
@@ -1117,6 +1146,7 @@ DECOMPOSED = {
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
+  "stable": _stable,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 

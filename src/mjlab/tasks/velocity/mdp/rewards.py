@@ -2553,6 +2553,17 @@ def flat_touchdown_penalty(
   # Divide it back out so `weight` means what it means for every other term.
   return cost / env.step_dt
 
+def is_terminated_rate(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Termination as a per-second rate, so the weight means something.
+
+  mdp.is_terminated returns a 0/1 impulse and RewardManager multiplies by dt,
+  so at -2000 the realized cost of an 8% fall rate was -0.004: four hundredths
+  of one percent of the negative budget. Falls were free. Third instance of the
+  same defect after com_step_progress and flat_touchdown.
+  """
+  return env.termination_manager.terminated.float() / env.step_dt
+
+
 class direction_progress:
   """Pay for going *where* the command points, not for holding its exact vector.
 
