@@ -1123,6 +1123,7 @@ def _freevel(cfg, full) -> None:
       "command_name": "twist",
       "tau": float(os.environ.get("RHPS1_FREEVEL_TAU", "0.4")),
       "lateral_std": 0.35,
+      "standing_std": float(os.environ.get("RHPS1_STANDING_STD", "0.15")),
       "command_threshold": 0.1,
     },
   )

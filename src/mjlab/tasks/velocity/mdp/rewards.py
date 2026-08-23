@@ -2605,6 +2605,7 @@ class direction_progress:
     command_name: str,
     tau: float = 0.4,
     lateral_std: float = 0.35,
+    standing_std: float | None = None,
     command_threshold: float = 0.1,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   ) -> torch.Tensor:
@@ -2624,7 +2625,12 @@ class direction_progress:
 
     progress = torch.clamp(along / speed.clamp(min=1e-6), 0.0, 1.0)
     on_axis = torch.exp(-torch.square(across) / lateral_std**2)
-    still = torch.exp(-torch.sum(torch.square(self.v_f), dim=1) / lateral_std**2)
+    # Standing gets its own, tighter kernel. Sharing lateral_std made standing
+    # far more permissive than policy 0, which held still under
+    # track_linear_velocity at std 0.20: at 0.1 m/s of drift policy 0 lost 22%
+    # of the term and this lost 8%.
+    s_std = lateral_std if standing_std is None else standing_std
+    still = torch.exp(-torch.sum(torch.square(self.v_f), dim=1) / s_std**2)
     moving = (speed + torch.abs(command[:, 2])) > command_threshold
 
     env.extras["log"]["Metrics/vel_sway_rms"] = torch.sqrt(
