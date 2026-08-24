@@ -30,10 +30,16 @@ while [ "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits)" -g
 do sleep 60; done
 sleep 30
 export RHPS1_ABLATION=${RHPS1_ABLATION:-p0+rand+lift+steplen+freevel+freeroll+dense+calm+stable+soleclear+slowstep+softland+landtime+groundtax}
+# Clearance target just above the 0.0263 the gait actually reaches. At 0.030 the
+# term kept a gradient the plant cannot satisfy: over the last 40 iterations
+# clearance moved +0.4% and period -1.2% while clipping climbed +1.2%, i.e. the
+# demand was being paid for in torque and delivering nothing. Just-above-measured
+# is where a target belongs.
+export RHPS1_CLEAR_TARGET=${RHPS1_CLEAR_TARGET:-0.027}
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval ${VIDEO_INTERVAL:-7200} --video-length ${VIDEO_LENGTH:-600} \
   --agent.resume True \
-  --agent.load-run ${LOAD_RUN:-2026-08-22_19-06-06} \
-  --agent.load-checkpoint ${LOAD_CKPT:-model_13200.pt}
+  --agent.load-run ${LOAD_RUN:-2026-08-25_01-27-25} \
+  --agent.load-checkpoint ${LOAD_CKPT:-model_13500.pt}
