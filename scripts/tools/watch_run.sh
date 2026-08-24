@@ -13,6 +13,7 @@ cd /home/lmoussafir/mjlab-rhps1 || exit 1
 MILESTONE=${MILESTONE:-300}
 TORQUE_MAX=${TORQUE_MAX:-0.60}   # backstop only; the reward barrier starts here
 SAT_MAX=${SAT_MAX:-0.05}         # fraction of joint-samples clipped by forcerange
+IMPACT_MAX=${IMPACT_MAX:-0.20}   # pre-contact foot speed; policy 0 walked at 0.158
 POLL=${POLL:-300}
 TSV=logs/watch_$(date +%m%d_%H%M).tsv
 START=$(date +%s)
@@ -50,7 +51,7 @@ if [ -z "$RUN" ]; then
 fi
 [ -z "$RUN" ] && { echo "GUARD: no run directory at all"; exit 5; }
 echo "watching pid $PID  run $RUN  milestone $MILESTONE  sat_max $SAT_MAX  torque_max $TORQUE_MAX"
-printf 'it\tstep_len\tpeak_h\tair_t\ttorque\tsat\tsway\tvel_err\tstance\tfell\taction\n' > "$TSV"
+printf 'it\tstep_len\tclear90\tair_t\ttorque\tsat\tsway\tvel_err\tstance\tfell\taction\tperiod\timpact\tcheat\tstand1\tupper\n' > "$TSV"
 
 STRIKES=0
 while :; do
@@ -60,6 +61,7 @@ while :; do
   [ -z "$ROW" ] && continue
   echo "$ROW" >> "$TSV"; echo "$ROW"
   IT=$(echo "$ROW" | cut -f1); TQ=$(echo "$ROW" | cut -f5); SAT=$(echo "$ROW" | cut -f6)
+  IMP=$(echo "$ROW" | cut -f13)
   if [ "${PREV_IT:-0}" = "$IT" ]; then
     echo "GUARD: iteration stuck at $IT -- wrong run directory or trainer hung"; exit 6
   fi
@@ -67,10 +69,14 @@ while :; do
   # The guard is on clipping, not on level. Torque is allowed to rise -- a
   # longer step costs more -- but an action truncated by forcerange is an
   # action the robot never executes.
+  # Impact is guarded alongside the torque pair: a foot arriving fast is what
+  # actually breaks an ankle, and it is the one criterion no reward barrier
+  # brings back once the gait has learned to drop onto it.
   if awk -v a="$SAT" -v b="$SAT_MAX" 'BEGIN{exit !(a+0>b+0)}' ||
-     awk -v a="$TQ" -v b="$TORQUE_MAX" 'BEGIN{exit !(a+0>b+0)}'; then
+     awk -v a="$TQ" -v b="$TORQUE_MAX" 'BEGIN{exit !(a+0>b+0)}' ||
+     awk -v a="${IMP:-0}" -v b="$IMPACT_MAX" 'BEGIN{exit !(a+0>b+0)}'; then
     STRIKES=$((STRIKES+1))
-    [ "$STRIKES" -ge 2 ] && { echo "GUARD: sat $SAT / torque $TQ over $SAT_MAX / $TORQUE_MAX twice"; exit 3; }
+    [ "$STRIKES" -ge 2 ] && { echo "GUARD: sat $SAT / torque $TQ / impact $IMP over $SAT_MAX / $TORQUE_MAX / $IMPACT_MAX twice"; exit 3; }
   else STRIKES=0; fi
   if [ "${IT%.*}" -ge "$MILESTONE" ] 2>/dev/null; then echo "MILESTONE $IT"; exit 0; fi
 done
