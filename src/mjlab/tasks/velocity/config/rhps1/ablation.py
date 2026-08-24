@@ -1312,6 +1312,41 @@ def _landtime(cfg, full) -> None:
 
 
 
+def _groundtax(cfg, full) -> None:
+  """Stop charging per second for faults that happen once per step.
+
+  Measured budget while the gait refused to slow down, per second:
+
+      ground -4.95     flat_support -1.06, flat_touchdown -0.89,
+                       stance_action_acc -1.09, ankle torques -1.67,
+                       impact -0.24
+      air    +0.89     swing_height +1.03, com_step_progress +1.02,
+                       air_time -0.73, standing_single_support -0.41
+
+  A 5.8/s spread against a period term worth 1.0. Three successive weightings
+  of that term, and then landtime capping the flight, all failed against it --
+  they were never the binding thing. The policy avoids the ground because the
+  budget tells it to, and it is right.
+
+  The design fault is in the units, not the levels. flat_support and
+  flat_touchdown score a per-EVENT property -- did this foot land flat, is it
+  flat now -- but they are charged per second, so the identical fault costs
+  five times more in a 0.5 s stance than in a 0.1 s one. That hands the policy
+  a way to pay less for landing badly: land for less time. It is the same
+  dt-scaling error this file already records on com_step_progress and
+  flat_touchdown, in the other direction.
+
+  Halved here rather than re-normalised per landing. Per-landing is the correct
+  fix and it is a change to the terms themselves; this is the reversible step
+  that tests whether the spread is really what pins the period, before anyone
+  rewrites two reward terms on a theory.
+  """
+  _w(cfg, "flat_support", -float(os.environ.get("RHPS1_W_FLATSUP", "2.0")))
+  _w(cfg, "flat_touchdown", -float(os.environ.get("RHPS1_W_FLATTD", "0.3")))
+  _w(cfg, "stance_action_acc_l2", -float(os.environ.get("RHPS1_W_STANCEACC", "0.0")))
+
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
@@ -1320,7 +1355,7 @@ DECOMPOSED = {
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
-  "slowstep": _slowstep, "softland": _softland, "landtime": _landtime,
+  "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
