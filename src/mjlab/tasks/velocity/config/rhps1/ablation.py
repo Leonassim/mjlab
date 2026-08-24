@@ -1239,6 +1239,33 @@ def _slowstep(cfg, full) -> None:
   if r is not None:
     r.params["target_distance"] = 0.09
     r.params["target_period"] = 0.58
+  # Weight, measured not guessed. At 0.30 the term was worth 0.139/s against a
+  # clearance bonus at 1.03 and a torque barrier at -3.06: nothing in the budget
+  # paid for a longer cycle, so the policy bought clearance the only other way
+  # available, by lifting harder inside the same 0.475 s. Over 850 iterations
+  # that read as clearance +20% and clipping +36%, impact +25%, jerk +23%,
+  # period flat. Cheap violence beats expensive time whenever time is free.
+  #
+  # 2.0 puts it level with swing_height_bonus and still far under the torque
+  # barrier, so slowing is now a way to earn rather than a way to spend.
+  _w(cfg, "com_step_progress", float(os.environ.get("RHPS1_W_STEP", "2.0")))
+
+
+def _softland(cfg, full) -> None:
+  """Make the impact ceiling a live constraint instead of a constant.
+
+  pre_contact_limit sits at 0.45 m/s while the gait lands at 0.165 -- 2.7x
+  above anything measured, so that channel pays a constant and lifting the foot
+  higher costs nothing on the way down. Impact drifted 0.131 -> 0.165 unopposed
+  in under 900 iterations while every other criterion was being watched.
+
+  0.20 is just above the measurement, where a ceiling has to sit, and just above
+  policy 0's 0.158 -- the gait that landed softly enough on hardware.
+  """
+  r = cfg.rewards.get("impact_vel")
+  if r is None:
+    raise RuntimeError("softland needs impact_vel")
+  r.params["pre_contact_limit"] = float(os.environ.get("RHPS1_IMPACT_LIMIT", "0.20"))
 
 
 
@@ -1250,7 +1277,7 @@ DECOMPOSED = {
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
-  "slowstep": _slowstep,
+  "slowstep": _slowstep, "softland": _softland,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
