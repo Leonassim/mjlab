@@ -1178,6 +1178,30 @@ def _soleclear(cfg, full) -> None:
 
 
 
+def _encnoise(cfg, full) -> None:
+  """Joint-position observation noise to +/- 0.005 rad, from +/- 0.01.
+
+  The encoders are precise, so 0.01 rad (0.57 deg) of per-step uniform noise
+  asks the policy to filter something the robot does not do. Calibration offset,
+  the error that IS real, is already modelled separately and unchanged by this
+  rung: the encoder_bias event holds +/- 0.015 rad of persistent per-joint bias.
+
+  Kept as its own rung on purpose. Policy 0's randomisation ranges are
+  load-bearing for transfer -- restoring them exactly is what closed the
+  train/play gap -- so a change to any of them is a variable in its own right,
+  not a free improvement to fold into another run.
+  """
+  for group in ("actor", "critic"):
+    terms = cfg.observations[group].terms
+    t = terms.get("joint_pos")
+    n = getattr(t, "noise", None) if t is not None else None
+    if n is None:
+      continue
+    lim = float(os.environ.get("RHPS1_ENC_NOISE", "0.005"))
+    n.n_min, n.n_max = -lim, lim
+
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
@@ -1185,7 +1209,7 @@ DECOMPOSED = {
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
-  "stable": _stable, "soleclear": _soleclear,
+  "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
