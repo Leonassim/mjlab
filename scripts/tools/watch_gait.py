@@ -38,6 +38,13 @@ RISE_FRAC = float(os.environ.get("RISE_FRAC", "0.15"))
 # Guarding through that kills a healthy run on its first poll.
 WARMUP = int(os.environ.get("WARMUP", "3"))
 
+# Never-exceed, independent of any baseline. The relative guard below answers
+# "is this run making things worse"; this one answers "is this still deployable
+# at all", and a bad starting checkpoint must not be able to raise it. Writing
+# the relative guard as max(absolute, baseline*1.2) got that backwards: a
+# baseline above the ceiling silently moved the ceiling.
+CAP = {"sat": 0.30, "impact": 0.20, "torque": 0.60, "fall": 0.12}
+
 # name: (tag, soft, hard, direction)   direction +1 = higher is worse
 GUARDS = {
   "sat": ("Metrics/torque_saturated_frac", 0.20, 0.24, +1),
@@ -179,6 +186,14 @@ while True:
     lo, hi = SOFT[k], HARD[k]
     v = s[k]
     hist[k].append(v)
+    cap = CAP.get(k)
+    if cap is not None and v > cap:
+      emit(f"TRIP it{it} {k}={v:.3f} past never-exceed {cap} -- killing trainer")
+      try:
+        os.kill(pid, 15)
+      except OSError:
+        pass
+      sys.exit(3)
     if (v > hi) if d > 0 else (v < hi):
       strikes[k] += 1
       if strikes[k] >= 2:
