@@ -1281,6 +1281,37 @@ def _softland(cfg, full) -> None:
 
 
 
+def _landtime(cfg, full) -> None:
+  """Cap the flight so the cycle has to grow on the ground instead.
+
+  The half-cycle sat at 0.449-0.479 across three different weightings of
+  com_step_progress (0.30, then 2.0, then 2.0 with the distance half
+  saturated). A quantity that will not move for its own incentive is not
+  incentive-limited, it is structurally pinned, and the numbers say by what:
+  air_time reads 0.465 against its own 0.45 overflow, and the half-cycle equals
+  it. One foot is down at a time and flight fills the whole half-cycle, so
+  there is no double support anywhere in the gait to lengthen.
+
+  Nothing pays for time on the ground and flat_support charges -1.1/s for it,
+  so the ground is where the budget says not to be. The period term asks for a
+  longer cycle, the air term caps the only part of the cycle that exists, and
+  the policy sits exactly at the cap.
+
+  Dropping the flight cap to 0.30 closes the escape: the period term still asks
+  for 0.58, flight is paid only to 0.30, and the arithmetic leaves double
+  support as the only way to satisfy both. That is also the swing fraction a
+  real gait has -- 0.30 of flight in a 0.58 half-cycle is 52%, against today's
+  100% -- so this buys a long swing, not a short one. Today's "long" air time
+  is not a long swing, it is a robot that never lands.
+  """
+  a = cfg.rewards.get("air_time")
+  if a is None:
+    raise RuntimeError("landtime needs the dense rung's air_time")
+  a.params["threshold_max"] = float(os.environ.get("RHPS1_AIR_MAX", "0.30"))
+  a.params["overflow_threshold"] = float(os.environ.get("RHPS1_AIR_OVF", "0.35"))
+
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
@@ -1289,7 +1320,7 @@ DECOMPOSED = {
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
-  "slowstep": _slowstep, "softland": _softland,
+  "slowstep": _slowstep, "softland": _softland, "landtime": _landtime,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
