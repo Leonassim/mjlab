@@ -1237,7 +1237,19 @@ def _slowstep(cfg, full) -> None:
   ]
   r = cfg.rewards.get("com_step_progress")
   if r is not None:
-    r.params["target_distance"] = 0.09
+    # target_distance BELOW what is measured, on purpose. com_step_progress
+    # blends distance and period 50/50, and the two halves are not equally
+    # cheap: lengthening a stride is one bigger push, lengthening a cycle is
+    # stance time the policy has to find. Raising the weight to 2.0 amplified
+    # both, and the gait spent all of it on the cheap half -- step_length
+    # 0.062 -> 0.078 in 280 iterations while the period sat at 0.475, taking
+    # the torque barrier to -3.4, clipping to 0.276 and falls to 9%.
+    #
+    # Below the measurement the distance half saturates at 1.0 and stops
+    # pulling, so the whole weight lands on the period, which is the half that
+    # was never moving. Distance is not lost: at constant speed a longer cycle
+    # lengthens the stride on its own.
+    r.params["target_distance"] = float(os.environ.get("RHPS1_STEP_DIST", "0.07"))
     r.params["target_period"] = 0.58
   # Weight, measured not guessed. At 0.30 the term was worth 0.139/s against a
   # clearance bonus at 1.03 and a torque barrier at -3.06: nothing in the budget
