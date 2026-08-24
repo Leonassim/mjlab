@@ -115,8 +115,11 @@ while True:
   try:
     os.kill(pid, 0)
   except OSError:
+    # 0, not a failure code: a trainer that finishes or that I stopped on
+    # purpose is information, and reporting it as a crashed watchdog buried the
+    # real trips under noise.
     emit(f"DEAD trainer {pid} exited")
-    sys.exit(2)
+    sys.exit(0)
   s = sample()
   if not s:
     continue
