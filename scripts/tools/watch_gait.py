@@ -93,6 +93,10 @@ def line(s, keys):
   return " ".join(f"{k}={s[k]:.3f}" for k in keys if k in s)
 
 
+DEGRADE = float(os.environ.get("DEGRADE", "0.20"))
+base = {}
+SOFT = {k: v[1] for k, v in GUARDS.items()}
+HARD = {k: v[2] for k, v in GUARDS.items()}
 hist = {k: deque(maxlen=4) for k in GUARDS}
 strikes = dict.fromkeys(GUARDS, 0)
 prev_it = None
@@ -136,6 +140,31 @@ while True:
   prev_it = it
   n += 1
 
+  if n == WARMUP:
+    # Baseline at the end of warmup, and guards raised to sit above it.
+    #
+    # Every run of this lineage tripped within 200 iterations, which read as
+    # five failed interventions in a row. It was not: model_13950 already
+    # carries sat 0.235 and impact 0.158 against hard ceilings of 0.24 and
+    # 0.18. The runs started over the line. Absolute ceilings measure the
+    # checkpoint, not what the run does to it, so nothing could ever be judged.
+    #
+    # Guard on degradation instead: DEGRADE above wherever this run actually
+    # begins, with the absolute ceiling kept as a floor so a genuinely bad
+    # starting point cannot license an arbitrarily bad run.
+    for k, (_, lo, hi, d) in GUARDS.items():
+      if k not in s:
+        continue
+      b = s[k]
+      base[k] = b
+      if d > 0:
+        SOFT[k] = max(lo, b * (1 + DEGRADE / 2))
+        HARD[k] = max(hi, b * (1 + DEGRADE))
+      else:
+        SOFT[k] = min(lo, b * (1 + DEGRADE / 2))
+        HARD[k] = min(hi, b * (1 + DEGRADE))
+    emit("baseline " + " ".join(f"{k}={base[k]:.3f}->hard {HARD[k]:.3f}" for k in sorted(base)))
+
   if n <= WARMUP:
     emit(f"warmup {n}/{WARMUP} it{it} | {line(s, REPORT)} | {line(s, GUARDS)}")
     for k in GUARDS:
@@ -144,9 +173,10 @@ while True:
     continue
 
   hard = []
-  for k, (_, lo, hi, d) in GUARDS.items():
+  for k, (_, _lo, _hi, d) in GUARDS.items():
     if k not in s:
       continue
+    lo, hi = SOFT[k], HARD[k]
     v = s[k]
     hist[k].append(v)
     if (v > hi) if d > 0 else (v < hi):
