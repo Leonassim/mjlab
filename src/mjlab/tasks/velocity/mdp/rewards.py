@@ -11,7 +11,11 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import BuiltinSensor, ContactSensor, RayCastSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 from mjlab.tasks.velocity.mdp.terrain_utils import terrain_normal_from_sensors
-from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse
+from mjlab.utils.lab_api.math import (
+  matrix_from_quat,
+  quat_apply,
+  quat_apply_inverse,
+)
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
 )
@@ -2448,6 +2452,88 @@ def swing_foot_height_bonus(
     rel * in_air
   ) / torch.clamp(torch.sum(in_air), min=1.0)
   return bonus
+
+
+class swing_sole_clearance_bonus:
+  """Pay for the clearance of the LOWEST point of the sole, not its centre.
+
+  ``swing_foot_height_bonus`` scores one site at the middle of the sole. A foot
+  can raise that site while keeping its toe on the floor simply by pitching, and
+  that is what the policy learned to do: measured 6.3 cm of "lift" that walked
+  into obstacles on the real robot, because the part of the foot that trips is
+  the front edge and nothing was ever looking at it.
+
+  Here the quantity is the true minimum over the whole sole. The four contact
+  boxes per foot share the ankle body, so:
+
+    lowest = min over boxes of (box centre z) - overhang(orientation)
+
+  and the overhang of a box under rotation R is exactly ``sum_i |R[2,i]| * h_i``
+  over its half-extents. Both halves matter. The min over the four centres
+  catches the toe-versus-heel offset from the geometry; the overhang catches the
+  box's own corner dropping below its centre, which at 20 degrees of pitch is
+  17 mm on this foot -- the same order as the clearance being measured, so
+  approximating it away would leave the cheat half-open.
+
+  Tilting now buys nothing: pitching to raise the sole centre lowers the toe box
+  and raises the overhang, and the term reads the worse of the two.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
+    self.asset_name = cfg.params.get("asset_cfg", _DEFAULT_ASSET_CFG).name
+    asset: Entity = env.scene[self.asset_name]
+    names = [
+      f"{side}_foot{i}_collision" for side in ("left", "right") for i in (1, 2, 3, 4)
+    ]
+    geom_names = list(asset.geom_names)
+    self.geom_ids = [geom_names.index(n) for n in names]
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    target_height: float,
+    sensor_name: str,
+    command_name: str | None = None,
+    command_threshold: float = 0.05,
+    power: float = 1.0,
+    half_extents: tuple[float, float, float] = (0.0525, 0.0275, 0.01),
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    n = asset.data.geom_pos_w.shape[0]
+    z = asset.data.geom_pos_w[:, self.geom_ids, 2].view(n, 2, 4)
+    # One orientation per foot: the four boxes are rigid on the same ankle body.
+    quat = asset.data.geom_quat_w[:, self.geom_ids, :].view(n, 2, 4, 4)[:, :, 0, :]
+    rot = matrix_from_quat(quat.reshape(-1, 4)).view(n, 2, 3, 3)
+    h = torch.as_tensor(half_extents, device=z.device, dtype=z.dtype)
+    overhang = torch.sum(torch.abs(rot[:, :, 2, :]) * h, dim=-1)  # [B, 2]
+    lowest = z.min(dim=2).values - overhang  # [B, 2]
+
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    in_air = (contact_sensor.data.found == 0).float()[:, : lowest.shape[1]]
+    floor = torch.quantile(lowest.flatten(), 0.01)
+    rel = torch.clamp(lowest - floor, min=0.0)
+    ratio = torch.clamp(rel / max(target_height, 1e-6), 0.0, 1.0)
+    bonus = torch.sum(torch.pow(ratio, power) * in_air, dim=1)
+    if command_name is not None:
+      command = env.command_manager.get_command(command_name)
+      if command is not None:
+        total = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+        bonus = bonus * (total > command_threshold).float()
+
+    air = torch.clamp(torch.sum(in_air), min=1.0)
+    env.extras["log"]["Metrics/sole_clearance_mean"] = torch.sum(rel * in_air) / air
+    swing = rel[in_air > 0]
+    if swing.numel() > 0:
+      env.extras["log"]["Metrics/sole_clearance_p90"] = torch.quantile(swing, 0.9)
+    # The cheat itself, in metres: how much the old centre-site measure
+    # overstates the clearance. Near zero means the foot swings flat.
+    if len(asset_cfg.site_ids) == lowest.shape[1]:
+      site_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
+      env.extras["log"]["Metrics/sole_height_overstated_mean"] = (
+        torch.sum((site_z - lowest) * in_air) / air
+      )
+    return bonus
 
 
 def swing_foot_height(

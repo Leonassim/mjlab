@@ -1145,6 +1145,39 @@ def _freeroll(cfg, full) -> None:
   )
 
 
+def _soleclear(cfg, full) -> None:
+  """Score the lowest point of the sole instead of its centre.
+
+  Requires the dense rung, which is what declares swing_height_bonus.\n\n  Real-robot verdict on it13200: good measured foot height, trips quickly,
+  because the foot swings pitched and its front edge stays near the floor.
+  swing_foot_height_bonus watches one site at the middle of the sole, so
+  pitching pays: the site rises while the toe does not. 6.3 cm of logged lift
+  bought a robot that still catches its toe.
+
+  The clearance that matters is the minimum over the whole sole, and it is now
+  measured exactly -- min over the four contact boxes, minus each box's own
+  orientation-dependent overhang, which is 27 mm at 20 degrees of pitch against
+  10 mm flat. Nothing else changes: same weight, same target, same gating, so
+  the run isolates the measurement.
+
+  No orientation target on purpose. Forcing the foot flat through swing also
+  forbids toe-off and heel-strike, which are how a real gait keeps impact
+  velocity low -- the one criterion this lineage already meets. Pay for
+  clearance, leave the policy free on how to get it.
+  """
+  r = cfg.rewards
+  if "swing_height_bonus" not in r:
+    raise RuntimeError("soleclear needs the dense rung: it replaces swing_height_bonus")
+  r["swing_height_bonus"].func = mdp.swing_sole_clearance_bonus
+  # Target back to what the honest measure can reach. it13200 logged 6.3 cm of
+  # centre lift; the true clearance under it is unknown and certainly smaller,
+  # so asking for the same number again would restore the constant-target trap.
+  r["swing_height_bonus"].params["target_height"] = float(
+    os.environ.get("RHPS1_CLEAR_TARGET", "0.03")
+  )
+
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
@@ -1152,7 +1185,7 @@ DECOMPOSED = {
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
-  "stable": _stable,
+  "stable": _stable, "soleclear": _soleclear,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 

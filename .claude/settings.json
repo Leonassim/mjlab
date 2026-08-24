@@ -8,6 +8,7 @@
       "Bash(uv add:*)",
       "Bash(git:*)",
       "Bash(gh:*)",
+      "Bash(git push:*)",
       "WebSearch",
       "Skill(commit-push-pr)",
       "Skill(pr-review-toolkit:review-pr)"
