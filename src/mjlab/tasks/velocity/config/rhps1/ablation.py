@@ -1202,6 +1202,46 @@ def _encnoise(cfg, full) -> None:
 
 
 
+def _slowstep(cfg, full) -> None:
+  """Walk the step-period ladder up from what it13200 actually does.
+
+  Two problems, one cause. it13200 measures step_period 0.530 s and
+  air_time 0.497 s: the foot is off the ground 94% of its own cycle, so there
+  is almost no double support left and the robot has nothing to stand on
+  between steps. That is the instability seen on hardware, and it is the same
+  hover this file already recorded at 0.759 against 0.793.
+
+  Slowing the step fixes the ratio without touching the air-time cap: hold air
+  at 0.40 and take the period to 0.8 and the swing fraction falls from 94% to
+  50%. It also makes real clearance affordable -- lifting 3 cm within a 0.53 s
+  cycle demands vertical velocity the torque budget does not have, which is
+  exactly the corner a policy escapes by pitching the foot instead of lifting
+  it. Slower swing and honest clearance are the same fix.
+
+  The ladder had to be rebased, not just extended. Its stages are relative to
+  the resume point, so restarting at 0.25 against a gait already at 0.530 puts
+  p_ratio at its saturation cap: the term is a constant, paying nothing for
+  slowing down, for the ~1500 iterations it takes to climb back past the
+  measured value. Stage 0 now sits just above the measurement, where a ladder
+  has to start.
+  """
+  c = cfg.curriculum.get("step_target")
+  if c is None:
+    raise RuntimeError("slowstep needs the steplen rung: it rebases step_target")
+  c.params["stages"] = [
+    {"step": 0, "target_distance": 0.09, "target_period": 0.58},
+    {"step": 12_000, "target_distance": 0.11, "target_period": 0.66},
+    {"step": 24_000, "target_distance": 0.13, "target_period": 0.74},
+    {"step": 36_000, "target_distance": 0.15, "target_period": 0.82},
+    {"step": 48_000, "target_distance": 0.17, "target_period": 0.90},
+  ]
+  r = cfg.rewards.get("com_step_progress")
+  if r is not None:
+    r.params["target_distance"] = 0.09
+    r.params["target_period"] = 0.58
+
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
@@ -1210,6 +1250,7 @@ DECOMPOSED = {
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
+  "slowstep": _slowstep,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
