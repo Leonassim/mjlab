@@ -50,6 +50,14 @@ WATCH = [
   ("flat", "Metrics/flat_support_contacts_mean"),
   ("period", "Metrics/step_period_mean"),
   ("len", "Metrics/step_length_mean"),
+  # The hip-yaw ceiling, deterministically. CROTCH_Y read 0.82 of its torque
+  # limit in training against the knee's 0.60, and the whole "yaw is the wall"
+  # theory rests on that number -- which, like falls and clipping, may simply be
+  # domain randomisation. yaw_err says whether the robot rotates when nobody
+  # asked it to, which is what would load the joint in the first place.
+  ("crotchY", "TorqueRatio/L_CROTCH_Y"),
+  ("kneeP", "TorqueRatio/L_KNEE_P"),
+  ("yaw_err", "Metrics/twist/error_vel_yaw"),
 ]
 
 
