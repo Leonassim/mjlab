@@ -1239,13 +1239,19 @@ def _slowstep(cfg, full) -> None:
   # instead. Final rung 0.174/0.58 is exactly 0.30 m/s. Stage 0 at 0.10 against
   # a measured 0.071 is a stretch but the right kind: just far enough ahead to
   # pull, which is where a rung belongs.
-  c.params["stages"] = [
-    {"step": 0, "target_distance": 0.100, "target_period": 0.58},
-    {"step": 12_000, "target_distance": 0.120, "target_period": 0.58},
-    {"step": 24_000, "target_distance": 0.140, "target_period": 0.58},
-    {"step": 36_000, "target_distance": 0.157, "target_period": 0.58},
-    {"step": 48_000, "target_distance": 0.174, "target_period": 0.58},
-  ]
+  # Frozen, deliberately. Every run of this campaign was an escalating demand on
+  # a policy that never got to converge -- the longest lasted 600 iterations and
+  # each one ended against the leg-clipping wall while the ladder kept asking
+  # for more. A rung that keeps climbing past what the plant can deliver stops
+  # being a curriculum and becomes a constant pull into saturation.
+  #
+  # 0.095 sits just above the 0.082 achieved, so there is still a gradient, and
+  # the run can consolidate instead of chasing. Escalation resumes only once a
+  # deterministic command sweep can say whether a checkpoint is actually better,
+  # which training metrics demonstrably cannot: they reported 3.3% falls on a
+  # policy that fell in mc_mujoco above 0.16 m/s.
+  d0 = float(os.environ.get("RHPS1_STEP_DIST", "0.095"))
+  c.params["stages"] = [{"step": 0, "target_distance": d0, "target_period": 0.58}]
   r = cfg.rewards.get("com_step_progress")
   if r is not None:
     # target_distance BELOW what is measured, on purpose. com_step_progress
