@@ -43,7 +43,13 @@ WARMUP = int(os.environ.get("WARMUP", "3"))
 # at all", and a bad starting checkpoint must not be able to raise it. Writing
 # the relative guard as max(absolute, baseline*1.2) got that backwards: a
 # baseline above the ceiling silently moved the ceiling.
-CAP = {"satleg": 0.32, "impact": 0.20, "torque": 0.60, "fall": 0.12}
+# torque at 0.68, not 0.60. torque_limit_ratio_mean is a LEVEL -- the average
+# joint's share of its limit -- and a longer stride legitimately costs more; the
+# thing that must not happen is the action being silently truncated, and satleg
+# prices that directly. 0.60 was an arbitrary round number, it sat below the
+# checkpoint this experiment resumes from (0.602), and it would have killed the
+# run on its first guarded poll for a quantity that is not the constraint.
+CAP = {"satleg": 0.32, "impact": 0.20, "torque": 0.68, "fall": 0.12}
 
 # name: (tag, soft, hard, direction)   direction +1 = higher is worse
 GUARDS = {
