@@ -47,6 +47,36 @@ def joint_vel_l2(
   return torch.sum(torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
 
 
+def joint_vel_l2_standing(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.05,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """joint_vel_l2, charged only while the robot is asked to stand still.
+
+  Arm swing is not decoration. A leg swinging forward torques the body about the
+  vertical axis and a natural gait cancels it with the arms in counter-phase;
+  forbid that and the hip yaw absorbs all of it. Measured on RHPS1 with the
+  upper body penalised at every instant: CROTCH_Y ran at 0.78 of its torque
+  limit against the knee's 0.57, error_vel_yaw sat at 0.29, and the stride
+  would not grow past 7 cm however hard it was paid for. The arms clipped too --
+  two thirds of all clipping -- because holding still against that momentum is
+  itself a static strain.
+
+  Ungated, this term buys a quiet robot at the price of a gait that cannot
+  lengthen its step. Gated, it keeps the thing actually wanted -- no fidgeting
+  at rest -- and returns the mechanism the walk needs.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  cost = torch.sum(torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
+  command = env.command_manager.get_command(command_name)
+  if command is None:
+    return cost
+  moving = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  return cost * (moving <= command_threshold).float()
+
+
 def joint_acc_l2(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:

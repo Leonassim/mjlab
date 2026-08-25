@@ -1358,6 +1358,35 @@ def _groundtax(cfg, full) -> None:
 
 
 
+def _freearms(cfg, full) -> None:
+  """Let the arms swing while walking; keep them still at rest.
+
+  The stride stopped at 7-8 cm with the knee at 0.57 of its torque limit and
+  plenty of margin left, while CROTCH_Y sat at 0.78 -- the hip yaw was the wall,
+  not leg power. A leg swinging forward torques the body about the vertical
+  axis, a natural gait cancels that with the arms in counter-phase, and
+  upper_body_vel_l2 forbade it at every instant, command or no command. So the
+  hip yaw absorbed all of it and error_vel_yaw sat at 0.29.
+
+  It also explains the clipping: two thirds of it is upper body, because holding
+  the arms still against that momentum is a static strain. This file already
+  records the same lesson once -- cutting arm action acceleration 45x raised arm
+  clipping anyway.
+
+  Gating on the command keeps what was actually asked for, a robot that does not
+  fidget at rest, and returns the mechanism the walk needs. Leo's call,
+  2026-08-25, told the arms will visibly swing again while walking.
+  """
+  for name in ("upper_body_vel_l2", "head_vel_l2"):
+    t = cfg.rewards.get(name)
+    if t is None:
+      continue
+    t.func = mdp.joint_vel_l2_standing
+    t.params["command_name"] = "twist"
+    t.params["command_threshold"] = 0.05
+
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
@@ -1366,7 +1395,7 @@ DECOMPOSED = {
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
-  "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax,
+  "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax, "freearms": _freearms,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 

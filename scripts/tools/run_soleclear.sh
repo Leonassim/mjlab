@@ -29,7 +29,7 @@ cd /home/lmoussafir/mjlab-rhps1 || exit 1
 while [ "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits)" -gt 2000 ]
 do sleep 60; done
 sleep 30
-export RHPS1_ABLATION=${RHPS1_ABLATION:-p0+rand+lift+steplen+freevel+freeroll+dense+calm+stable+soleclear+slowstep+softland+landtime+groundtax}
+export RHPS1_ABLATION=${RHPS1_ABLATION:-p0+rand+lift+steplen+freevel+freeroll+dense+calm+stable+soleclear+slowstep+softland+landtime+groundtax+freearms}
 # Clearance target just above the 0.0263 the gait actually reaches. At 0.030 the
 # term kept a gradient the plant cannot satisfy: over the last 40 iterations
 # clearance moved +0.4% and period -1.2% while clipping climbed +1.2%, i.e. the
@@ -54,5 +54,5 @@ exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval ${VIDEO_INTERVAL:-7200} --video-length ${VIDEO_LENGTH:-600} \
   --agent.resume True \
-  --agent.load-run ${LOAD_RUN:-2026-08-25_15-07-55} \
-  --agent.load-checkpoint ${LOAD_CKPT:-model_14250.pt}
+  --agent.load-run ${LOAD_RUN:-2026-08-25_16-10-53} \
+  --agent.load-checkpoint ${LOAD_CKPT:-model_15300.pt}
