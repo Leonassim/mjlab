@@ -1411,8 +1411,20 @@ def _softland2(cfg, full) -> None:
   here as driving the standing-on-one-leg regression, and the sweep shows stance
   is not where the deficit is.
   """
+  # impact_vel only. Raising flat_touchdown with it, tried at -0.8, put 89% of
+  # episodes into a fall in under a hundred iterations: the term became the
+  # second largest in the budget at -1.49, flight went 0.45 -> 0.58, air_time's
+  # overflow penalty exploded behind it, and the robot stopped landing at all.
+  #
+  # The two are not the same kind of penalty. impact_vel charges for landing
+  # FAST, which a policy fixes by decelerating the foot -- it can satisfy it.
+  # flat_touchdown charges for landing CROOKED, which at 2.0 of 4 corners it
+  # does not know how to fix -- so it escapes by not landing. A penalty that can
+  # be satisfied shapes behaviour; one that cannot is simply avoided.
+  #
+  # Flat landing needs a term that pays for improvement rather than one that
+  # prices failure, and that is its own iteration.
   _w(cfg, "impact_vel", -float(os.environ.get("RHPS1_W_IMPACT", "1.5")))
-  _w(cfg, "flat_touchdown", -float(os.environ.get("RHPS1_W_FLATTD", "0.8")))
 
 
 
