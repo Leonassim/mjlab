@@ -55,12 +55,23 @@ WARMUP = int(os.environ.get("WARMUP", "3"))
 # prices that directly. 0.60 was an arbitrary round number, it sat below the
 # checkpoint this experiment resumes from (0.602), and it would have killed the
 # run on its first guarded poll for a quantity that is not the constraint.
-# impact 0.23, above softland's own 0.20 reward limit. A guard set AT the
+# Only a real collapse. Everything else was calibrated on TRAINING-scale
+# numbers as though they were deployment criteria, and they are not: training
+# reads leg clipping at 0.32 where the deterministic sweep reads 0.07 for the
+# same policy, and impact at 0.21 where the sweep reads 0.20-0.27 per command.
+# Guarding one scale with the other's thresholds is why healthy runs kept dying
+# -- three times, each on a checkpoint that started over an arbitrary line.
+#
+# Division of labour: the watchdog says "this run is going wrong" (drift, via
+# the relative guards below), the sweep says "this policy is good enough". Only
+# falls are unambiguous enough at training scale to justify killing a run.
+#
+# Old note kept for the reasoning: impact 0.23, above softland's own 0.20 limit. A guard set AT the
 # target trips the moment the reward does its job: the gait sits on its
 # constraint by design, so 0.203 measured against a 0.20 cap is success, not
 # drift. A cap has to sit above the target it is protecting -- it catches the
 # run leaving the constraint, not the run meeting it.
-CAP = {"satleg": 0.32, "impact": 0.23, "torque": 0.68, "fall": 0.12}
+CAP = {"fall": 0.30}
 
 # name: (tag, soft, hard, direction)   direction +1 = higher is worse
 GUARDS = {
