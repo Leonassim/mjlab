@@ -55,4 +55,4 @@ exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --video-interval ${VIDEO_INTERVAL:-7200} --video-length ${VIDEO_LENGTH:-600} \
   --agent.resume True \
   --agent.load-run ${LOAD_RUN:-2026-08-25_18-30-00} \
-  --agent.load-checkpoint ${LOAD_CKPT:-model_15600.pt}
+  --agent.load-checkpoint ${LOAD_CKPT:-model_15450.pt}

@@ -87,10 +87,16 @@ def main():
   p.add_argument("--steps", type=int, default=1200)  # 6 s at 5 ms, ~14 foulees
   p.add_argument("--envs", type=int, default=512)
   p.add_argument("--root", default="logs/rsl_rl/rhps1_velocity")
+  # Robustness is not optional in the acceptance test. play=True drops domain
+  # randomisation and the pushes, and that blind spot let this sweep certify
+  # model_15600 at under 0.8% falls -- a checkpoint that collapses to 86-127%
+  # the moment it is resumed under randomisation. A policy that only survives
+  # calm conditions is exactly what must not reach the robot.
+  p.add_argument("--rand", action="store_true", help="garder la randomisation")
   a = p.parse_args()
 
   device = "cuda:0" if torch.cuda.is_available() else "cpu"
-  env_cfg = load_env_cfg(TASK, play=True)
+  env_cfg = load_env_cfg(TASK, play=not a.rand)
   env_cfg.scene.num_envs = a.envs
   # Standing envs are a training device; here the zero command is its own row.
   cur = getattr(env_cfg, "curriculum", {})
