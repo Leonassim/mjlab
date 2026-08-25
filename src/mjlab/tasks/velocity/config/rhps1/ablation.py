@@ -1424,7 +1424,24 @@ def _softland2(cfg, full) -> None:
   #
   # Flat landing needs a term that pays for improvement rather than one that
   # prices failure, and that is its own iteration.
-  _w(cfg, "impact_vel", -float(os.environ.get("RHPS1_W_IMPACT", "1.5")))
+  # Ask for a softer landing WITHOUT multiplying the price. Weight stays at the
+  # 0.50 that has always worked; only the threshold moves, from 0.20 to the
+  # 0.16 the criterion actually wants.
+  #
+  # Tripling the weight instead put 45-89% of episodes into a fall, twice in a
+  # row -- once via flat_touchdown, once via impact_vel. Both times the policy
+  # answered the same way: stop landing. Flight went 0.46 -> 0.55, air_time's
+  # overflow penalty took over the budget at -1.53, and the robot fell rather
+  # than pay. Not landing is always available, and it was cheaper than either
+  # penalty.
+  #
+  # The tell is worth remembering: impact_vel did not appear in the reward
+  # ranking at all, because a penalty successfully escaped costs nothing and so
+  # reads as small. The culprit is not among the large terms; it is among the
+  # small ones that ought to be large.
+  cfg.rewards["impact_vel"].params["pre_contact_limit"] = float(
+    os.environ.get("RHPS1_IMPACT_LIMIT", "0.16")
+  )
 
 
 
