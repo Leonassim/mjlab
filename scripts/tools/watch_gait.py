@@ -62,6 +62,11 @@ REPORT = {
   "air": "Metrics/air_time_mean",
   "len": "Metrics/step_length_mean",
   "cheat": "Metrics/sole_height_overstated_mean",
+  # Command tracking. Reported, not guarded: a run is allowed to track badly
+  # while it learns, but this is the number that decides whether "more command
+  # means faster" is true at all, and it sat at 0.46-0.55 while the robot
+  # walked at 0.159 m/s whatever it was asked.
+  "verr": "Metrics/twist/error_vel_xy",
 }
 
 
