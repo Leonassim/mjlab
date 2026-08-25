@@ -29,13 +29,13 @@ cd /home/lmoussafir/mjlab-rhps1 || exit 1
 while [ "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits)" -gt 2000 ]
 do sleep 60; done
 sleep 30
-export RHPS1_ABLATION=${RHPS1_ABLATION:-p0+rand+lift+steplen+freevel+freeroll+dense+calm+stable+soleclear+slowstep+softland+landtime+groundtax+freearms+softland2}
+export RHPS1_ABLATION=${RHPS1_ABLATION:-p0+rand+lift+steplen+freevel+freeroll+dense+calm+stable+soleclear+slowstep+softland+landtime+groundtax+freearms}
 # Clearance target just above the 0.0263 the gait actually reaches. At 0.030 the
 # term kept a gradient the plant cannot satisfy: over the last 40 iterations
 # clearance moved +0.4% and period -1.2% while clipping climbed +1.2%, i.e. the
 # demand was being paid for in torque and delivering nothing. Just-above-measured
 # is where a target belongs.
-export RHPS1_CLEAR_TARGET=${RHPS1_CLEAR_TARGET:-0.030}
+export RHPS1_CLEAR_TARGET=${RHPS1_CLEAR_TARGET:-0.027}
 # Rebalance freevel toward the command. It moved 90% of track_linear_velocity
 # onto direction_progress, whose ramp SATURATES at the commanded speed, and
 # widened what remained to a 0.70 kernel -- so speed stopped following the
