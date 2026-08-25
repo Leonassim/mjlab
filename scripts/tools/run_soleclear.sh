@@ -29,7 +29,7 @@ cd /home/lmoussafir/mjlab-rhps1 || exit 1
 while [ "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits)" -gt 2000 ]
 do sleep 60; done
 sleep 30
-export RHPS1_ABLATION=${RHPS1_ABLATION:-p0+rand+lift+steplen+freevel+freeroll+dense+calm+stable+soleclear+slowstep+softland+landtime+groundtax+freearms}
+export RHPS1_ABLATION=${RHPS1_ABLATION:-p0+rand+lift+steplen+freevel+freeroll+dense+calm+stable+soleclear+slowstep+softland+landtime+groundtax+freearms+softland2}
 # Clearance target just above the 0.0263 the gait actually reaches. At 0.030 the
 # term kept a gradient the plant cannot satisfy: over the last 40 iterations
 # clearance moved +0.4% and period -1.2% while clipping climbed +1.2%, i.e. the

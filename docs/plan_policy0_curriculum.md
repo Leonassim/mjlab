@@ -1,5 +1,11 @@
 # Repartir de policy 0, avec un curriculum
 
+> **RÉVISÉ le 2026-08-25 après le premier balayage.** Le redémarrage depuis
+> policy 0 n'est plus recommandé : sa justification était que la lignée
+> traînait des défauts accumulés, et le balayage montre que ces défauts étaient
+> des artefacts de mesure. Voir « Ce que le balayage a changé » plus bas. Le
+> plan reste valable comme méthode ; c'est le point de départ qui change.
+
 Plan pour un run unique et long depuis la configuration de policy 0, portant
 tout ce que la campagne du 24-25 août a appris. Il remplace la méthode qui a
 échoué : sept runs courts, sept points de départ, des seuils déplacés en cours
@@ -102,3 +108,41 @@ il est une conséquence et se traite avec elle.
 allonger la période réduit la vitesse à foulée constante, et lever plus haut
 coûte plus d'impact à l'atterrissage. Les quatre ne tiendront pas ensemble à
 0.3 m/s. S5 dira où se situe la limite réelle, plutôt que de la supposer.
+
+
+## Ce que le balayage a changé (2026-08-25)
+
+Premier passage sur `it15600`, 11 commandes, 6 s chacune, déterministe :
+
+```
+                 entraînement   balayage
+chutes              4.9 %        < 0.8 %
+écrêtage jambes     0.31          0.07 au pire
+```
+
+Un facteur six sur les chutes, un facteur quatre sur l'écrêtage. Les deux
+grandeurs sur lesquelles la campagne entière a arbitré étaient gonflées par la
+randomisation de domaine et par un mélange de commandes majoritairement lent.
+
+**Conséquences sur le plan :**
+
+1. **Ne pas repartir de policy 0.** Sa raison d'être était de fuir une lignée
+   supposée abîmée. Le balayage dit qu'elle ne l'est pas : `it15600` passe
+   quatre critères sur six. Repartir coûterait 24 h pour retrouver un état
+   qu'on a déjà.
+
+2. **Le couple n'est pas le mur.** 0.07 d'écrêtage jambes contre un critère à
+   0.25 : la marge pour allonger la foulée est large. Toute la théorie du
+   « plafond de lacet de hanche » repose sur `CROTCH_Y` à 0.82 mesuré **en
+   entraînement** — à re-mesurer dans le balayage avant d'y croire.
+
+3. **Les deux vrais échecs sont l'atterrissage.** Impact 0.272 contre un
+   critère à 0.16, et 2.0 coins au sol sur 4. Ce sont eux qui deviennent
+   l'objectif, à la place de la vitesse.
+
+4. **Le curriculum par étapes reste bon**, mais il démarre à S4 et non à S0 :
+   la garde au sol, la foulée et la période sont acquises.
+
+**Objectif révisé de la phase 1** : depuis `it15600`, faire tomber l'impact
+sous 0.16 et remonter les contacts plats, sans perdre la garde au sol ni les
+chutes quasi nulles. Acceptation sur le balayage, jamais sur l'entraînement.

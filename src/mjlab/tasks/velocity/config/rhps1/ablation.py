@@ -1393,6 +1393,29 @@ def _freearms(cfg, full) -> None:
 
 
 
+def _softland2(cfg, full) -> None:
+  """Charge the landing properly. The sweep says it is the only real failure.
+
+  Deterministic sweep of it15600, per command: falls under 0.8% everywhere, leg
+  clipping 0.07 at worst against a 0.25 criterion, clearance 0.030-0.037. Two
+  things fail: pre-contact speed reaches 0.272 against the 0.16 wanted, rising
+  with commanded speed, and only 2.0 of 4 foot corners carry load.
+
+  Both are the landing, and both were under-priced. impact_vel at -0.50 was
+  already violated -- measured 0.27 against its own 0.20 limit -- so the term
+  was paying and simply too cheap to change the gait. flat_touchdown was halved
+  to -0.3 by groundtax, which was right when the period was pinned and is wrong
+  now that it sits at 0.35-0.49.
+
+  Not touching flat_support: it prices stance flatness, raising it is recorded
+  here as driving the standing-on-one-leg regression, and the sweep shows stance
+  is not where the deficit is.
+  """
+  _w(cfg, "impact_vel", -float(os.environ.get("RHPS1_W_IMPACT", "1.5")))
+  _w(cfg, "flat_touchdown", -float(os.environ.get("RHPS1_W_FLATTD", "0.8")))
+
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
@@ -1401,7 +1424,7 @@ DECOMPOSED = {
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
-  "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax, "freearms": _freearms,
+  "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax, "freearms": _freearms, "softland2": _softland2,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
