@@ -137,7 +137,38 @@ def main():
           + " ".join(f"{row[n]:8.4f}" for n, _ in WATCH))
     for n in ("falls", "impact", "satleg"):
       worst[n] = max(worst.get(n, 0.0), row[n] if row[n] == row[n] else 0.0)
-  print("\npire cas sur la grille : " + "  ".join(f"{k}={v:.4f}" for k, v in worst.items()))
+    # Minima, for the criteria where more is better -- and only on the moving
+    # commands: a standing robot legitimately has no clearance, and folding that
+    # zero into the worst case would fail every policy forever.
+    if any(abs(c) > 0.05 for c in cmd):
+      for n in ("clear", "flat"):
+        k = n + "_min"
+        cur = row[n] if row[n] == row[n] else 0.0
+        worst[k] = cur if k not in worst else min(worst[k], cur)
+  # Verdict. The point of a sweep is to end in a decision, and the decision has
+  # to name the single worst-off criterion -- one change per iteration is what
+  # keeps a result attributable. Ranked by how far past its threshold each one
+  # sits, in units of the threshold, so criteria of different scales compare.
+  print()
+  rows = []
+  for name, worst_v, thr, want_low in [
+    ("ne jamais tomber", worst.get("falls", 0.0), 0.01, True),
+    ("couples faisables", worst.get("satleg", 0.0), 0.25, True),
+    ("impact faible", worst.get("impact", 0.0), 0.16, True),
+    ("lever de pied", worst.get("clear_min", 0.0), 0.030, False),
+    ("pieds a plat", worst.get("flat_min", 0.0), 3.0, False),
+  ]:
+    ok = (worst_v <= thr) if want_low else (worst_v >= thr)
+    miss = (worst_v / thr - 1.0) if want_low else (1.0 - worst_v / thr)
+    rows.append((0.0 if ok else miss, name, worst_v, thr, ok))
+  rows.sort(reverse=True)
+  for miss, name, v, thr, ok in rows:
+    mark = "OK  " if ok else "ECHEC"
+    extra = "" if ok else f"   ({miss * 100:+.0f}% du seuil)"
+    print(f"  {mark} {name:20s} {v:8.4f}  seuil {thr:6.3f}{extra}")
+  bad = [r for r in rows if not r[4]]
+  print("\n=> " + ("tous les criteres passent" if not bad
+                   else f"prochaine cible : {bad[0][1]}"))
 
 
 if __name__ == "__main__":
