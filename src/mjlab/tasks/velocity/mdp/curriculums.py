@@ -350,3 +350,50 @@ def reward_param_curriculum(
     if calls > stage["step"]:
       cfg.params[param] = stage["value"]
   return torch.tensor([float(cfg.params[param])])
+
+_GATE_STATE: dict[str, dict] = {}
+
+
+def metric_gated_param_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  reward_name: str,
+  param: str,
+  metric: str,
+  values: list[float],
+  hold: int = 20,
+  lower_is_better: bool = True,
+) -> torch.Tensor:
+  """Tighten one reward parameter, one notch at a time, on measured success.
+
+  Every other curriculum here advances on a step counter, which is the flaw
+  this project keeps paying for: stages march past while the quantity they ask
+  for does not move, and the late ones become constants.
+
+  It also fixes the failure mode of a step change. Asking for a softer landing
+  by tripling the penalty, or by moving the threshold 0.20 -> 0.16 in one go,
+  was answered three times running by the policy simply not landing -- the
+  escape became cheaper than the demand the instant the demand appeared. One
+  notch of 0.01, taken only once the gait already meets the current notch, is
+  never a big enough jump for the escape to pay.
+
+  Advances when the metric has held on the good side of the CURRENT value for
+  `hold` consecutive calls. It never goes back: a notch regained is not the
+  same evidence as a notch held.
+  """
+  del env_ids
+  cfg = env.reward_manager.get_term_cfg(reward_name)
+  key = f"{reward_name}.{param}"
+  st = _GATE_STATE.setdefault(key, {"i": 0, "streak": 0})
+  cfg.params[param] = values[st["i"]]
+
+  v = env.extras.get("log", {}).get(metric)
+  if v is not None:
+    v = float(v)
+    good = (v <= values[st["i"]]) if lower_is_better else (v >= values[st["i"]])
+    st["streak"] = st["streak"] + 1 if good else 0
+    if st["streak"] >= hold and st["i"] + 1 < len(values):
+      st["i"] += 1
+      st["streak"] = 0
+      cfg.params[param] = values[st["i"]]
+  return torch.tensor([float(values[st["i"]])])

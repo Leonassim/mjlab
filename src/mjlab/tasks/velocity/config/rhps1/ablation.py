@@ -1445,6 +1445,34 @@ def _softland2(cfg, full) -> None:
 
 
 
+def _impactladder(cfg, full) -> None:
+  """Walk the impact ceiling down one notch at a time, on measured success.
+
+  Leo's framing, and it explains three failures: a curriculum on the hard
+  rewards, not a step change. Tripling the landing penalty, and moving its
+  threshold 0.20 -> 0.16 in one go, were both answered by the policy refusing
+  to land -- falls 0.86 to 1.27 against 0.05 without the change. The escape
+  becomes profitable the instant a demand appears that the gait cannot meet.
+
+  0.01 at a time, and only once the gait already holds the current notch for
+  twenty consecutive iterations, is never a jump worth escaping. 0.20 is where
+  it sits today; 0.15 is under the 0.16 criterion.
+  """
+  c = cfg.curriculum
+  c["impact_ladder"] = CurriculumTermCfg(
+    func=mdp.metric_gated_param_curriculum,
+    params={
+      "reward_name": "impact_vel",
+      "param": "pre_contact_limit",
+      "metric": "Metrics/pre_contact_peak_vel_mean",
+      "values": [0.20, 0.19, 0.18, 0.17, 0.16, 0.15],
+      "hold": int(os.environ.get("RHPS1_IMPACT_HOLD", "20")),
+      "lower_is_better": True,
+    },
+  )
+
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
@@ -1454,6 +1482,7 @@ DECOMPOSED = {
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
   "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax, "freearms": _freearms, "softland2": _softland2,
+  "impactladder": _impactladder,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
