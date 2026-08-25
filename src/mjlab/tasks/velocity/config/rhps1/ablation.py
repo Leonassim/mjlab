@@ -1228,12 +1228,23 @@ def _slowstep(cfg, full) -> None:
   c = cfg.curriculum.get("step_target")
   if c is None:
     raise RuntimeError("slowstep needs the steplen rung: it rebases step_target")
+  # Period held, distance climbing: speed = distance / period, and the previous
+  # ladder walked both together so the quotient never moved -- measured stride
+  # +7.6% and period +7.4% over 450 iterations for 0.166 m/s throughout. Its
+  # own rungs only ever asked 0.155 to 0.189 m/s, because it was written for
+  # the slow-step goal and not for a speed target.
+  #
+  # 0.58 is already a slower cycle than the 0.43 measured, so the swing keeps
+  # the room it needs; every further rung buys speed by lengthening the stride
+  # instead. Final rung 0.174/0.58 is exactly 0.30 m/s. Stage 0 at 0.10 against
+  # a measured 0.071 is a stretch but the right kind: just far enough ahead to
+  # pull, which is where a rung belongs.
   c.params["stages"] = [
-    {"step": 0, "target_distance": 0.09, "target_period": 0.58},
-    {"step": 12_000, "target_distance": 0.11, "target_period": 0.66},
-    {"step": 24_000, "target_distance": 0.13, "target_period": 0.74},
-    {"step": 36_000, "target_distance": 0.15, "target_period": 0.82},
-    {"step": 48_000, "target_distance": 0.17, "target_period": 0.90},
+    {"step": 0, "target_distance": 0.100, "target_period": 0.58},
+    {"step": 12_000, "target_distance": 0.120, "target_period": 0.58},
+    {"step": 24_000, "target_distance": 0.140, "target_period": 0.58},
+    {"step": 36_000, "target_distance": 0.157, "target_period": 0.58},
+    {"step": 48_000, "target_distance": 0.174, "target_period": 0.58},
   ]
   r = cfg.rewards.get("com_step_progress")
   if r is not None:
@@ -1249,7 +1260,7 @@ def _slowstep(cfg, full) -> None:
     # pulling, so the whole weight lands on the period, which is the half that
     # was never moving. Distance is not lost: at constant speed a longer cycle
     # lengthens the stride on its own.
-    r.params["target_distance"] = float(os.environ.get("RHPS1_STEP_DIST", "0.07"))
+    r.params["target_distance"] = float(os.environ.get("RHPS1_STEP_DIST", "0.10"))
     r.params["target_period"] = 0.58
   # Weight, measured not guessed. At 0.30 the term was worth 0.139/s against a
   # clearance bonus at 1.03 and a torque barrier at -3.06: nothing in the budget
