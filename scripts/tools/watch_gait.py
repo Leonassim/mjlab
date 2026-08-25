@@ -28,6 +28,12 @@ from collections import deque
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 RUN = sys.argv[1]
+# Optional: the trainer's pid. Without it this scans for any process whose
+# cmdline matches, which is fine when the trainer is already up but is a real
+# hazard in a loop -- a watchdog started during a gap waits up to twenty minutes
+# and then latches onto whatever trainer appears next, reporting one run's
+# metrics while holding another run's process. Pass it when it is known.
+WANT_PID = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else None
 POLL = float(os.environ.get("POLL", "600"))
 MILESTONE = float(os.environ.get("MILESTONE", "1e9"))
 PROGRESS_EVERY = int(os.environ.get("PROGRESS_EVERY", "3"))
@@ -132,8 +138,10 @@ prev_it = None
 stuck = 0
 n = 0
 
-pid = None
+pid = WANT_PID
 for _ in range(40):
+  if pid is not None:
+    break
   pid = trainer_pid()
   if pid:
     break
