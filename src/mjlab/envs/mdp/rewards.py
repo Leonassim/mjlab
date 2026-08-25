@@ -206,8 +206,20 @@ def joint_torque_limit_margin_penalty(
   saturated = (normalized >= 0.99).float()
   env.extras["log"]["Metrics/torque_saturated_frac"] = torch.mean(saturated)
   per_joint_sat = torch.mean(saturated, dim=0)
+  leg_idx = []
   for k, local_id in enumerate(active_local_ids):
     env.extras["log"][f"TorqueSat/{actuator_names[local_id]}"] = per_joint_sat[k]
+    if any(t in actuator_names[local_id] for t in ("CROTCH", "KNEE", "ANKLE")):
+      leg_idx.append(k)
+  # Legs alone. The aggregate above is two thirds upper body -- wrists, elbows
+  # and shoulders saturate their own small actuators -- and torque is NOT shared
+  # between joints, so a clipped wrist takes nothing from the knee. Guarding the
+  # aggregate therefore reads mostly a quantity that cannot constrain the
+  # stride, and hides the one that can.
+  if leg_idx:
+    env.extras["log"]["Metrics/torque_saturated_frac_legs"] = torch.mean(
+      per_joint_sat[torch.tensor(leg_idx, device=per_joint_sat.device)]
+    )
   return torch.sum(excess, dim=1)
 
 
