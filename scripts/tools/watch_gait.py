@@ -49,7 +49,12 @@ WARMUP = int(os.environ.get("WARMUP", "3"))
 # prices that directly. 0.60 was an arbitrary round number, it sat below the
 # checkpoint this experiment resumes from (0.602), and it would have killed the
 # run on its first guarded poll for a quantity that is not the constraint.
-CAP = {"satleg": 0.32, "impact": 0.20, "torque": 0.68, "fall": 0.12}
+# impact 0.23, above softland's own 0.20 reward limit. A guard set AT the
+# target trips the moment the reward does its job: the gait sits on its
+# constraint by design, so 0.203 measured against a 0.20 cap is success, not
+# drift. A cap has to sit above the target it is protecting -- it catches the
+# run leaving the constraint, not the run meeting it.
+CAP = {"satleg": 0.32, "impact": 0.23, "torque": 0.68, "fall": 0.12}
 
 # name: (tag, soft, hard, direction)   direction +1 = higher is worse
 GUARDS = {
