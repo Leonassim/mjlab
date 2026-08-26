@@ -23,9 +23,19 @@ export WANDB_MODE=offline WANDB_INIT_TIMEOUT=300
 START=$(date +%s)
 .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video False \
-  --agent.max-iterations $((18000 + ITERS)) \
   --agent.resume True --agent.load-run "$BASE_RUN" --agent.load-checkpoint "$BASE_CKPT" \
-  > "$OUT/$NAME.train.log" 2>&1
+  > "$OUT/$NAME.train.log" 2>&1 &
+TPID=$!
+# Arret sur le checkpoint, pas sur --agent.max-iterations : ce drapeau compte des
+# iterations SUPPLEMENTAIRES, pas une cible absolue. 18000+450 lui a fait viser
+# 18450 iterations de plus, un jour et demi au lieu de quarante minutes -- et des
+# sondes de durees differentes ne sont comparables a rien, ce qui est le seul
+# interet de la methode.
+BASE_IT=$(echo "$BASE_CKPT" | tr -dc 0-9)
+TARGET=$(( BASE_IT + ITERS ))
+until compgen -G "logs/rsl_rl/rhps1_velocity/*/model_$TARGET.pt" >/dev/null || ! kill -0 $TPID 2>/dev/null
+do sleep 20; done
+kill $TPID 2>/dev/null; sleep 15
 
 RUN=$(ls -dt logs/rsl_rl/rhps1_velocity/*/ | head -1 | xargs basename)
 CKPT=$(ls "logs/rsl_rl/rhps1_velocity/$RUN"/model_*.pt | sed 's/.*model_//;s/.pt//' | sort -n | tail -1)
