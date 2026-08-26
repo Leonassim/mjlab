@@ -571,6 +571,25 @@ def _hist(cfg, full) -> None:
   cfg.observations["actor"].terms["actions"].history_length = 5
 
 
+def _hist5(cfg, full) -> None:
+  """History 5 on every observation term, actor and critic. 126 -> 510 dims.
+
+  Policy 0 carries history only on base_lin_vel and command; the joints, their
+  velocities and the actions are single snapshots. Leo's call is to give all of
+  them five frames.
+
+  DEPLOYMENT: 510 dims is not the V3 126-dim format wired into rl_controller
+  (utils.cpp builds the vector, obsFormat_ selects it). A new format has to be
+  written there before any export from this lineage reaches the robot.
+  """
+  for group in ("actor", "critic"):
+    g = cfg.observations.get(group)
+    if g is None:
+      continue
+    for term in g.terms.values():
+      term.history_length = 5
+
+
 def _exec(cfg, full) -> None:
   """last_action -> executed_action, nothing else.
 
@@ -1680,17 +1699,26 @@ def _wide(cfg, full) -> None:
     "base_ang_vel": (-0.05, 0.05),
   }
   for group in ("actor", "critic"):
+    lim = float(os.environ.get("RHPS1_ENC_NOISE", "0.005"))
     t = cfg.observations[group].terms.get("joint_pos")
     n = getattr(t, "noise", None) if t is not None else None
     if n is not None:
-      lim = float(os.environ.get("RHPS1_ENC_NOISE", "0.005"))
       n.n_min, n.n_max = -lim, lim
+    # One encoder, one noise. joint_vel is a finite difference of the SAME
+    # encoder, so its noise is derived, not declared: encoder_noise stood at
+    # 5e-05 against a position noise of 0.005, a hundredfold disagreement about
+    # the same sensor. Differencing lim over the policy step amplifies it --
+    # 0.005 rad at 200 Hz gives ~1.4 rad/s, which is what policy 0's flat
+    # +/-1.5 was approximating, minus the correlation.
+    jv = cfg.observations[group].terms.get("joint_vel")
+    if jv is not None and "encoder_noise" in getattr(jv, "params", {}):
+      jv.params["encoder_noise"] = lim
 
 
 
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
-  "hist": _hist, "exec": _exec, "proj": _proj,
+  "hist": _hist, "hist5": _hist5, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
