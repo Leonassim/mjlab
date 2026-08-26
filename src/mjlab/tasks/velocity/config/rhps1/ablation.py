@@ -1481,10 +1481,20 @@ def _stepladder(cfg, full) -> None:
   elapsed / target_period. Clamped means each one stops paying the instant the
   gait reaches it, so a target below the measurement is genuinely inert.
 
-  target_distance is exactly that today: frozen at 0.095 while the sweep
-  measures 0.1168 at vx 0.30. Saturated at 1.0, zero gradient on stride length,
-  for the whole campaign -- which is why the robot kept buying speed with
-  cadence instead of reach, the one trade Leo asked to reverse.
+  DO NOT USE AS WRITTEN. The reasoning below was wrong on both halves and is
+  kept only so the mistake is not made a third time.
+
+  target_distance is saturated at 1.0 -- frozen at 0.095 against 0.1168
+  measured -- but that is DELIBERATE, not a dead term. _steplen records the
+  measurement: the two halves are not equally cheap, lengthening a stride is
+  one bigger push while lengthening a cycle is stance time the policy has to
+  find, so freeing the distance half sent the whole weight to it. step_length
+  0.062 -> 0.078 in 280 iterations, period flat at 0.475, torque barrier -3.4,
+  clipping 0.276, falls 9%. Saturating it on purpose is what forces the weight
+  onto the half that never moves.
+
+  And the period ladder here starts at the value P3 already rejected: +60%
+  falls for +14% period. Both ladders would climb into measured failures.
 
   So both climb, and only on evidence: metric_gated_param_curriculum advances a
   notch when the gait has already held the current one for `hold` iterations.
@@ -1561,9 +1571,14 @@ def _periodlive(cfg, full) -> None:
   target 0.58 -> 0.30 multiplies the pull by 3.7 without changing anything else.
 
   Measured: the period went 0.26 -> 0.296 within fifty iterations and stopped
-  there, against a 0.30 target. That plateau is the real lesson -- a clamped
-  ratio saturates the moment the gait reaches its target, and the pull dies. A
-  single rebase buys one step. The target has to climb, which is _stepladder.
+  there, against a 0.30 target. A clamped ratio saturates the moment the gait
+  reaches its target, so a single rebase buys one step and no more.
+
+  REJECTED on the randomised sweep. Against P2, its own control at the same
+  randomisation: falls 0.0195 -> 0.0312 for a period 0.26 -> 0.296. +60% falls
+  to buy +14% of cycle. Lengthening the period lengthens single support, and
+  "never fall" outranks "slower step" -- do not re-enable without something
+  that pays for double support at the same time.
   """
   c = cfg.curriculum.get("step_target")
   if c is None:
