@@ -1494,6 +1494,50 @@ def _standfirm(cfg, full) -> None:
 
 
 
+def _wide(cfg, full) -> None:
+  """Widen the randomisation Leo asked for, narrow the one he does not need.
+
+  Never touched in this whole campaign: `p0+rand` RESTORES policy 0's ranges,
+  it does not widen them. So "more randomisation" has been an open objective
+  from the start and nothing was done about it in either direction.
+
+  Leo's call, 2026-08-26: more on masses and centres of mass, a little on
+  friction, encoders narrowed because they are precise, and no pushes for now.
+
+    mass + inertia   +/-5%  -> +/-12%   pseudo_inertia scales both together;
+                                        body_mass would move mass alone and
+                                        leave the inertia inconsistent, which
+                                        is why mjlab deprecates it
+    base CoM         25/30 mm -> 40/50 mm
+    link CoM         10 mm    -> 20 mm
+    foot friction    0.5-0.9  -> 0.4-1.0
+    joint_pos noise  +/-0.01  -> +/-0.005
+
+  encoder_bias is left at +/-0.015 rad: it models calibration offset, which is
+  real and persistent, and is a different error from per-step encoder noise.
+
+  joint_vel still carries NO noise, and that is the largest remaining sim-to-real
+  gap on the observation -- velocity is differentiated from the encoders, so its
+  noise is amplified by 1/dt. Left alone here on purpose: it is a separate
+  variable and this probe already moves five.
+  """
+  e = cfg.events
+  e["link_inertia"].params["alpha_range"] = (
+    -float(os.environ.get("RHPS1_INERTIA", "0.12")),
+    float(os.environ.get("RHPS1_INERTIA", "0.12")),
+  )
+  e["base_com"].params["ranges"] = {0: (-0.04, 0.04), 1: (-0.04, 0.04), 2: (-0.05, 0.05)}
+  e["link_com"].params["ranges"] = {0: (-0.02, 0.02), 1: (-0.02, 0.02), 2: (-0.02, 0.02)}
+  e["foot_friction"].params["ranges"] = (0.4, 1.0)
+  for group in ("actor", "critic"):
+    t = cfg.observations[group].terms.get("joint_pos")
+    n = getattr(t, "noise", None) if t is not None else None
+    if n is not None:
+      lim = float(os.environ.get("RHPS1_ENC_NOISE", "0.005"))
+      n.n_min, n.n_max = -lim, lim
+
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
@@ -1503,7 +1547,7 @@ DECOMPOSED = {
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
   "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax, "freearms": _freearms, "softland2": _softland2,
-  "impactladder": _impactladder, "standfirm": _standfirm,
+  "impactladder": _impactladder, "standfirm": _standfirm, "wide": _wide,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
