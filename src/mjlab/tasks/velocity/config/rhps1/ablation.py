@@ -1474,6 +1474,53 @@ def _impactladder(cfg, full) -> None:
 
 
 
+def _stepladder(cfg, full) -> None:
+  """Ladder both step targets on measured achievement, and free the stride.
+
+  com_step_progress scores two clamped ratios, averaged: distance / target and
+  elapsed / target_period. Clamped means each one stops paying the instant the
+  gait reaches it, so a target below the measurement is genuinely inert.
+
+  target_distance is exactly that today: frozen at 0.095 while the sweep
+  measures 0.1168 at vx 0.30. Saturated at 1.0, zero gradient on stride length,
+  for the whole campaign -- which is why the robot kept buying speed with
+  cadence instead of reach, the one trade Leo asked to reverse.
+
+  So both climb, and only on evidence: metric_gated_param_curriculum advances a
+  notch when the gait has already held the current one for `hold` iterations.
+  step_target goes away rather than being left to fight the ladders for the same
+  two params -- it rewrites them from a step counter on every call, and which
+  wins would come down to dict ordering.
+  """
+  c = cfg.curriculum
+  if "step_target" not in c:
+    raise RuntimeError("stepladder needs the steplen rung: it replaces step_target")
+  c.pop("step_target")
+  hold = int(os.environ.get("RHPS1_STEP_HOLD", "20"))
+  c["period_ladder"] = CurriculumTermCfg(
+    func=mdp.metric_gated_param_curriculum,
+    params={
+      "reward_name": "com_step_progress",
+      "param": "target_period",
+      "metric": "Metrics/step_period_mean",
+      "values": [0.30, 0.33, 0.36, 0.39, 0.42],
+      "hold": hold,
+      "lower_is_better": False,
+    },
+  )
+  c["stride_ladder"] = CurriculumTermCfg(
+    func=mdp.metric_gated_param_curriculum,
+    params={
+      "reward_name": "com_step_progress",
+      "param": "target_distance",
+      "metric": "Metrics/step_length_mean",
+      "values": [0.12, 0.13, 0.14, 0.15, 0.16],
+      "hold": hold,
+      "lower_is_better": False,
+    },
+  )
+
+
 def _flatpay(cfg, full) -> None:
   """Pay for a level sole at touchdown. The hardware defect, measured properly.
 
@@ -1505,15 +1552,18 @@ def _flatpay(cfg, full) -> None:
 
 
 def _periodlive(cfg, full) -> None:
-  """Rebase the period target onto the measured gait so it stops being a constant.
+  """Concentrate the period gradient by moving the target next to the gait.
 
-  target_period sits at 0.58 s while the randomised sweep measures 0.22-0.35 s
-  across the command grid -- 2.2x above anything the gait does, so the term
-  pays a flat rate and slowing down buys nothing. Same shape as the impact
-  ceiling at 0.45 against a gait landing at 0.165, and the same consequence:
-  the period regressed run after run while a reward was nominally guarding it.
+  Not "the target was a constant" -- that was wrong and the run disproved it.
+  com_step_progress scores clamp(elapsed / target_period, 0, 1) ** power, so at
+  0.58 against a measured 0.29 the ratio sat at 0.50: unsaturated, paying, and
+  pulling. Just weakly. The gradient of (t/T)**2 goes as 1/T**2, so dropping the
+  target 0.58 -> 0.30 multiplies the pull by 3.7 without changing anything else.
 
-  0.30 is just above the 0.26 measured, which is where a target belongs.
+  Measured: the period went 0.26 -> 0.296 within fifty iterations and stopped
+  there, against a 0.30 target. That plateau is the real lesson -- a clamped
+  ratio saturates the moment the gait reaches its target, and the pull dies. A
+  single rebase buys one step. The target has to climb, which is _stepladder.
   """
   c = cfg.curriculum.get("step_target")
   if c is None:
@@ -1624,7 +1674,7 @@ DECOMPOSED = {
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
   "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax, "freearms": _freearms, "softland2": _softland2,
   "impactladder": _impactladder, "standfirm": _standfirm, "wide": _wide,
-  "periodlive": _periodlive, "flatpay": _flatpay,
+  "periodlive": _periodlive, "flatpay": _flatpay, "stepladder": _stepladder,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
