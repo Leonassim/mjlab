@@ -457,6 +457,21 @@ def base_lin_vel_biased(
   return _apply_bias(env, "base_lin_vel", asset.data.root_link_lin_vel_b)
 
 
+def base_ang_vel_biased(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+) -> torch.Tensor:
+  """Base angular velocity with a per-episode constant bias.
+
+  The twin of base_lin_vel_biased, and its absence was a silent hole:
+  randomize_sensor_bias accepts a base_ang_vel key, but the observation term
+  read the unbiased function, so any bias configured for it was dropped without
+  a word. A gyro's characteristic error is exactly a slow zero-offset, and the
+  yaw channel carries three times the observation noise of the others here.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  return _apply_bias(env, "base_ang_vel", asset.data.root_link_ang_vel_b)
+
+
 def projected_gravity_biased(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:

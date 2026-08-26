@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.velocity import mdp
@@ -1529,6 +1530,32 @@ def _wide(cfg, full) -> None:
   e["base_com"].params["ranges"] = {0: (-0.04, 0.04), 1: (-0.04, 0.04), 2: (-0.05, 0.05)}
   e["link_com"].params["ranges"] = {0: (-0.02, 0.02), 1: (-0.02, 0.02), 2: (-0.02, 0.02)}
   e["foot_friction"].params["ranges"] = (0.4, 1.0)
+  # Sensor bias up, on both velocity channels. Leo's call: the base velocities
+  # come from the floating-base observer on the robot, whose failure mode is a
+  # slow offset, and per-step noise does not model that -- a five-frame history
+  # averages zero-mean noise away and stays credulous to an offset.
+  #
+  # base_ang_vel needed its observation switched to the biased variant first:
+  # randomize_sensor_bias accepts the key, but the term read the unbiased
+  # function, so a bias configured for it was dropped in silence.
+  for group in ("actor", "critic"):
+    t = cfg.observations[group].terms.get("base_ang_vel")
+    if t is not None:
+      t.func = mdp.base_ang_vel_biased
+  # Created if absent rather than indexed: sensor_bias is declared in the rough
+  # config and dropped again on the play path, so whether it exists at this
+  # point depends on how the config was built. Indexing it blind raised a
+  # KeyError the first time this rung ran.
+  if "sensor_bias" not in e:
+    e["sensor_bias"] = EventTermCfg(func=mdp.randomize_sensor_bias, mode="reset", params={})
+  e["sensor_bias"].params["scale_ranges"] = {
+    "base_lin_vel": (-0.10, 0.10),
+    "base_ang_vel": (-0.10, 0.10),
+  }
+  e["sensor_bias"].params["bias_ranges"] = {
+    "base_lin_vel": (-0.05, 0.05),
+    "base_ang_vel": (-0.05, 0.05),
+  }
   for group in ("actor", "critic"):
     t = cfg.observations[group].terms.get("joint_pos")
     n = getattr(t, "noise", None) if t is not None else None
