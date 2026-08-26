@@ -1562,23 +1562,29 @@ def _flatpay(cfg, full) -> None:
 
 
 def _periodlive(cfg, full) -> None:
-  """Concentrate the period gradient by moving the target next to the gait.
+  """REJECTED. Kept as the counter-example: a clamped target must sit ABOVE the gait.
 
-  Not "the target was a constant" -- that was wrong and the run disproved it.
-  com_step_progress scores clamp(elapsed / target_period, 0, 1) ** power, so at
-  0.58 against a measured 0.29 the ratio sat at 0.50: unsaturated, paying, and
-  pulling. Just weakly. The gradient of (t/T)**2 goes as 1/T**2, so dropping the
-  target 0.58 -> 0.30 multiplies the pull by 3.7 without changing anything else.
+  The rung lowered target_period 0.58 -> 0.30 on the theory that 0.58 was a
+  constant far above the gait. Both halves of that were wrong, and the sweep
+  says so on every command.
 
-  Measured: the period went 0.26 -> 0.296 within fifty iterations and stopped
-  there, against a 0.30 target. A clamped ratio saturates the moment the gait
-  reaches its target, so a single rebase buys one step and no more.
+  com_step_progress scores clamp(elapsed / target_period, 0, 1) ** power. The
+  clamp is the whole story. At 0.58 against a measured 0.30 the ratio sits at
+  0.52 -- unsaturated, so the term pays more for a longer cycle and the
+  gradient is live. At 0.30 against the same gait the ratio hits 1.0, the term
+  pays a flat rate, and the gradient is exactly zero. Lowering the target did
+  not concentrate the pull, it switched it off.
 
-  REJECTED on the randomised sweep. Against P2, its own control at the same
-  randomisation: falls 0.0195 -> 0.0312 for a period 0.26 -> 0.296. +60% falls
-  to buy +14% of cycle. Lengthening the period lengthens single support, and
-  "never fall" outranks "slower step" -- do not re-enable without something
-  that pays for double support at the same time.
+  Measured against P2, its own control at the same randomisation, sweep vs
+  sweep: the period is SHORTER on all eleven commands (0.2612 -> 0.2531 at
+  vx 0.10, 0.3335 -> 0.2730 at vx -0.20, 0.3529 -> 0.2946 at yaw -0.30), falls
+  0.0195 -> 0.0312, clearance 0.0285 -> 0.0275. Worse on its own objective and
+  on the two criteria that outrank it.
+
+  This is the same rule _steplen already records for the distance half --
+  "below the measurement the distance half saturates at 1.0 and stops pulling".
+  For a clamped ratio the target belongs ABOVE what the gait achieves, and it
+  is a ladder only if each rung stays above the measurement.
   """
   c = cfg.curriculum.get("step_target")
   if c is None:
