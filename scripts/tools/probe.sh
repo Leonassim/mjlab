@@ -26,7 +26,8 @@ export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 PREV_DIR=$(ls -dt logs/rsl_rl/rhps1_velocity/*/ 2>/dev/null | head -1)
 START=$(date +%s)
 .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
-  --env.scene.num-envs 4096 --video False \
+  --env.scene.num-envs 4096 --video True \
+  --video-interval 7200 --video-length 600 \
   --agent.resume True --agent.load-run "$BASE_RUN" --agent.load-checkpoint "$BASE_CKPT" \
   > "$OUT/$NAME.train.log" 2>&1 &
 TPID=$!

@@ -52,7 +52,7 @@ export RHPS1_FREEVEL_STD=${RHPS1_FREEVEL_STD:-0.45}
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
-  --video-interval ${VIDEO_INTERVAL:-7200} --video-length ${VIDEO_LENGTH:-600} \
+  --video-interval ${VIDEO_INTERVAL:-12000} --video-length ${VIDEO_LENGTH:-600} \
   --agent.resume True \
   --agent.load-run ${LOAD_RUN:-2026-08-26_00-21-43} \
   --agent.load-checkpoint ${LOAD_CKPT:-model_18000.pt}
