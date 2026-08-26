@@ -1474,6 +1474,55 @@ def _impactladder(cfg, full) -> None:
 
 
 
+def _flatpay(cfg, full) -> None:
+  """Pay for a level sole at touchdown. The hardware defect, measured properly.
+
+  Two things are wrong with how flatness has been judged here. The criterion
+  read flat_support_contacts_mean -- how many of four patches the solver
+  reports loaded -- which measures the contact threshold and not the foot: a
+  sole parallel to the ground within 16 um scored 2.15 of 4. And it looked at
+  the loaded foot, after the ground has already flattened it, while the defect
+  Leo saw is a foot arriving tilted.
+
+  So: tilt, in radians, at first contact, paid rather than charged. scale 0.06
+  rad is 3.4 degrees, just under the 0.055 the sweep measures, so the term has
+  a gradient at today's gait instead of saturating -- the trap that made the
+  period and impact targets constants.
+  """
+  r = cfg.rewards
+  if "swing_height_bonus" not in r:
+    raise RuntimeError("flatpay needs the dense rung: it borrows its sensor")
+  r["flat_touchdown_bonus"] = RewardTermCfg(
+    func=mdp.sole_flat_touchdown_bonus,
+    weight=float(os.environ.get("RHPS1_FLATPAY_W", "1.0")),
+    params={
+      "sensor_name": "feet_ground_contact",
+      "scale": float(os.environ.get("RHPS1_FLATPAY_SCALE", "0.06")),
+      "command_name": "twist",
+      "command_threshold": 0.05,
+    },
+  )
+
+
+def _periodlive(cfg, full) -> None:
+  """Rebase the period target onto the measured gait so it stops being a constant.
+
+  target_period sits at 0.58 s while the randomised sweep measures 0.22-0.35 s
+  across the command grid -- 2.2x above anything the gait does, so the term
+  pays a flat rate and slowing down buys nothing. Same shape as the impact
+  ceiling at 0.45 against a gait landing at 0.165, and the same consequence:
+  the period regressed run after run while a reward was nominally guarding it.
+
+  0.30 is just above the 0.26 measured, which is where a target belongs.
+  """
+  c = cfg.curriculum.get("step_target")
+  if c is None:
+    raise RuntimeError("periodlive needs the steplen rung: it rebases step_target")
+  per = float(os.environ.get("RHPS1_STEP_PERIOD", "0.30"))
+  for st in c.params["stages"]:
+    st["target_period"] = per
+
+
 def _standfirm(cfg, full) -> None:
   """Train standing still more often. The sweep says that is where it falls.
 
@@ -1575,6 +1624,7 @@ DECOMPOSED = {
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
   "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax, "freearms": _freearms, "softland2": _softland2,
   "impactladder": _impactladder, "standfirm": _standfirm, "wide": _wide,
+  "periodlive": _periodlive, "flatpay": _flatpay,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 

@@ -2839,3 +2839,61 @@ class com_step_progress:
     # back out so `weight` means what it means everywhere else, and the term is
     # worth weight * (landings per second) at full stride.
     return reward / self.step_dt
+
+
+class sole_flat_touchdown_bonus:
+  """Pay for a level sole at the instant it lands.
+
+  Leo's hardware verdict on the high-clearance policy: it trips early because
+  the feet are tilted in the air. The foot that trips is the one that arrives
+  edge-first, so the quantity is the tilt at first contact -- not the tilt once
+  loaded, which the ground has already corrected, and not the corner count,
+  which measures the solver's contact threshold rather than the foot.
+
+  A bonus, not a penalty. Every landing demand raised as a cost on this gait was
+  answered by the policy not landing: flat_touchdown x2.7, impact_vel x3 and the
+  0.20 -> 0.16 threshold each produced more falls than the change they asked
+  for. Paying for the good landing leaves no cheaper escape than doing it.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv) -> None:
+    self.asset_name = cfg.params.get("asset_cfg", _DEFAULT_ASSET_CFG).name
+    asset: Entity = env.scene[self.asset_name]
+    names = [
+      f"{side}_foot{i}_collision" for side in ("left", "right") for i in (1, 2, 3, 4)
+    ]
+    geom_names = list(asset.geom_names)
+    self.geom_ids = [geom_names.index(n) for n in names]
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    scale: float = 0.06,
+    command_name: str | None = None,
+    command_threshold: float = 0.05,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    n = asset.data.geom_pos_w.shape[0]
+    quat = asset.data.geom_quat_w[:, self.geom_ids, :].view(n, 2, 4, 4)[:, :, 0, :]
+    rot = matrix_from_quat(quat.reshape(-1, 4)).view(n, 2, 3, 3)
+    tilt = torch.acos(torch.clamp(rot[:, :, 2, 2], -1.0, 1.0))  # [B, 2]
+
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    first_contact = contact_sensor.compute_first_contact(dt=env.step_dt).float()
+    first_contact = first_contact[:, : tilt.shape[1]]
+
+    bonus = torch.exp(-torch.square(tilt / max(scale, 1e-6))) * first_contact
+    bonus = torch.sum(bonus, dim=1)
+    if command_name is not None:
+      command = env.command_manager.get_command(command_name)
+      if command is not None:
+        total = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+        bonus = bonus * (total > command_threshold).float()
+
+    land = torch.clamp(torch.sum(first_contact), min=1.0)
+    env.extras["log"]["Metrics/sole_tilt_touchdown"] = (
+      torch.sum(tilt * first_contact) / land
+    )
+    return bonus

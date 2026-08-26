@@ -45,7 +45,8 @@ GRID = [
 # the silent hole an acceptance test must not have.
 WATCH = [
   ("clear", "Metrics/sole_clearance_p90"),
-  ("impact", "Metrics/pre_contact_peak_vel_mean"),
+  ("impact", "Metrics/landing_vel_mean"),
+  ("peakVel", "Metrics/pre_contact_peak_vel_mean"),
   ("satleg", "Metrics/torque_saturated_frac_legs"),
   ("flat", "Metrics/flat_support_contacts_mean"),
   ("period", "Metrics/step_period_mean"),
@@ -60,6 +61,7 @@ WATCH = [
   ("yaw_err", "Metrics/twist/error_vel_yaw"),
   # Flatness as an angle, not as a count of patches the solver happened to see.
   ("tiltGnd", "Metrics/sole_tilt_loaded"),
+  ("tiltTD", "Metrics/sole_tilt_touchdown"),
 ]
 
 
@@ -143,7 +145,7 @@ def main():
     row["falls"] = float(fell.float().mean())
     print(f"{cmd[0]:6.2f}{cmd[1]:6.2f}{cmd[2]:6.2f} {row['falls']:8.4f} "
           + " ".join(f"{row[n]:8.4f}" for n, _ in WATCH))
-    for n in ("falls", "impact", "satleg"):
+    for n in ("falls", "impact", "satleg", "tiltGnd", "peakVel"):
       worst[n] = max(worst.get(n, 0.0), row[n] if row[n] == row[n] else 0.0)
     # Minima, for the criteria where more is better -- and only on the moving
     # commands: a standing robot legitimately has no clearance, and folding that
@@ -162,9 +164,21 @@ def main():
   for name, worst_v, thr, want_low in [
     ("ne jamais tomber", worst.get("falls", 0.0), 0.01, True),
     ("couples faisables", worst.get("satleg", 0.0), 0.25, True),
+    # landing_vel_mean, not pre_contact_peak_vel_mean. 0.16 was written for the
+    # touchdown speed -- "just above policy 0's 0.158, the gait that landed
+    # softly enough on hardware" -- but the criterion read the PEAK over the
+    # pre-contact window, a strictly larger quantity that a walking swing leg
+    # cannot get under. That mismatch is why this criterion has been named the
+    # next target by every sweep since it was written, at a flat +107%.
     ("impact faible", worst.get("impact", 0.0), 0.16, True),
     ("lever de pied", worst.get("clear_min", 0.0), 0.030, False),
-    ("pieds a plat", worst.get("flat_min", 0.0), 3.0, False),
+    # Tilt, not the corner count. flat_support_contacts_mean reports how many
+    # of four patches the solver calls loaded, which is a function of its
+    # contact threshold: a sole parallel to the ground within 16 um scored
+    # 2.15 of 4, so the criterion failed at "+33% of threshold" on a foot that
+    # was already flat. Tilt is the quantity meant by "flat foot" and it is
+    # solver-independent. 0.05 rad is 2.9 deg, just under the 0.066 measured.
+    ("pieds a plat", worst.get("tiltGnd", 0.0), 0.05, True),
   ]:
     ok = (worst_v <= thr) if want_low else (worst_v >= thr)
     miss = (worst_v / thr - 1.0) if want_low else (1.0 - worst_v / thr)
