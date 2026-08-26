@@ -2896,4 +2896,10 @@ class sole_flat_touchdown_bonus:
     env.extras["log"]["Metrics/sole_tilt_touchdown"] = (
       torch.sum(tilt * first_contact) / land
     )
-    return bonus
+    # Divide the step out. RewardManager returns raw * weight * dt, so every
+    # term is a per-second rate -- and an impulse paid once per touchdown
+    # collects that dt too, which divided this bonus by ~200 and left it worth
+    # 0.013/s against a clearance bonus at 1.03. Probes P4 and P5 both measured
+    # an inert term, and this file already records the same defect twice, on
+    # com_step_progress and on flat_touchdown.
+    return bonus / env.step_dt

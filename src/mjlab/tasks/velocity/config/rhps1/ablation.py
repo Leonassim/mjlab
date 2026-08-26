@@ -1551,10 +1551,13 @@ def _flatpay(cfg, full) -> None:
     raise RuntimeError("flatpay needs the dense rung: it borrows its sensor")
   r["flat_touchdown_bonus"] = RewardTermCfg(
     func=mdp.sole_flat_touchdown_bonus,
-    weight=float(os.environ.get("RHPS1_FLATPAY_W", "1.0")),
+    # 0.4, not 1.0. Once the step is divided out the term is worth ~2.6/s at
+    # weight 1.0, which would outweigh swing_height_bonus at 1.03 and buy
+    # flatness with clearance -- the two are traded through the same ankle.
+    weight=float(os.environ.get("RHPS1_FLATPAY_W", "0.4")),
     params={
       "sensor_name": "feet_ground_contact",
-      "scale": float(os.environ.get("RHPS1_FLATPAY_SCALE", "0.06")),
+      "scale": float(os.environ.get("RHPS1_FLATPAY_SCALE", "0.12")),
       "command_name": "twist",
       "command_threshold": 0.05,
     },
