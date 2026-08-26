@@ -23,6 +23,7 @@ export RHPS1_FREEVEL_SHARE=0.6 RHPS1_FREEVEL_STD=0.45
 # retirer sa seule fenetre sur ce qui tourne.
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 
+PREV_DIR=$(ls -dt logs/rsl_rl/rhps1_velocity/*/ 2>/dev/null | head -1)
 START=$(date +%s)
 .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video False \
@@ -36,11 +37,22 @@ TPID=$!
 # interet de la methode.
 BASE_IT=$(echo "$BASE_CKPT" | tr -dc 0-9)
 TARGET=$(( BASE_IT + ITERS ))
-until compgen -G "logs/rsl_rl/rhps1_velocity/*/model_$TARGET.pt" >/dev/null || ! kill -0 $TPID 2>/dev/null
-do sleep 20; done
+# Attendre le repertoire que CE trainer cree, puis le checkpoint DEDANS. Un glob
+# sur tous les repertoires trouve model_18450.pt d'une sonde precedente et
+# declenche l'arret aussitot : P2 est morte en vingt secondes sans une iteration,
+# et le balayage qui a suivi a mesure le run precedent en croyant mesurer P2.
+NEW=""
+for _ in $(seq 1 60); do
+  C=$(ls -dt logs/rsl_rl/rhps1_velocity/*/ 2>/dev/null | head -1)
+  [ -n "$C" ] && [ "$C" != "$PREV_DIR" ] && { NEW=$C; break; }
+  sleep 20
+done
+[ -z "$NEW" ] && { echo "$NAME: aucun repertoire de run cree"; kill $TPID 2>/dev/null; exit 1; }
+echo "$NAME: run $NEW, cible model_$TARGET.pt"
+until [ -f "$NEW/model_$TARGET.pt" ] || ! kill -0 $TPID 2>/dev/null; do sleep 20; done
 kill $TPID 2>/dev/null; sleep 15
 
-RUN=$(ls -dt logs/rsl_rl/rhps1_velocity/*/ | head -1 | xargs basename)
+RUN=$(basename "$NEW")
 CKPT=$(ls "logs/rsl_rl/rhps1_velocity/$RUN"/model_*.pt | sed 's/.*model_//;s/.pt//' | sort -n | tail -1)
 echo "sonde $NAME : run $RUN, checkpoint $CKPT, $(( ($(date +%s)-START)/60 )) min" | tee "$OUT/$NAME.txt"
 .venv/bin/python scripts/tools/sweep_eval.py "$RUN" "model_$CKPT.pt" \
