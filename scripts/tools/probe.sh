@@ -18,7 +18,10 @@ while [ "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits)" -g
 export RHPS1_ABLATION=$ABL
 export RHPS1_CLEAR_TARGET=${RHPS1_CLEAR_TARGET:-0.027}
 export RHPS1_FREEVEL_SHARE=0.6 RHPS1_FREEVEL_STD=0.45
-export WANDB_MODE=offline WANDB_INIT_TIMEOUT=300
+# Pas de WANDB_MODE=offline : Leo suit les entrainements dans wandb, et le
+# couper pour economiser un peu de surcharge sur des runs courts revient a
+# retirer sa seule fenetre sur ce qui tourne.
+export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 
 START=$(date +%s)
 .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
