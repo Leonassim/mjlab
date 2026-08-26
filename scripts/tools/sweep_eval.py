@@ -89,7 +89,10 @@ def main():
   p.add_argument("run")
   p.add_argument("checkpoint")
   p.add_argument("--steps", type=int, default=1200)  # 6 s at 5 ms, ~14 foulees
-  p.add_argument("--envs", type=int, default=512)
+  # 1024, not 256: three config-identical probes measured falls at 0.0156,
+  # 0.0195 and 0.0352 -- a 2.3x spread on the criterion that outranks every
+  # other one. Quadrupling the sample halves that band.
+  p.add_argument("--envs", type=int, default=1024)
   p.add_argument("--root", default="logs/rsl_rl/rhps1_velocity")
   # Robustness is not optional in the acceptance test. play=True drops domain
   # randomisation and the pushes, and that blind spot let this sweep certify
@@ -145,16 +148,22 @@ def main():
     row["falls"] = float(fell.float().mean())
     print(f"{cmd[0]:6.2f}{cmd[1]:6.2f}{cmd[2]:6.2f} {row['falls']:8.4f} "
           + " ".join(f"{row[n]:8.4f}" for n, _ in WATCH))
+    # nan means the metric was never emitted -- the term that logs it is not in
+    # this config. Coercing it to 0.0 made the policy 0 calibration print
+    # "ECHEC lever de pied +100%" about a foot lift nobody had measured. A
+    # criterion with no measurement has to say so, not fail.
     for n in ("falls", "impact", "satleg", "tiltGnd", "peakVel"):
-      worst[n] = max(worst.get(n, 0.0), row[n] if row[n] == row[n] else 0.0)
+      if row[n] == row[n]:
+        worst[n] = max(worst.get(n, float("-inf")), row[n])
     # Minima, for the criteria where more is better -- and only on the moving
     # commands: a standing robot legitimately has no clearance, and folding that
     # zero into the worst case would fail every policy forever.
     if any(abs(c) > 0.05 for c in cmd):
       for n in ("clear", "flat"):
+        if row[n] != row[n]:
+          continue
         k = n + "_min"
-        cur = row[n] if row[n] == row[n] else 0.0
-        worst[k] = cur if k not in worst else min(worst[k], cur)
+        worst[k] = row[n] if k not in worst else min(worst[k], row[n])
   # Verdict. The point of a sweep is to end in a decision, and the decision has
   # to name the single worst-off criterion -- one change per iteration is what
   # keeps a result attributable. Ranked by how far past its threshold each one
@@ -162,34 +171,43 @@ def main():
   print()
   rows = []
   for name, worst_v, thr, want_low in [
-    ("ne jamais tomber", worst.get("falls", 0.0), 0.01, True),
-    ("couples faisables", worst.get("satleg", 0.0), 0.25, True),
+    ("ne jamais tomber", worst.get("falls"), 0.01, True),
+    ("couples faisables", worst.get("satleg"), 0.25, True),
     # landing_vel_mean, not pre_contact_peak_vel_mean. 0.16 was written for the
     # touchdown speed -- "just above policy 0's 0.158, the gait that landed
     # softly enough on hardware" -- but the criterion read the PEAK over the
     # pre-contact window, a strictly larger quantity that a walking swing leg
     # cannot get under. That mismatch is why this criterion has been named the
     # next target by every sweep since it was written, at a flat +107%.
-    ("impact faible", worst.get("impact", 0.0), 0.16, True),
-    ("lever de pied", worst.get("clear_min", 0.0), 0.030, False),
+    ("impact faible", worst.get("impact"), 0.16, True),
+    ("lever de pied", worst.get("clear_min"), 0.030, False),
     # Tilt, not the corner count. flat_support_contacts_mean reports how many
     # of four patches the solver calls loaded, which is a function of its
     # contact threshold: a sole parallel to the ground within 16 um scored
     # 2.15 of 4, so the criterion failed at "+33% of threshold" on a foot that
     # was already flat. Tilt is the quantity meant by "flat foot" and it is
     # solver-independent. 0.05 rad is 2.9 deg, just under the 0.066 measured.
-    ("pieds a plat", worst.get("tiltGnd", 0.0), 0.05, True),
+    ("pieds a plat", worst.get("tiltGnd"), 0.05, True),
   ]:
+    if worst_v is None:
+      rows.append((-1.0, name, float("nan"), thr, None))
+      continue
     ok = (worst_v <= thr) if want_low else (worst_v >= thr)
     miss = (worst_v / thr - 1.0) if want_low else (1.0 - worst_v / thr)
     rows.append((0.0 if ok else miss, name, worst_v, thr, ok))
   rows.sort(reverse=True)
   for miss, name, v, thr, ok in rows:
-    mark = "OK  " if ok else "ECHEC"
-    extra = "" if ok else f"   ({miss * 100:+.0f}% du seuil)"
+    mark = "?    " if ok is None else ("OK  " if ok else "ECHEC")
+    extra = "  NON MESURE" if ok is None else ("" if ok else f"   ({miss * 100:+.0f}% du seuil)")
     print(f"  {mark} {name:20s} {v:8.4f}  seuil {thr:6.3f}{extra}")
-  bad = [r for r in rows if not r[4]]
-  print("\n=> " + ("tous les criteres passent" if not bad
+  # `is False`, not `not r[4]`: an unmeasured criterion is None, and `not None`
+  # is True -- it would come back as the next target, which is the same mistake
+  # the nan coercion made one layer down.
+  bad = [r for r in rows if r[4] is False]
+  unmeasured = [r[1] for r in rows if r[4] is None]
+  if unmeasured:
+    print("  (non mesure : " + ", ".join(unmeasured) + ")")
+  print("\n=> " + ("tous les criteres mesures passent" if not bad
                    else f"prochaine cible : {bad[0][1]}"))
 
 

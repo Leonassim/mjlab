@@ -582,12 +582,74 @@ def _hist5(cfg, full) -> None:
   (utils.cpp builds the vector, obsFormat_ selects it). A new format has to be
   written there before any export from this lineage reaches the robot.
   """
-  for group in ("actor", "critic"):
+  # Actor only. The critic carries height_scan and the contact-force terms, and
+  # five frames of those ran the 4096-env config out of CUDA memory outright.
+  # The actor's history is the one that matters -- it is the policy's memory and
+  # the thing that gets deployed; the critic already sees privileged state.
+  groups = ("actor", "critic") if os.environ.get("RHPS1_HIST5_CRITIC") else ("actor",)
+  for group in groups:
     g = cfg.observations.get(group)
     if g is None:
       continue
     for term in g.terms.values():
       term.history_length = 5
+
+
+def _instr(cfg, full) -> None:
+  """Measurement without training effect: the metric terms at weight 1e-9.
+
+  The policy 0 calibration read nan on clearance, period and both tilts -- those
+  metrics are emitted by reward terms that only later rungs add, so a run from
+  the p0 config is blind on exactly the three things this campaign wants to
+  improve. The sweep then printed "ECHEC lever de pied +100%" on a policy whose
+  foot lift was never measured.
+
+  Weight 1e-9, not 0: RewardManager skips a zero-weight term entirely
+  (reward_manager.py, `if term_cfg.weight == 0.0: continue`), so it never runs
+  and never logs. At 1e-9 against terms worth 1 to 5 the contribution is 1e-9
+  of the budget -- instrumentation, not a reward.
+  """
+  eps = 1e-9
+  r = cfg.rewards
+  asset_cfg = r["min_foot_height"].params["asset_cfg"]
+  # Honest clearance + sole_tilt_loaded/_swing. The sole-lowest-point measure,
+  # not the centre-site one a foot can game by pitching.
+  r["metrics_clearance"] = RewardTermCfg(
+    func=mdp.swing_sole_clearance_bonus,
+    weight=eps,
+    params={
+      "target_height": 0.03,
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "power": 1.0,
+      "asset_cfg": asset_cfg,
+    },
+  )
+  # step_period_mean and step_length_mean.
+  r["metrics_step"] = RewardTermCfg(
+    func=mdp.com_step_progress,
+    weight=eps,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "target_distance": 0.05,
+      "target_period": 0.25,
+      "power": 2.0,
+      "command_threshold": 0.1,
+    },
+  )
+  # sole_tilt_touchdown.
+  r["metrics_flat"] = RewardTermCfg(
+    func=mdp.sole_flat_touchdown_bonus,
+    weight=eps,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "scale": 0.12,
+      "command_name": "twist",
+      "command_threshold": 0.05,
+    },
+  )
 
 
 def _exec(cfg, full) -> None:
@@ -1718,7 +1780,7 @@ def _wide(cfg, full) -> None:
 
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
-  "hist": _hist, "hist5": _hist5, "exec": _exec, "proj": _proj,
+  "hist": _hist, "hist5": _hist5, "instr": _instr, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,

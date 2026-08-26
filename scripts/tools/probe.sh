@@ -57,5 +57,5 @@ RUN=$(basename "$NEW")
 CKPT=$(ls "logs/rsl_rl/rhps1_velocity/$RUN"/model_*.pt | sed 's/.*model_//;s/.pt//' | sort -n | tail -1)
 echo "sonde $NAME : run $RUN, checkpoint $CKPT, $(( ($(date +%s)-START)/60 )) min" | tee "$OUT/$NAME.txt"
 .venv/bin/python scripts/tools/sweep_eval.py "$RUN" "model_$CKPT.pt" \
-  --steps 900 --envs 256 --rand >> "$OUT/$NAME.txt" 2>&1
+  --steps 900 --envs 1024 --rand >> "$OUT/$NAME.txt" 2>&1
 tail -8 "$OUT/$NAME.txt"
