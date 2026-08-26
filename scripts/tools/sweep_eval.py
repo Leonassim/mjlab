@@ -58,6 +58,8 @@ WATCH = [
   ("crotchY", "TorqueRatio/L_CROTCH_Y"),
   ("kneeP", "TorqueRatio/L_KNEE_P"),
   ("yaw_err", "Metrics/twist/error_vel_yaw"),
+  # Flatness as an angle, not as a count of patches the solver happened to see.
+  ("tiltGnd", "Metrics/sole_tilt_loaded"),
 ]
 
 

@@ -2521,6 +2521,22 @@ class swing_sole_clearance_bonus:
         total = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
         bonus = bonus * (total > command_threshold).float()
 
+    # Sole tilt, in radians, straight from the geometry. The flatness criterion
+    # has been read off flat_support_contacts_mean -- how many of four contact
+    # patches the solver reports loaded -- and that number measures the solver's
+    # detection threshold, not the foot: this file records a sole parallel to
+    # the ground within 16 um registering only 2.15 of 4. Tilt is the quantity
+    # actually meant by "flat foot", it is solver-independent, and it is already
+    # available here since the clearance term needs the orientation anyway.
+    cos = torch.clamp(rot[:, :, 2, 2], -1.0, 1.0)
+    tilt = torch.acos(cos)
+    on_ground = 1.0 - in_air
+    gnd = torch.clamp(torch.sum(on_ground), min=1.0)
+    env.extras["log"]["Metrics/sole_tilt_loaded"] = torch.sum(tilt * on_ground) / gnd
+    env.extras["log"]["Metrics/sole_tilt_swing"] = torch.sum(tilt * in_air) / torch.clamp(
+      torch.sum(in_air), min=1.0
+    )
+
     air = torch.clamp(torch.sum(in_air), min=1.0)
     env.extras["log"]["Metrics/sole_clearance_mean"] = torch.sum(rel * in_air) / air
     swing = rel[in_air > 0]
