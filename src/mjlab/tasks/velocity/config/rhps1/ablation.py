@@ -1473,6 +1473,27 @@ def _impactladder(cfg, full) -> None:
 
 
 
+def _standfirm(cfg, full) -> None:
+  """Train standing still more often. The sweep says that is where it falls.
+
+  Randomised sweep of model_18000, per command: 2.7% falls at the ZERO command
+  and 0.0-0.4% everywhere else, up to 0.3 m/s. Under perturbation the robot is
+  most fragile standing, not walking -- which is invisible in any averaged
+  metric and was found only by pinning one command at a time.
+
+  rel_standing_envs is 0.2, so four steps in five are spent walking. A policy
+  practises what it is asked for, and it is asked to stand one time in five.
+  0.35 without going further: policy 0 ran 0.1 and stood perfectly, so more is
+  not automatically better, and this trades against every other criterion by
+  taking envs away from the gait.
+  """
+  cmd = cfg.commands["twist"]
+  cmd.rel_standing_envs = float(os.environ.get("RHPS1_STANDING", "0.35"))
+  # The curriculum walks this value and would overwrite it on its first call.
+  cfg.curriculum.pop("standing_envs", None)
+
+
+
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "exec": _exec, "proj": _proj,
@@ -1482,7 +1503,7 @@ DECOMPOSED = {
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
   "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax, "freearms": _freearms, "softland2": _softland2,
-  "impactladder": _impactladder,
+  "impactladder": _impactladder, "standfirm": _standfirm,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
 
