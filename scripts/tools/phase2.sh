@@ -31,8 +31,8 @@ R=/home/lmoussafir/mjlab-rhps1
 cd "$R" || exit 1
 PREV=${1:?run de la phase 1 attendue}
 CKPT=${2:?checkpoint attendu}
-export RHPS1_ABLATION="p0+hist5+mirror+masscom+prox+instr+cbal+swt"
-export RHPS1_W_CBAL=0.5
+export RHPS1_ABLATION="p0+hist5+mirror+masscom+prox+instr+swt"
+
 export RHPS1_SWT_TARGET=0.05
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \

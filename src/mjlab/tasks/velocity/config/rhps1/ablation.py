@@ -610,7 +610,36 @@ def _hist5(cfg, full) -> None:
 
 
 def _cbal(cfg, full) -> None:
-  """contact_balance in place of flat_support, and flat_touchdown_bonus retuned.
+  """REJETE a poids 0.5 (2026-08-28). Garde comme contre-exemple.
+
+  Phase 1 de la nuit, en reprise de Base0 model_2100, une seule deviation.
+  Mesure sur 600 iterations, contre le point de reprise :
+
+    track_linear_velocity   2.996 -> 1.198    plafonne, ne remonte pas
+    fell_down               0.000 -> 0.222    pic a 0.846 a l'iteration 2500
+    double_support_frac     0.135 -> 0.939    fige en 100 iterations
+    contact_evenness        0.488 -> 0.180    EMPIRE
+
+  Le dernier chiffre est le point important : la grandeur que le terme PAIE se
+  degrade. Ce n'est donc pas un arbitrage marche/proprete mal dose, c'est un
+  minimum local. La recompense somme (evenness * charge) sur les deux pieds,
+  donc le double appui rapporte jusqu'au double du simple appui ; la politique
+  a trouve qu'immobile sur deux pieds elle encaisse plus longtemps, s'y est
+  enfermee en 100 iterations, et une fois figee elle n'a plus de gradient pour
+  reequilibrer la charge -- elle tombe une fois sur cinq au lieu de marcher.
+
+  0.5 avait ete choisi POUR eviter ca : l'ecart double/simple appui plafonnait
+  a 0.5/s contre track_linear_velocity a 3.03/s, marcher devait rester
+  largement gagnant. L'arithmetique du budget etait juste et la conclusion
+  fausse -- ce qui compte n'est pas le rapport des poids mais l'existence d'un
+  bassin ou la politique tombe et dont elle ne ressort pas.
+
+  A retenter, s'il le faut, sous 0.1 ET avec une porte sur la commande, pour
+  que l'immobilite ne soit payee que lorsqu'elle est demandee. Ne pas relancer
+  a 0.5.
+
+  ---
+  Intention d'origine : contact_balance in place of flat_support.
 
   One measure for three of Leo's requirements: no heel bias, clean contacts,
   and standing still on two flat feet. See mdp.contact_balance for why it is a
