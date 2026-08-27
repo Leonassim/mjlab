@@ -241,9 +241,22 @@ def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
       "asset_cfg": SceneEntityCfg("robot", site_names=("left_foot", "right_foot")),
     },
   )
+  # -0.018, pas -1.8. Le poids de policy 0 etait -1.8 quand flat_touchdown_penalty
+  # renvoyait `cost` ; le commit 52ee92dd du 2026-08-22 l'a passe a
+  # `cost / env.step_dt`, ce qui est homogene mais multiplie le terme par ~200 a
+  # poids constant. Mesure a l'iteration 533, meme configuration nominale :
+  #
+  #   19 aout (repro policy 0)   flat_touchdown -0.032   ratio couple 0.347
+  #   21 aout (run deployee)     flat_touchdown -0.026   ratio couple 0.345
+  #   --- 52ee92dd ---
+  #   27 aout (config identique) flat_touchdown -2.512   ratio couple 0.675
+  #
+  # Le terme etait devenu le premier poste de depense du budget, et TOUTES les
+  # runs depuis le 22 aout ont tourne avec. -0.018 restaure le budget des deux
+  # runs de reference, dont celle dont l'ONNX a tourne sur le robot.
   r["flat_touchdown"] = RewardTermCfg(
     func=mdp.flat_touchdown_penalty,
-    weight=-1.8,
+    weight=float(os.environ.get("RHPS1_W_FLATTD", "-0.018")),
     params={
       "sensor_name": "feet_ground_contact_split",
       "required_contacts_per_foot": 4,
@@ -662,6 +675,19 @@ def _instr(cfg, full) -> None:
       "power": 2.0,
       "command_threshold": 0.1,
     },
+  )
+  # Double appui, simple appui, vol, et mouvement du haut du corps.
+  r["metrics_gait"] = RewardTermCfg(
+    func=mdp.gait_metrics,
+    weight=eps,
+    params={"sensor_name": "feet_ground_contact"},
+  )
+  # Repartition de force sur les 4 boites : le biais talon, journalise sans
+  # peser sur l'entrainement.
+  r["metrics_contact"] = RewardTermCfg(
+    func=mdp.contact_balance,
+    weight=eps,
+    params={"sensor_name": "feet_ground_contact_split", "min_force": 20.0},
   )
   # sole_tilt_touchdown.
   r["metrics_flat"] = RewardTermCfg(

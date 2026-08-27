@@ -2963,3 +2963,42 @@ def contact_balance(
       torch.sum(share[:, :, i] * loaded) / n
     )
   return reward
+
+
+def gait_metrics(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  head_body: str = "HEAD_P_LINK",
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Log-only: double support, single support, and upper-body motion.
+
+  Three of Leo's criteria had no measurement at all. The support ones were being
+  inferred from air_time and step_period, which is not the same quantity: a gait
+  can have a long air time and no double support, and that combination is
+  exactly the instability seen on hardware.
+
+  Returns zeros -- instrumentation, declared at weight 1e-9 so RewardManager
+  actually calls it (it skips weight-0 terms entirely and they never log).
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  found = sensor.data.found
+  assert found is not None, "gait_metrics needs a contact-reporting sensor"
+  loaded = (found[:, :2] > 0).float()
+  n = loaded.shape[0]
+  cnt = loaded.sum(dim=1)
+  env.extras["log"]["Metrics/double_support_frac"] = torch.mean((cnt >= 2).float())
+  env.extras["log"]["Metrics/single_support_frac"] = torch.mean((cnt == 1).float())
+  env.extras["log"]["Metrics/flight_frac"] = torch.mean((cnt == 0).float())
+
+  asset: Entity = env.scene[asset_cfg.name]
+  body_names = list(asset.body_names)
+  if head_body in body_names:
+    hid = body_names.index(head_body)
+    env.extras["log"]["Metrics/head_speed"] = torch.mean(
+      torch.norm(asset.data.body_link_vel_w[:, hid, 0:3], dim=-1)
+    )
+  env.extras["log"]["Metrics/base_ang_speed"] = torch.mean(
+    torch.norm(asset.data.root_ang_vel_b, dim=-1)
+  )
+  return torch.zeros(n, device=found.device)

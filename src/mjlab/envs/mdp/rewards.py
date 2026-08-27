@@ -250,6 +250,16 @@ def joint_torque_limit_margin_penalty(
     env.extras["log"]["Metrics/torque_saturated_frac_legs"] = torch.mean(
       per_joint_sat[torch.tensor(leg_idx, device=per_joint_sat.device)]
     )
+  # Upper body, separately. Splitting the legs out of the aggregate was right --
+  # a clipped wrist takes nothing from the knee -- but it left the upper body
+  # with no criterion at all, and Leo names its torque as something to watch.
+  # Two thirds of all clipping lives here; unwatched, an arm can ride its limit
+  # for a whole campaign without a single number moving.
+  upper_idx = [k for k in range(len(active_local_ids)) if k not in set(leg_idx)]
+  if upper_idx:
+    env.extras["log"]["Metrics/torque_saturated_frac_upper"] = torch.mean(
+      per_joint_sat[torch.tensor(upper_idx, device=per_joint_sat.device)]
+    )
   return torch.sum(excess, dim=1)
 
 

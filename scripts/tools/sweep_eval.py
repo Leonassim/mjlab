@@ -48,6 +48,9 @@ WATCH = [
   ("impact", "Metrics/landing_vel_mean"),
   ("peakVel", "Metrics/pre_contact_peak_vel_mean"),
   ("satleg", "Metrics/torque_saturated_frac_legs"),
+  # Le haut du corps a son propre critere : deux tiers de l'ecretage y vivent,
+  # et le sortir de l'agregat pour isoler les jambes l'avait laisse sans mesure.
+  ("satup", "Metrics/torque_saturated_frac_upper"),
   ("flat", "Metrics/flat_support_contacts_mean"),
   ("period", "Metrics/step_period_mean"),
   ("len", "Metrics/step_length_mean"),
@@ -152,7 +155,7 @@ def main():
     # this config. Coercing it to 0.0 made the policy 0 calibration print
     # "ECHEC lever de pied +100%" about a foot lift nobody had measured. A
     # criterion with no measurement has to say so, not fail.
-    for n in ("falls", "impact", "satleg", "tiltGnd", "peakVel"):
+    for n in ("falls", "impact", "satleg", "satup", "tiltGnd", "peakVel"):
       if row[n] == row[n]:
         worst[n] = max(worst.get(n, float("-inf")), row[n])
     # Minima, for the criteria where more is better -- and only on the moving
@@ -173,6 +176,9 @@ def main():
   for name, worst_v, thr, want_low in [
     ("ne jamais tomber", worst.get("falls"), 0.01, True),
     ("couples faisables", worst.get("satleg"), 0.25, True),
+    # Meme seuil que les jambes : un actionneur sature est un actionneur que la
+    # politique commande sans le sentir, quel que soit le membre.
+    ("couples haut du corps", worst.get("satup"), 0.25, True),
     # landing_vel_mean, not pre_contact_peak_vel_mean. 0.16 was written for the
     # touchdown speed -- "just above policy 0's 0.158, the gait that landed
     # softly enough on hardware" -- but the criterion read the PEAK over the
