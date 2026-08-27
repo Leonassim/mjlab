@@ -147,6 +147,21 @@ def main():
           for n, tag in WATCH:
             if tag in log:
               acc[n].append(float(log[tag]))
+          # yaw_err is computed here and not read from the log. The command
+          # manager only publishes error_vel_yaw through reset(), so on a 1200
+          # step rollout that never resets the key never reaches extras["log"]
+          # and the column read nan on EVERY policy -- a permanent hole, not a
+          # result. Same definition as _update_metrics: emitted command minus
+          # measured yaw rate, in the base frame.
+          cm = env.unwrapped.command_manager.get_term("twist")
+          acc["yaw_err"].append(
+            float(
+              torch.abs(
+                cm.vel_command_out[:, 2]
+                - cm.robot.data.root_link_ang_vel_b[:, 2]
+              ).mean()
+            )
+          )
     row = {n: (statistics.fmean(v) if v else float("nan")) for n, v in acc.items()}
     row["falls"] = float(fell.float().mean())
     print(f"{cmd[0]:6.2f}{cmd[1]:6.2f}{cmd[2]:6.2f} {row['falls']:8.4f} "
