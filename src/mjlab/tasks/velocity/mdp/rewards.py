@@ -2962,6 +2962,12 @@ def contact_balance(
     env.extras["log"][f"Metrics/contact_share_{i}"] = (
       torch.sum(share[:, :, i] * loaded) / n
     )
+  # Avant/arriere en un nombre. La geometrie (rhps1_constants.py) place les
+  # boites 1 et 2 a x=+0.08 et les boites 3 et 4 a x=-0.05, donc les indices
+  # 0-1 sont la pointe et 2-3 le talon. 0.5 = charge centree ; au-dessus, le
+  # robot est sur ses talons, ce que Leo observe sur le robot.
+  heel = torch.sum((share[:, :, 2] + share[:, :, 3]) * loaded) / n
+  env.extras["log"]["Metrics/contact_heel_frac"] = heel
   return reward
 
 
