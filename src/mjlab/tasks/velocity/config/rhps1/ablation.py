@@ -1731,6 +1731,25 @@ def _standfirm(cfg, full) -> None:
 
 
 
+def _masscom(cfg, full) -> None:
+  """Policy 0 plus mass and link-CoM randomisation. Nothing else.
+
+  Policy 0 randomises neither: link_inertia and link_com are absent from its
+  event set, and base_com already sits at +/-2.5 cm xy / +/-3 cm z.
+
+  Deliberately NOT the `rand` rung, which also swaps the observations for their
+  biased variants and adds sensor_bias -- those are sensor-model changes, not
+  mass. One variable at a time is the point.
+  """
+  for name in ("link_inertia", "link_com"):
+    if name in full["events"]:
+      cfg.events[name] = copy.deepcopy(full["events"][name])
+  m = float(os.environ.get("RHPS1_MASS3", "0.03"))
+  cfg.events["link_inertia"].params["alpha_range"] = (-m, m)
+  c = float(os.environ.get("RHPS1_LINKCOM", "0.01"))
+  cfg.events["link_com"].params["ranges"] = {0: (-c, c), 1: (-c, c), 2: (-c, c)}
+
+
 def _mass3(cfg, full) -> None:
   """Mass and inertia to +/-3%, everything else at policy 0's own level.
 
@@ -1877,7 +1896,7 @@ DECOMPOSED = {
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
   "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax, "freearms": _freearms, "softland2": _softland2,
-  "impactladder": _impactladder, "standfirm": _standfirm, "wide": _wide, "mid": _mid, "mass3": _mass3,
+  "impactladder": _impactladder, "standfirm": _standfirm, "wide": _wide, "mid": _mid, "mass3": _mass3, "masscom": _masscom,
   "periodlive": _periodlive, "flatpay": _flatpay, "stepladder": _stepladder,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }
