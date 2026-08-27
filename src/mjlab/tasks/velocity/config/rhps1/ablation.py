@@ -595,6 +595,30 @@ def _hist5(cfg, full) -> None:
       term.history_length = 5
 
 
+def _cbal(cfg, full) -> None:
+  """contact_balance in place of flat_support, and flat_touchdown_bonus retuned.
+
+  One measure for three of Leo's requirements: no heel bias, clean contacts,
+  and standing still on two flat feet. See mdp.contact_balance for why it is a
+  per-second bonus with no command gate.
+
+  Weight is provisional and MUST be read in /s after one iteration before the
+  run is left alone -- flat_touchdown_bonus was declared at 1.0 and turned out
+  to be worth 0.013/s, then 2.6/s once the step was divided out. Two probes were
+  spent measuring an inert term because that check was skipped.
+  """
+  r = cfg.rewards
+  r.pop("flat_support", None)
+  r["contact_balance"] = RewardTermCfg(
+    func=mdp.contact_balance,
+    weight=float(os.environ.get("RHPS1_W_CBAL", "0.5")),
+    params={
+      "sensor_name": "feet_ground_contact_split",
+      "min_force": float(os.environ.get("RHPS1_CBAL_MINF", "20.0")),
+    },
+  )
+
+
 def _instr(cfg, full) -> None:
   """Measurement without training effect: the metric terms at weight 1e-9.
 
@@ -1273,14 +1297,22 @@ def _encnoise(cfg, full) -> None:
   train/play gap -- so a change to any of them is a variable in its own right,
   not a free improvement to fold into another run.
   """
+  lim = float(os.environ.get("RHPS1_ENC_NOISE", "0.005"))
   for group in ("actor", "critic"):
     terms = cfg.observations[group].terms
     t = terms.get("joint_pos")
     n = getattr(t, "noise", None) if t is not None else None
-    if n is None:
-      continue
-    lim = float(os.environ.get("RHPS1_ENC_NOISE", "0.005"))
-    n.n_min, n.n_max = -lim, lim
+    if n is not None:
+      n.n_min, n.n_max = -lim, lim
+    # One encoder, one noise. joint_vel is a finite difference of the SAME
+    # encoder, so its noise is derived rather than declared: encoder_noise sat
+    # at 5e-05 against a position noise of 0.005, a hundredfold disagreement
+    # about one sensor. Differencing lim over the policy step amplifies it --
+    # 0.005 rad at 200 Hz gives ~1.4 rad/s, which is what policy 0's flat
+    # +/-1.5 was approximating, minus the correlation.
+    jv = terms.get("joint_vel")
+    if jv is not None and "encoder_noise" in getattr(jv, "params", {}):
+      jv.params["encoder_noise"] = lim
 
 
 
@@ -1699,6 +1731,64 @@ def _standfirm(cfg, full) -> None:
 
 
 
+def _mass3(cfg, full) -> None:
+  """Mass and inertia to +/-3%, everything else at policy 0's own level.
+
+  Policy 0 does not randomise mass at all -- link_inertia is absent from its
+  event set. `rand` adds it at (-0.0527, +0.0477), roughly +/-5%, and `wide`
+  took it to +/-12%. At +/-12% from iteration 0 the leg torque saturation held
+  65-70% for 1500 iterations and the gait hammered at 0.13 s.
+
+  +/-3% is a small step ABOVE policy 0 rather than a reduction below it: enough
+  to stop the policy assuming an exact model, close enough that the reference
+  still applies. alpha_range scales mass and inertia together.
+  """
+  m = float(os.environ.get("RHPS1_MASS3", "0.03"))
+  cfg.events["link_inertia"].params["alpha_range"] = (-m, m)
+
+
+def _mid(cfg, full) -> None:
+  """Half of `wide`: accustom the gait to variation without starving the torque.
+
+  `wide` from iteration 0 held leg torque saturation at 65-70% for 1500
+  iterations, and a policy with no reserve buys velocity tracking with cadence
+  rather than stride -- the 0.13 s hammering. Leo's call is to keep some
+  variation from the start rather than none, so the ranges are halved and the
+  friction band narrowed around its nominal.
+
+  The sensor terms are NOT halved. Encoder noise at 0.005 rad, the velocity
+  derived from that same encoder, and the velocity-channel biases are what the
+  real robot actually has; they cost no torque margin and they are the point of
+  training with noise at all.
+  """
+  e = cfg.events
+  inertia = float(os.environ.get("RHPS1_INERTIA_MID", "0.06"))
+  e["link_inertia"].params["alpha_range"] = (-inertia, inertia)
+  e["base_com"].params["ranges"] = {
+    0: (-0.02, 0.02), 1: (-0.02, 0.02), 2: (-0.025, 0.025)
+  }
+  e["link_com"].params["ranges"] = {
+    0: (-0.01, 0.01), 1: (-0.01, 0.01), 2: (-0.01, 0.01)
+  }
+  e["foot_friction"].params["ranges"] = (0.6, 0.9)
+  for group in ("actor", "critic"):
+    t = cfg.observations[group].terms.get("base_ang_vel")
+    if t is not None:
+      t.func = mdp.base_ang_vel_biased
+  if "sensor_bias" not in e:
+    e["sensor_bias"] = EventTermCfg(
+      func=mdp.randomize_sensor_bias, mode="reset", params={}
+    )
+  e["sensor_bias"].params["scale_ranges"] = {
+    "base_lin_vel": (-0.10, 0.10),
+    "base_ang_vel": (-0.10, 0.10),
+  }
+  e["sensor_bias"].params["bias_ranges"] = {
+    "base_lin_vel": (-0.05, 0.05),
+    "base_ang_vel": (-0.05, 0.05),
+  }
+
+
 def _wide(cfg, full) -> None:
   """Widen the randomisation Leo asked for, narrow the one he does not need.
 
@@ -1780,14 +1870,14 @@ def _wide(cfg, full) -> None:
 
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
-  "hist": _hist, "hist5": _hist5, "instr": _instr, "exec": _exec, "proj": _proj,
+  "hist": _hist, "hist5": _hist5, "instr": _instr, "cbal": _cbal, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
   "stable": _stable, "soleclear": _soleclear, "encnoise": _encnoise,
   "slowstep": _slowstep, "softland": _softland, "landtime": _landtime, "groundtax": _groundtax, "freearms": _freearms, "softland2": _softland2,
-  "impactladder": _impactladder, "standfirm": _standfirm, "wide": _wide,
+  "impactladder": _impactladder, "standfirm": _standfirm, "wide": _wide, "mid": _mid, "mass3": _mass3,
   "periodlive": _periodlive, "flatpay": _flatpay, "stepladder": _stepladder,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
 }

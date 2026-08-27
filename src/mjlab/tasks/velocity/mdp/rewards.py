@@ -2903,3 +2903,63 @@ class sole_flat_touchdown_bonus:
     # an inert term, and this file already records the same defect twice, on
     # com_step_progress and on flat_touchdown.
     return bonus / env.step_dt
+
+
+def contact_balance(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  min_force: float = 20.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Pay for load spread evenly over the four contact boxes of a loaded foot.
+
+  Leo's formulation, and it is better than the two it replaces. flat_support
+  counts how many patches the solver calls loaded, which measures its contact
+  threshold and not the foot -- a sole parallel to the ground within 16 um
+  scored 2.15 of 4. Force distribution is solver-independent, and one measure
+  covers three things at once: standing on the heels is a front/back imbalance,
+  a dirty contact is any imbalance, and standing still on two flat feet is the
+  case where it should read highest.
+
+  A bonus paid per second of stance, not a penalty. Every landing demand raised
+  as a cost on this gait was answered by the policy landing less: flat_touchdown
+  x2.7, impact_vel x3 and the 0.20 -> 0.16 threshold each produced more falls
+  than the change asked for. And a per-second COST on stance quality taxes
+  stance duration -- the same fault charged five times over in a 0.5 s stance
+  than a 0.1 s one, which is what kept shortening the step. Paid, the arithmetic
+  reverses: a long clean stance earns more than a short one, so double support
+  becomes worth having.
+
+  No command gate. The hard 0.05 threshold on flat_touchdown_bonus switched a
+  2.6/s term on the instant the robot left standstill, and P6 fell 14% of the
+  time at vx 0.10 -- the one command that crosses it. Here standstill is a case
+  we want scored, not excluded: Leo's requirement is a robot immobile on two
+  flat feet.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  data = sensor.data
+  assert data.force is not None, "contact_balance needs a force-reporting sensor"
+  if data.force.shape[1] < 8:
+    raise RuntimeError("contact_balance expects 8 split foot contacts.")
+
+  f = torch.norm(data.force[:, :8, :], dim=-1).view(-1, 2, 4)  # [B, 2, 4]
+  total = torch.sum(f, dim=2)  # [B, 2]
+  loaded = (total > min_force).float()
+  share = f / torch.clamp(total, min=1e-6).unsqueeze(-1)  # [B, 2, 4]
+
+  # Total variation from a perfectly even quarter share. It maxes at 1.5 when a
+  # single box carries everything, so dividing by 1.5 puts evenness on [0, 1].
+  dev = torch.sum(torch.abs(share - 0.25), dim=2)  # [B, 2]
+  evenness = 1.0 - dev / 1.5
+  reward = torch.sum(evenness * loaded, dim=1)
+
+  n = torch.clamp(torch.sum(loaded), min=1.0)
+  env.extras["log"]["Metrics/contact_evenness"] = torch.sum(evenness * loaded) / n
+  # Per-box share, to say WHERE the load sits. Which index is heel and which is
+  # toe is a property of the model, not of this term -- read it off once and the
+  # heel bias is directly visible instead of inferred.
+  for i in range(4):
+    env.extras["log"][f"Metrics/contact_share_{i}"] = (
+      torch.sum(share[:, :, i] * loaded) / n
+    )
+  return reward
