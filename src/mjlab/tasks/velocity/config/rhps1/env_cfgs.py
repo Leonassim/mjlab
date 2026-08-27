@@ -103,10 +103,27 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       num_slots=1,
     )
 
+  # Le QP traite ces paires a des distances DIFFERENTES (mc_rhps1/src/rhps1.cpp,
+  # Collision(body1, body2, iDist, sDist, damping)) :
+  #   L_CROTCH_P / R_CROTCH_P   iDist 0.06
+  #   L_KNEE_P   / R_KNEE_P     iDist 0.02
+  #   L_ANKLE_P  / R_ANKLE_P    iDist 0.02
+  #   L_ANKLE_P  / R_KNEE_P     iDist 0.02   (et le croise)
+  # Un seul capteur a 0.02 pour les trois laissait les cuisses trois fois moins
+  # contraintes que sur le robot -- et c'est le pas lateral qui en paie le prix,
+  # puisque le QP le bloque a une distance que l'entrainement n'a jamais vue.
+  #
+  # ANKLE_R et non ANKLE_P : le modele MuJoCo porte ses coques de collision sur
+  # ANKLE_R_LINK. Difference de modelisation, pas erreur de transcription.
+  crotch_proximity_cfg = _proximity_sensor(
+    "crotch_proximity",
+    r"^rhps1_collision_L_CROTCH_P_LINK$",
+    r"^rhps1_collision_R_CROTCH_P_LINK$",
+  )
   leg_proximity_cfg = _proximity_sensor(
     "leg_proximity",
-    r"^rhps1_collision_L_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
-    r"^rhps1_collision_R_(CROTCH_P|KNEE_P|ANKLE_R)_LINK$",
+    r"^rhps1_collision_L_(KNEE_P|ANKLE_R)_LINK$",
+    r"^rhps1_collision_R_(KNEE_P|ANKLE_R)_LINK$",
   )
   # Wider threshold: mc_rtc knee hulls are ~1.5cm fatter than the mujoco mesh.
   knee_proximity_cfg = _proximity_sensor(
@@ -193,6 +210,7 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     feet_ground_split_cfg,
     feet_mesh_cfg,
     self_collision_cfg,
+    crotch_proximity_cfg,
     leg_proximity_cfg,
     knee_proximity_cfg,
     arm_torso_proximity_cfg,
@@ -590,12 +608,17 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Thresholds = matching QP sDist + 1cm buffer, so the policy stays out of
   # the deployment damper's braking zone.
   for prox_cfg, min_dist in (
+    # Chaque seuil = l'iDist du QP. Le genou garde 0.035 : 0.02 plus les ~1.5 cm
+    # dont les coques mc_rtc sont plus epaisses que le maillage mujoco, ecart
+    # mesure et documente. La meme correction s'applique peut-etre ailleurs mais
+    # elle n'y a pas ete mesuree, donc elle n'y est pas appliquee.
+    (crotch_proximity_cfg, 0.06),
     (leg_proximity_cfg, 0.02),
     (knee_proximity_cfg, 0.035),
-    (arm_torso_proximity_cfg, 0.04),
-    (shoulder_chest_proximity_cfg, 0.01),
-    (shoulder_body_proximity_cfg, 0.04),
-    (wrist_thigh_proximity_cfg, 0.03),
+    (arm_torso_proximity_cfg, 0.05),
+    (shoulder_chest_proximity_cfg, 0.02),
+    (shoulder_body_proximity_cfg, 0.05),
+    (wrist_thigh_proximity_cfg, 0.05),
   ):
     cfg.rewards[prox_cfg.name] = RewardTermCfg(
       func=mdp.leg_proximity_cost,

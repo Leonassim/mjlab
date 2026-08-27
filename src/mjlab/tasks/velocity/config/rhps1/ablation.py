@@ -133,6 +133,7 @@ EXTRA_EVENTS = ("actuator_gains", "link_com", "link_inertia", "sensor_bias")
 
 PROXIMITY_TERMS = (
   "arm_torso_proximity",
+  "crotch_proximity",
   "knee_proximity",
   "leg_proximity",
   "shoulder_body_proximity",

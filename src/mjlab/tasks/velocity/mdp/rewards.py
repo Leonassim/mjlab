@@ -2999,6 +2999,6 @@ def gait_metrics(
       torch.norm(asset.data.body_link_vel_w[:, hid, 0:3], dim=-1)
     )
   env.extras["log"]["Metrics/base_ang_speed"] = torch.mean(
-    torch.norm(asset.data.root_ang_vel_b, dim=-1)
+    torch.norm(asset.data.root_link_ang_vel_b, dim=-1)
   )
   return torch.zeros(n, device=found.device)
