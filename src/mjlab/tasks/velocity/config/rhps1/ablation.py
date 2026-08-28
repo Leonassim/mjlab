@@ -1421,7 +1421,15 @@ def _slowstep(cfg, full) -> None:
   # which training metrics demonstrably cannot: they reported 3.3% falls on a
   # policy that fell in mc_mujoco above 0.16 m/s.
   d0 = float(os.environ.get("RHPS1_STEP_DIST", "0.095"))
-  c.params["stages"] = [{"step": 0, "target_distance": d0, "target_period": 0.58}]
+  # La periode etait figee a 0.58, calibree contre une demarche mesuree a 0.43 s.
+  # La lignee Base0 marche a 0.204 s : 0.58 vaut 2.8x la mesure, et ce fichier
+  # enregistre deja qu'une cible trop loin de la demarche est une constante et
+  # non un objectif. Reglable, meme regle que d0 -- l'echelon 0 se pose juste
+  # au-dessus de ce qui est mesure, la ou un barreau d'echelle commence.
+  # Nom distinct de RHPS1_STEP_PERIOD, que _periodlive lit deja : deux paliers
+  # sur la meme variable est un piege, meme quand l'un des deux est rejete.
+  p0 = float(os.environ.get("RHPS1_SLOW_PERIOD", "0.58"))
+  c.params["stages"] = [{"step": 0, "target_distance": d0, "target_period": p0}]
   r = cfg.rewards.get("com_step_progress")
   if r is not None:
     # target_distance BELOW what is measured, on purpose. com_step_progress
