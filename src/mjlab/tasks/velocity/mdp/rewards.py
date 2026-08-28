@@ -3134,8 +3134,10 @@ class com_shift_profile:
   vitesse commandee viendra apres, une fois celui-ci acquis.
   """
 
-  _PROFILE = (0.016, 0.027, 0.035, 0.041, 0.045, 0.047, 0.047, 0.043, 0.038,
-              0.029, 0.018)
+  # Fractions du chemin vers le pied d'appui, obtenues en divisant le profil
+  # BWC en metres (0.016 a 0.047) par sa demi-distance entre pieds de 0.117 m.
+  _PROFILE = (0.137, 0.231, 0.299, 0.350, 0.385, 0.402, 0.402, 0.368, 0.325,
+              0.248, 0.154)
 
   def __init__(self, env: ManagerBasedRlEnv, cfg: RewardTermCfg):
     self.step_dt = env.step_dt
@@ -3152,7 +3154,7 @@ class com_shift_profile:
     env: ManagerBasedRlEnv,
     sensor_name: str,
     target_duration: float = 0.40,
-    std: float = 0.02,
+    std: float = 0.25,
     min_force: float = 20.0,
     command_name: str | None = None,
     command_threshold: float = 0.1,
@@ -3182,7 +3184,14 @@ class com_shift_profile:
     quat = yaw_quat(asset.data.root_link_quat_w)
     to_com = quat_apply_inverse(quat.unsqueeze(1), (com - mid).unsqueeze(1)).squeeze(1)
     to_foot = quat_apply_inverse(quat.unsqueeze(1), (stance_pos - mid).unsqueeze(1)).squeeze(1)
-    shift = to_com[:, 1] * torch.sign(to_foot[:, 1])
+    # Fraction du chemin vers le pied d'appui, PAS une distance en cm. Le BWC
+    # deporte 4.7 cm pour une demi-distance entre pieds de ~11.7 cm, soit 40% ;
+    # le RHPS1 en RL se tient plus etroit, donc 4.7 cm absolus lui demandaient
+    # 54% du chemin. Un premier essai a std 0.02 cm sur des centimetres absolus
+    # a lu 0.6 cm mesures contre 3.6 demandes : noyau a 0.1, gradient nul, et
+    # la demarche s'est degradee sur periode, double appui, couple et impact.
+    half = torch.clamp(torch.abs(to_foot[:, 1]), min=1e-3)
+    shift = (to_com[:, 1] * torch.sign(to_foot[:, 1])) / half
 
     phase = torch.clamp(self.elapsed / max(target_duration, 1e-6), 0.0, 1.0)
     pos = phase * (self.prof.numel() - 1)

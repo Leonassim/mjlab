@@ -732,7 +732,7 @@ def _comprof(cfg, full) -> None:
     params={
       "sensor_name": "feet_ground_contact_split",
       "target_duration": float(os.environ.get("RHPS1_COMPROF_T", "0.40")),
-      "std": float(os.environ.get("RHPS1_COMPROF_STD", "0.02")),
+      "std": float(os.environ.get("RHPS1_COMPROF_STD", "0.25")),
       "command_name": "twist",
       "command_threshold": 0.1,
       "asset_cfg": SceneEntityCfg("robot", site_names=sites),
