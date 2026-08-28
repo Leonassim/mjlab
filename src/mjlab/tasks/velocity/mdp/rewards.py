@@ -15,6 +15,7 @@ from mjlab.utils.lab_api.math import (
   matrix_from_quat,
   quat_apply,
   quat_apply_inverse,
+  yaw_quat,
 )
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
@@ -3008,3 +3009,80 @@ def gait_metrics(
     torch.norm(asset.data.root_link_ang_vel_b, dim=-1)
   )
   return torch.zeros(n, device=found.device)
+
+
+def com_over_stance(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  target_offset: float = 0.07,
+  std: float = 0.04,
+  min_force: float = 20.0,
+  command_name: str | None = None,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Pay for shifting weight onto the loaded foot during single support.
+
+  Measured on the BaselineWalkingController trajectory Leo asked to reproduce
+  (log 2026-08-27-17-47-32, knee peaking at 82 N.m, not the 45 N.m clipped
+  runs): the CoM swings 11.4 cm laterally, single support lasts 0.765 s, and
+  the swing foot clears 6.3 cm. The RL lineage runs a 0.204 s cycle and clears
+  0.84 cm.
+
+  Those numbers are one phenomenon, not three. An 11 cm lateral transfer at a
+  0.96 m CoM height is an inverted pendulum of omega 3.20 rad/s, so its
+  half-period is 0.98 s -- and the BWC single support sits at 78% of it. A
+  0.204 s cycle is five times faster than the pendulum, so the transfer cannot
+  happen; without it the swing leg stays loaded, and a loaded leg cannot lift.
+  Foot clearance is therefore a CONSEQUENCE of the period, which is why swt and
+  fclr bought 4 mm where 30 to 50 are needed: they paid for the symptom.
+
+  Nothing in this task ever rewarded the transfer, so this term does. It scores
+  the lateral distance from the CoM to the loaded foot, in the base frame,
+  during single support only -- double support is left alone so the term cannot
+  be collected by standing still, which is how contact_balance froze the gait
+  at 94% double support.
+
+  Paid per second of single support, not per event. A per-event bonus rewards
+  having more events, which is exactly how com_step_progress ended up
+  shortening the cycle it was meant to lengthen.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  sensor: ContactSensor = env.scene[sensor_name]
+  assert sensor.data.force is not None, "com_over_stance needs a force sensor"
+
+  f = torch.norm(sensor.data.force[:, :8, :], dim=-1).view(-1, 2, 4)
+  load = torch.sum(f, dim=2)  # [B, 2]
+  loaded = load > min_force
+  single = (torch.sum(loaded.float(), dim=1) == 1.0)
+
+  com = asset.data.root_link_pos_w[:, :3]
+  feet = asset.data.site_pos_w[:, asset_cfg.site_ids, :3]  # [B, 2, 3]
+  stance = torch.argmax(load, dim=1)  # the more loaded foot
+  stance_pos = feet[torch.arange(feet.shape[0], device=feet.device), stance]
+
+  # Lateral offset in the base frame: a world-frame y is meaningless once the
+  # robot has yawed.
+  delta = (com - stance_pos).unsqueeze(1)  # [B, 1, 3]
+  quat = yaw_quat(asset.data.root_link_quat_w)
+  local = quat_apply_inverse(quat.unsqueeze(1), delta).squeeze(1)
+  lateral = torch.abs(local[:, 1])
+
+  # Target is 0.07 m, NOT zero. Measured on the BWC log: the CoM stays 7.0 cm
+  # (right support) to 7.7 cm (left) from the stance foot, never over it -- the
+  # swing leg's mass sits on the other side and it is the ZMP, not the CoM,
+  # that has to be inside the foot. An untrained policy here reads 13.4 cm, so
+  # the gap is roughly a halving. Scoring toward zero would have asked for a
+  # posture the reference trajectory never adopts.
+  reward = torch.exp(-torch.square((lateral - target_offset) / std)) * single.float()
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    total = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    reward = reward * (total > command_threshold).float()
+
+  n = torch.clamp(torch.sum(single.float()), min=1.0)
+  env.extras["log"]["Metrics/com_stance_offset"] = (
+    torch.sum(lateral * single.float()) / n
+  )
+  env.extras["log"]["Metrics/single_support_frac_cos"] = torch.mean(single.float())
+  return reward

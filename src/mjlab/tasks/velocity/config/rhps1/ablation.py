@@ -662,6 +662,53 @@ def _cbal(cfg, full) -> None:
   )
 
 
+def _comshift(cfg, full) -> None:
+  """Payer le transfert de poids lateral, mesure sur la trajectoire du BWC.
+
+  Log 2026-08-27-17-47-32 -- celui que Leo designe comme "deux marches
+  nickel", genou a 82 N.m, et non les deux runs suivants ou il a ecrete a 45 :
+
+    appui simple      0.765 s        lignee RL : cycle ENTIER a 0.204 s
+    double appui      0.135 s
+    clearance pied    6.3 cm         lignee RL : 0.84 cm
+    CoM lateral       11.4 cm
+    offset CoM-pied   7.0 a 7.7 cm   politique non entrainee : 13.4 cm
+    hauteur CoM       0.96 m
+
+  Ces nombres sont UN phenomene, pas trois. Un transfert lateral de 11 cm a
+  0.96 m de hauteur est un pendule inverse de pulsation 3.20 rad/s, donc de
+  demi-periode 0.98 s ; l'appui simple du BWC en fait 78%. Un cycle a 0.204 s
+  est cinq fois plus rapide que le pendule, donc le transfert ne PEUT pas
+  avoir lieu -- et sans transfert la jambe de vol reste chargee, donc elle ne
+  peut pas se lever. La clearance est une consequence de la periode, ce qui
+  explique que swt et fclr aient achete 4 mm la ou il en faut 30 a 50 : ils
+  payaient le symptome.
+
+  Rien dans cette tache n'a jamais paye le transfert. Cible 0.07 m et non 0 :
+  le BWC ne met jamais le CoM au-dessus du pied d'appui, la masse de la jambe
+  de vol est de l'autre cote et c'est le ZMP qui doit etre dans le pied.
+
+  Paye par seconde d'appui SIMPLE, et le double appui est laisse tranquille --
+  contact_balance payait la duree d'appui tous pieds confondus et la politique
+  s'est figee a 94% de double appui. A surveiller ici : la DUREE absolue du
+  double appui, pas sa fraction, qui baisse mecaniquement si la periode monte.
+  """
+  r = cfg.rewards
+  sites = r["foot_swing_height"].params["asset_cfg"].site_names
+  r["com_shift"] = RewardTermCfg(
+    func=mdp.com_over_stance,
+    weight=float(os.environ.get("RHPS1_W_COMSHIFT", "2.0")),
+    params={
+      "sensor_name": "feet_ground_contact_split",
+      "target_offset": float(os.environ.get("RHPS1_COMSHIFT_TARGET", "0.07")),
+      "std": float(os.environ.get("RHPS1_COMSHIFT_STD", "0.04")),
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=sites),
+    },
+  )
+
+
 def _instr(cfg, full) -> None:
   """Measurement without training effect: the metric terms at weight 1e-9.
 
@@ -1977,7 +2024,7 @@ def _wide(cfg, full) -> None:
 
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
-  "hist": _hist, "hist5": _hist5, "instr": _instr, "cbal": _cbal, "exec": _exec, "proj": _proj,
+  "hist": _hist, "hist5": _hist5, "instr": _instr, "comshift": _comshift, "cbal": _cbal, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
