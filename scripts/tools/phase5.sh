@@ -20,13 +20,20 @@
 # 0.204 s et 0.038 m : 0.58 vaudrait 2.8x la mesure, et une cible trop loin de
 # la demarche est une constante, pas un objectif. L'echelon 0 se pose juste
 # au-dessus de ce qui est mesure.
-#   periode  0.30 s   contre 0.204 mesure   (x1.5)
-#   distance 0.050 m  contre 0.038 mesure   (x1.3)
+#   periode  0.30 s   contre 0.204 mesure   (x1.5, AU-DESSUS : la moitie
+#                     periode doit garder du gradient)
+#   distance 0.030 m  contre 0.038 mesure   (EN-DESSOUS, volontairement : la
+#                     moitie distance sature a 1.0 et cesse de tirer, donc tout
+#                     le poids tombe sur la periode, la moitie qui ne bouge
+#                     jamais. C'est la regle propre a slowstep, l'inverse de
+#                     celle de steplen.)
+#   poids    0.6      plafond 0.6 x 5.07 pas/s = 3.0/s, ~31% du positif brut.
+#                     2.0 donnait ~10/s contre un budget net de 4.4/s.
 # L'objectif de Leo reste 1 s ; 0.30 est le premier barreau, pas la cible.
 #
 # PORTE, 533 iterations apres la reprise :
 #   step_period       > 0.24     phase 3 : 0.204
-#   step_length       > 0.042    phase 3 : 0.038
+#   step_length       >= 0.036   phase 3 : 0.038, ne doit pas s'effondrer
 #   clear_p90         >= 0.008   phase 3 : 0.0084, ne doit pas regresser
 #   chutes           <= 0.02     couple <= 0.36
 set -u
@@ -36,6 +43,7 @@ export RHPS1_ABLATION="p0+hist5+mirror+masscom+prox+instr+swt+fclr+steplen+slows
 export RHPS1_SWT_TARGET=0.05
 export RHPS1_SLOW_PERIOD=0.30
 export RHPS1_STEP_DIST=0.050
+export RHPS1_W_STEP=0.6
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
@@ -43,5 +51,5 @@ export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
   --agent.max-iterations 1500 \
   --agent.resume True \
   --agent.load-run 2026-08-28_03-09-45 \
-  --agent.load-checkpoint model_3899.pt \
+  --agent.load-checkpoint model_3750.pt \
   >> logs/probes/phase5.train.log 2>&1

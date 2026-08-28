@@ -1432,6 +1432,9 @@ def _slowstep(cfg, full) -> None:
   c.params["stages"] = [{"step": 0, "target_distance": d0, "target_period": p0}]
   r = cfg.rewards.get("com_step_progress")
   if r is not None:
+    # FAUX, mesure le 2026-08-28 : voir le bloc ci-dessous. La consigne
+    # d'origine suit.
+    #
     # target_distance BELOW what is measured, on purpose. com_step_progress
     # blends distance and period 50/50, and the two halves are not equally
     # cheap: lengthening a stride is one bigger push, lengthening a cycle is
@@ -1444,8 +1447,29 @@ def _slowstep(cfg, full) -> None:
     # pulling, so the whole weight lands on the period, which is the half that
     # was never moving. Distance is not lost: at constant speed a longer cycle
     # lengthens the stride on its own.
+    # DEMENTI PAR LA MESURE (2026-08-28, run 2026-08-28_10-44-15). Saturer la
+    # moitie distance ne fait pas tomber tout le poids sur la periode : le
+    # melange est ADDITIF et paye A LA POSE DU PIED, donc la moitie saturee
+    # devient une prime constante PAR PAS, et une prime par pas recompense
+    # d'avoir PLUS de pas. Taux de paiement resultant, T = periode :
+    #     0.5/T + 0.5*T/T_cible^2
+    # minimal exactement a T_cible et croissant quand T raccourcit. Mesure :
+    # periode 0.204 -> 0.164 (-20%), double appui 0.130 -> 0.050, impact
+    # 0.125 -> 0.161, couple 0.350 -> 0.381, pendant que le terme payait
+    # 1.92/s. La politique a fait exactement ce qui rapportait.
+    #
+    # Au-dessus de la mesure les deux moities tirent ensemble : a vitesse
+    # commandee constante un cycle plus long donne une foulee plus longue,
+    # donc le paiement croit en T. C'est la regle generale de ce fichier --
+    # une cible clampee se pose AU-DESSUS de ce que la demarche atteint -- et
+    # slowstep etait la seule exception, a tort.
     r.params["target_distance"] = float(os.environ.get("RHPS1_STEP_DIST", "0.10"))
-    r.params["target_period"] = 0.58
+    # La periode etait figee ici alors que RHPS1_SLOW_PERIOD ne touchait que
+    # l'echelon du curriculum vingt lignes plus haut. Un lancement a tourne avec
+    # 0.58 dans la recompense et 0.30 dans le curriculum -- soit 2.8x la
+    # demarche mesuree, donc une constante, exactement ce que la variable
+    # servait a eviter. Meme source pour les deux, maintenant.
+    r.params["target_period"] = p0
   # Weight, measured not guessed. At 0.30 the term was worth 0.139/s against a
   # clearance bonus at 1.03 and a torque barrier at -3.06: nothing in the budget
   # paid for a longer cycle, so the policy bought clearance the only other way
