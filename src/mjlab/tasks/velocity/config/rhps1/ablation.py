@@ -709,6 +709,37 @@ def _comshift(cfg, full) -> None:
   )
 
 
+def _comprof(cfg, full) -> None:
+  """Profil de deport lateral indexe sur la phase, a la place de la cible fixe.
+
+  com_over_stance vise une valeur fixe de 7 cm. Le BWC fait une cloche :
+  1.6 cm au debut de l'appui simple, 4.7 cm a mi-appui, 1.8 cm a la fin
+  (16 pas du log 2026-08-27-17-47-32, ecart-type 0.6 a 1.1 cm).
+
+  Le profil est indexe sur target_duration, donc il porte aussi la cadence : la
+  lignee RL passe 0.075 s en appui simple et ne verrait que le debut de la
+  cloche. Demander le profil, c'est demander le temps de le faire.
+
+  Amplitude constante en premiere approche, decision de Leo ; l'adaptation a la
+  vitesse commandee viendra une fois celui-ci acquis.
+  """
+  r = cfg.rewards
+  r.pop("com_shift", None)
+  sites = r["foot_swing_height"].params["asset_cfg"].site_names
+  r["com_prof"] = RewardTermCfg(
+    func=mdp.com_shift_profile,
+    weight=float(os.environ.get("RHPS1_W_COMPROF", "2.0")),
+    params={
+      "sensor_name": "feet_ground_contact_split",
+      "target_duration": float(os.environ.get("RHPS1_COMPROF_T", "0.40")),
+      "std": float(os.environ.get("RHPS1_COMPROF_STD", "0.02")),
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=sites),
+    },
+  )
+
+
 def _instr(cfg, full) -> None:
   """Measurement without training effect: the metric terms at weight 1e-9.
 
@@ -2024,7 +2055,7 @@ def _wide(cfg, full) -> None:
 
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
-  "hist": _hist, "hist5": _hist5, "instr": _instr, "comshift": _comshift, "cbal": _cbal, "exec": _exec, "proj": _proj,
+  "hist": _hist, "hist5": _hist5, "instr": _instr, "comshift": _comshift, "comprof": _comprof, "cbal": _cbal, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,

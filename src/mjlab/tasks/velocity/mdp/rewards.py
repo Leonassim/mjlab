@@ -1488,6 +1488,18 @@ class split_feet_swing_height:
       dim=2,
     )
 
+    # Quand le pic est atteint dans le vol, pas seulement sa valeur. Le BWC
+    # monte a 6.3 cm en 30% du vol puis redescend sur les 70% restants : lever
+    # tot, poser lentement. Nos termes ne notent que le pic, sans dire quand.
+    if not hasattr(self, "air_elapsed"):
+      self.air_elapsed = torch.zeros_like(self.peak_heights)
+      self.peak_time = torch.zeros_like(self.peak_heights)
+    self.air_elapsed = torch.where(
+      foot_in_air, self.air_elapsed + self.step_dt, self.air_elapsed
+    )
+    higher = foot_in_air & (foot_heights > self.peak_heights)
+    self.peak_time = torch.where(higher, self.air_elapsed, self.peak_time)
+
     self.peak_heights = torch.where(
       foot_in_air,
       torch.maximum(self.peak_heights, foot_heights),
@@ -1505,6 +1517,16 @@ class split_feet_swing_height:
       num_landings, min=1
     )
     env.extras["log"]["Metrics/peak_height_mean"] = mean_peak_height
+    frac = self.peak_time / torch.clamp(self.air_elapsed, min=1e-6)
+    env.extras["log"]["Metrics/peak_time_frac"] = torch.sum(
+      frac * first_contact.float()
+    ) / torch.clamp(num_landings, min=1)
+    self.air_elapsed = torch.where(
+      first_contact, torch.zeros_like(self.air_elapsed), self.air_elapsed
+    )
+    self.peak_time = torch.where(
+      first_contact, torch.zeros_like(self.peak_time), self.peak_time
+    )
     self.peak_heights = torch.where(
       first_contact,
       torch.zeros_like(self.peak_heights),
@@ -3086,3 +3108,98 @@ def com_over_stance(
   )
   env.extras["log"]["Metrics/single_support_frac_cos"] = torch.mean(single.float())
   return reward
+
+
+class com_shift_profile:
+  """Suivre le profil de deport lateral du CoM mesure sur le BWC.
+
+  Log 2026-08-27-17-47-32, 16 appuis simples, deport du CoM vers le pied
+  d'appui relativement au milieu des deux pieds, en cm :
+
+    % appui   0    10   20   30   40   50   60   70   80   90  100
+    deport   1.6  2.7  3.5  4.1  4.5  4.7  4.7  4.3  3.8  2.9  1.8
+    ec-type  1.1  1.0  0.9  0.8  0.7  0.6  0.6  0.7  0.8  0.9  1.1
+
+  Une cloche culminant a 4.7 cm a mi-appui, puis retour. com_over_stance vise
+  une valeur fixe et rate donc entierement cette dynamique.
+
+  C'est aussi le lien avec la cadence. L'aller-retour prend du temps : le BWC
+  dispose de 0.38 s pour la montee sur un appui de 0.765 s, la lignee RL en a
+  0.075. Le profil est indexe sur `target_duration`, donc une politique qui
+  passe 0.15 s en appui simple ne voit jamais que le debut de la cloche et ne
+  peut pas encaisser le reste -- demander le profil, c'est demander le temps de
+  le faire, sans terme separe sur la periode.
+
+  Profil normalise, amplitude constante en premiere approche. L'adaptation a la
+  vitesse commandee viendra apres, une fois celui-ci acquis.
+  """
+
+  _PROFILE = (0.016, 0.027, 0.035, 0.041, 0.045, 0.047, 0.047, 0.043, 0.038,
+              0.029, 0.018)
+
+  def __init__(self, env: ManagerBasedRlEnv, cfg: RewardTermCfg):
+    self.step_dt = env.step_dt
+    self.elapsed = torch.zeros(env.num_envs, device=env.device)
+    self.prof = torch.tensor(self._PROFILE, device=env.device)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.elapsed[env_ids] = 0.0
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    target_duration: float = 0.40,
+    std: float = 0.02,
+    min_force: float = 20.0,
+    command_name: str | None = None,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    sensor: ContactSensor = env.scene[sensor_name]
+    assert sensor.data.force is not None
+
+    f = torch.norm(sensor.data.force[:, :8, :], dim=-1).view(-1, 2, 4)
+    load = torch.sum(f, dim=2)
+    loaded = load > min_force
+    single = torch.sum(loaded.float(), dim=1) == 1.0
+
+    self.elapsed = torch.where(single, self.elapsed + self.step_dt,
+                               torch.zeros_like(self.elapsed))
+
+    com = asset.data.root_link_pos_w[:, :3]
+    feet = asset.data.site_pos_w[:, asset_cfg.site_ids, :3]
+    stance = torch.argmax(load, dim=1)
+    idx = torch.arange(feet.shape[0], device=feet.device)
+    stance_pos = feet[idx, stance]
+    mid = feet.mean(dim=1)
+
+    # Deport vers le pied d'appui, en repere base : un y monde ne veut rien
+    # dire des que le robot a tourne.
+    quat = yaw_quat(asset.data.root_link_quat_w)
+    to_com = quat_apply_inverse(quat.unsqueeze(1), (com - mid).unsqueeze(1)).squeeze(1)
+    to_foot = quat_apply_inverse(quat.unsqueeze(1), (stance_pos - mid).unsqueeze(1)).squeeze(1)
+    shift = to_com[:, 1] * torch.sign(to_foot[:, 1])
+
+    phase = torch.clamp(self.elapsed / max(target_duration, 1e-6), 0.0, 1.0)
+    pos = phase * (self.prof.numel() - 1)
+    lo = torch.clamp(pos.floor().long(), 0, self.prof.numel() - 2)
+    frac = pos - lo.float()
+    ref = self.prof[lo] * (1.0 - frac) + self.prof[lo + 1] * frac
+
+    reward = torch.exp(-torch.square((shift - ref) / std)) * single.float()
+    if command_name is not None:
+      c = env.command_manager.get_command(command_name)
+      total = torch.norm(c[:, :2], dim=1) + torch.abs(c[:, 2])
+      reward = reward * (total > command_threshold).float()
+
+    n = torch.clamp(torch.sum(single.float()), min=1.0)
+    env.extras["log"]["Metrics/com_shift_lateral"] = torch.sum(shift * single.float()) / n
+    env.extras["log"]["Metrics/com_shift_ref"] = torch.sum(ref * single.float()) / n
+    env.extras["log"]["Metrics/single_support_elapsed"] = (
+      torch.sum(self.elapsed * single.float()) / n
+    )
+    return reward
