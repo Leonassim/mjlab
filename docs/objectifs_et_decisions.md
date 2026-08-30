@@ -142,11 +142,12 @@ Format : objectif visé → ce qui a été fait → mesure → verdict.
 | 9 | D5 | `freevel` seul, sans `steplen` | double appui 0.94, ne marche plus | **REJETÉ** — rien ne paie plus l'avancement |
 | 10 | D5/D1 | `comshift` (offset CoM ↔ pied, cible 7 cm) | impact **0.1900** (record), couple 0.0115, période 0.223 | **GARDÉ** — meilleure politique déployée |
 | 11 | D5 | `comprof` (profil de déport indexé sur la phase) | déport monte, **période descend**, couple 0.42 | **REJETÉ** — infirme l'hypothèse du pendule comme *levier* |
-| 12 | D1 | terme sur la forme du vol | RL pique à 0.167 du vol, BWC à 0.30 : lève déjà plus tôt | **ÉCARTÉ AVANT LANCEMENT** (M1) — un entraînement économisé |
+| 12 | D1 | terme sur la forme du vol | RL pique à 0.167 du vol, BWC à 0.30 | **ÉCARTÉ** — mais la mesure était contaminée par le broutement (voir 18) : la vraie valeur est 0.327, soit celle du BWC. Conclusion inchangée, raison corrigée |
 | 13 | D5 | hauteur de CoM constante | — | **ÉCARTÉ** — artefact du LIPM, décision de Léo |
 | 14 | D1/D5 | `capture` (pénalité de placement sur le point de capture) | double appui 0.88, suivi 0.99 | **REJETÉ** — C7, prédit dans sa propre docstring et lancé quand même |
 | 15 | D5 | **horloge de démarche** (Siekmann, phase en observation) | période 0.204 → 0.45, air 0.15 → 0.36, impact 0.058 | **GARDÉ** — premier levier qui prescrit au lieu de récompenser |
 | 16 | D5 | horloge poids 2.0 → 1.0 | — | **ANNULÉ** — coupé sur un point bas alors que le suivi remontait |
+| 18 | D1 | **porte sur le temps de vol** dans `split_feet_swing_height` : ne compter un atterrissage que si le pied a volé plus de 0.05 s | `peak_height_mean` 0.0009 → 0.0076 (vérité mesurée 0.011), `peak_time_frac` 0.167 → 0.327 (BWC 0.30) | **CORRECTIF** — le terme était dominé par le broutement du solveur |
 | 17 | D5 | `steplen` ×4 (0.5 → 2.0) sous horloge | période 0.45 → **0.72**, air **0.497**, foulée 0.011 → 0.022, clearance 0.0077 → 0.0101 | **GARDÉ** |
 
 ### Balayage déterministe de 15+17, `2026-08-30_20-39-24` model_5250

@@ -190,10 +190,17 @@ def main():
   rows = []
   for name, worst_v, thr, want_low in [
     ("ne jamais tomber", worst.get("falls"), 0.01, True),
-    ("couples faisables", worst.get("satleg"), 0.25, True),
+    # 0.03 et non 0.25. mc_mujoco N'ECRETE PAS le couple : la projection qui
+    # borne |tau| <= effort_limit est sautee au deploiement, parce que sous QP
+    # elle epingle la cible a 0.0018 rad sur CROTCH_Y et rend le robot mou
+    # (NewRLQPController.cpp:380). C'est le torch.clamp de mjlab qui absorbe
+    # l'excedent A L'ENTRAINEMENT, et rien ne l'absorbe ensuite -- donc l'action
+    # doit etre admissible par elle-meme. La norme citee dans ce meme fichier
+    # est 3.0% de pas-articulation hors fenetre.
+    ("couples faisables", worst.get("satleg"), 0.03, True),
     # Meme seuil que les jambes : un actionneur sature est un actionneur que la
     # politique commande sans le sentir, quel que soit le membre.
-    ("couples haut du corps", worst.get("satup"), 0.25, True),
+    ("couples haut du corps", worst.get("satup"), 0.03, True),
     # landing_vel_mean, not pre_contact_peak_vel_mean. 0.16 was written for the
     # touchdown speed -- "just above policy 0's 0.158, the gait that landed
     # softly enough on hardware" -- but the criterion read the PEAK over the

@@ -1470,6 +1470,7 @@ class split_feet_swing_height:
     command_name: str,
     command_threshold: float,
     asset_cfg: SceneEntityCfg,
+    min_air_time: float = 0.05,
   ) -> torch.Tensor:
     contact_sensor: ContactSensor = env.scene[sensor_name]
     found = contact_sensor.data.found
@@ -1505,6 +1506,17 @@ class split_feet_swing_height:
       torch.maximum(self.peak_heights, foot_heights),
       self.peak_heights,
     )
+    # Ne compter que les VRAIS atterrissages. first_contact se declenche a tout
+    # retablissement de contact, broutement du solveur inclus : un pied qui
+    # perd le contact un pas et le retrouve compte comme une pose, avec un pic
+    # de zero. Le cout etant somme(erreur^2 * first_contact), chacun de ces
+    # micro-contacts facture erreur = -1 au carre, soit le MAXIMUM -- donc le
+    # terme etait domine par le broutement et un vol reel a 11 mm n'y pesait
+    # rien. C'est pourquoi peak_height_mean lisait 0.9 mm pour une hauteur
+    # mesuree a 11, et pourquoi ce fichier note que la metrique "n'a jamais
+    # repondu au poids, nulle part".
+    first_contact = first_contact & (self.air_elapsed > min_air_time)
+
     linear_norm = torch.norm(command[:, :2], dim=1)
     angular_norm = torch.abs(command[:, 2])
     total_command = linear_norm + angular_norm
@@ -3212,3 +3224,95 @@ class com_shift_profile:
       torch.sum(self.elapsed * single.float()) / n
     )
     return reward
+
+
+class capture_point_placement:
+  """Penaliser l'ecart entre le pied qui se pose et le point de capture.
+
+  Heuristique, pas une trajectoire a imiter : le robot la satisfait comme il
+  veut. Mesuree sur le BWC (log 2026-08-27-17-47-32, 16 pas) contre la
+  politique comshift (rollout deterministe, 353 poses) :
+
+                    BWC     RL      demi-pied
+    avant-arriere   1.5 cm  5.8 cm    5.25 cm
+    lateral         7.2 cm  7.6 cm    2.75 cm
+
+  Le BWC pose son pied SUR le point de capture en sagittal, a 1.5 cm pres. La
+  politique se trompe de 5.8 cm, soit plus d'un demi-pied : elle pose mal, doit
+  corriger, et cette correction force le pas suivant.
+
+  Le lateral n'est PAS note. La politique y est deja au niveau du BWC (7.6
+  contre 7.2), et l'ecart lateral n'est pas une erreur : c'est le decalage qui
+  entretient l'oscillation du pendule. Le noter reviendrait a demander au robot
+  de cesser de marcher.
+
+  PENALITE et non bonus, deliberement. RewardManager divise par step_dt, donc
+  un terme paye a l'evenement devient un tarif par seconde proportionnel au
+  nombre d'evenements : un bonus par pose recompense d'en faire plus, ce qui a
+  fait echouer slowstep. Un cout par pose pousse a en faire moins, soit la
+  cadence lente cherchee -- et le meme cout pousse aussi a poser juste.
+
+  ATTENTION au mode d'echec connu : toute demande faite a l'atterrissage a
+  jusqu'ici ete satisfaite en atterrissant moins, jusqu'a la station debout
+  figee (cbal, freevel seul). Surveiller double_support_frac et track.
+  """
+
+  def __init__(self, env: ManagerBasedRlEnv, cfg: RewardTermCfg):
+    self.step_dt = env.step_dt
+    self.prev_loaded = torch.zeros(
+      (env.num_envs, 2), dtype=torch.bool, device=env.device
+    )
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.prev_loaded[env_ids] = False
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    min_force: float = 20.0,
+    command_name: str | None = None,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    sensor: ContactSensor = env.scene[sensor_name]
+    assert sensor.data.force is not None
+
+    f = torch.norm(sensor.data.force[:, :8, :], dim=-1).view(-1, 2, 4)
+    loaded = torch.sum(f, dim=2) > min_force
+    newly = loaded & ~self.prev_loaded
+    self.prev_loaded = loaded
+
+    com = asset.data.root_link_pos_w
+    vel = asset.data.root_link_lin_vel_w
+    # omega du pendule inverse, sur la hauteur de CoM courante et non une
+    # constante : elle change avec la flexion des genoux.
+    omega = torch.sqrt(9.81 / torch.clamp(com[:, 2], min=0.3))
+    xi = com[:, :2] + vel[:, :2] / omega.unsqueeze(1)
+
+    feet = asset.data.site_pos_w[:, asset_cfg.site_ids, :3]
+    quat = yaw_quat(asset.data.root_link_quat_w)
+    delta = feet[:, :, :2] - xi.unsqueeze(1)
+    d3 = torch.cat([delta, torch.zeros_like(delta[..., :1])], dim=-1)
+    # quat_apply_inverse ne diffuse pas [B,4] sur [B,2,3] : aplatir les deux
+    # pieds dans la dimension batch et repeter le quaternion.
+    nfeet = d3.shape[1]
+    q_rep = quat.unsqueeze(1).expand(-1, nfeet, -1).reshape(-1, 4)
+    local = quat_apply_inverse(q_rep, d3.reshape(-1, 3)).view(-1, nfeet, 3)
+    err_x = torch.abs(local[..., 0])  # [B, 2]
+
+    cost = torch.sum(err_x * newly.float(), dim=1)
+    if command_name is not None:
+      c = env.command_manager.get_command(command_name)
+      total = torch.norm(c[:, :2], dim=1) + torch.abs(c[:, 2])
+      cost = cost * (total > command_threshold).float()
+
+    n = torch.clamp(torch.sum(newly.float()), min=1.0)
+    env.extras["log"]["Metrics/capture_err_x"] = torch.sum(err_x * newly.float()) / n
+    env.extras["log"]["Metrics/capture_err_y"] = (
+      torch.sum(torch.abs(local[..., 1]) * newly.float()) / n
+    )
+    return cost / self.step_dt
