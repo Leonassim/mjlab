@@ -147,7 +147,27 @@ Format : objectif visé → ce qui a été fait → mesure → verdict.
 | 14 | D1/D5 | `capture` (pénalité de placement sur le point de capture) | double appui 0.88, suivi 0.99 | **REJETÉ** — C7, prédit dans sa propre docstring et lancé quand même |
 | 15 | D5 | **horloge de démarche** (Siekmann, phase en observation) | période 0.204 → 0.45, air 0.15 → 0.36, impact 0.058 | **GARDÉ** — premier levier qui prescrit au lieu de récompenser |
 | 16 | D5 | horloge poids 2.0 → 1.0 | — | **ANNULÉ** — coupé sur un point bas alors que le suivi remontait |
-| 17 | D5 | `steplen` ×4 (0.5 → 2.0) sous horloge | période 0.45 → **0.72**, air **0.497**, foulée 0.011 → 0.022, clearance 0.0077 → 0.0101 | **EN COURS** — meilleur état de la campagne |
+| 17 | D5 | `steplen` ×4 (0.5 → 2.0) sous horloge | période 0.45 → **0.72**, air **0.497**, foulée 0.011 → 0.022, clearance 0.0077 → 0.0101 | **GARDÉ** |
+
+### Balayage déterministe de 15+17, `2026-08-30_20-39-24` model_5250
+
+1024 environnements, 11 commandes, seuils resserrés à 0.03 (contrainte C1).
+
+| critère | mesure | seuil | vs policy 0 | |
+|---|---|---|---|---|
+| impact faible | **0.1485** | 0.160 | 0.1919 | **OK — jamais atteint avant** |
+| couples faisables | 0.0127 | 0.030 | 0.0101 | OK, même ordre |
+| couples haut du corps | 0.0000 | 0.030 | 0.0027 | OK |
+| ne jamais tomber | 0.0029 | 0.010 | 0.0000 | OK |
+| pieds à plat | 0.0173 | 0.050 | 0.0035 | OK |
+| lever de pied | 0.0046 | 0.030 | 0.0051 | **ÉCHEC** |
+
+Période mesurée 0.70 à 0.88 s selon la commande, contre 0.90 pour le BWC.
+**Cinq objectifs sur six**, dont O2 pour la première fois de la campagne.
+
+À l'arrêt, commande nulle forcée : chutes 0.0000, double appui 0.9423,
+inclinaison de semelle 0.0113 rad, couple 0.1234. D6 tenu sauf sur la
+répartition de charge (`evenness` 0.2504) et un pas résiduel toutes les ~3 s.
 
 ---
 
