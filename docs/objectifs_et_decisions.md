@@ -75,8 +75,20 @@ récompense d'en faire plus, un coût par pose d'en faire moins.
 sature et le gradient est nul ; trop au-dessus le noyau s'écrase et le gradient
 disparaît aussi. Viser 1.3 à 1.5 fois la mesure.
 
-**C7 — toute demande faite à l'atterrissage est satisfaite en atterrissant
-moins**, jusqu'à la station debout figée. Vérifié quatre fois.
+**C7 — RÈGLE ABSOLUE. Aucun coût attaché à l'atterrissage ne peut être
+augmenté**, ni par le poids, ni par le plafond, ni par le seuil. La demande est
+toujours satisfaite en n'atterrissant plus.
+
+Six occurrences : `cbal` (double appui 0.94), `capture` (0.88), `freevel` seul
+(0.94), `flat_touchdown`, `foot_swing_height` à −3.0 **malgré une horloge à
+3.16/s**, et le plafond de `impact_vel` ramené de 0.45 à 0.20 — air time 0.49 →
+1.51 s et clearance divisée par huit.
+
+Les deux derniers ont été lancés en connaissance de C7, sur un raisonnement qui
+la croyait neutralisée. Il n'y a pas de cas particulier : le levier est
+toujours un coût ou un gain payé **pendant le vol**, par seconde.
+`swing_height_bonus_dense` (hauteur) et `descent_speed_cost` (vitesse de
+descente) sont les deux formes qui marchent.
 
 ---
 

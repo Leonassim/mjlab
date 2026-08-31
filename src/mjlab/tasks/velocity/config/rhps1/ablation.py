@@ -860,6 +860,41 @@ def _swingbonus(cfg, full) -> None:
   )
 
 
+def _descent(cfg, full) -> None:
+  """Cout sur la vitesse de DESCENTE pendant le vol. Vise O2, echappe a C7.
+
+  Le plafond de impact_vel ramene de 0.45 a 0.20 a fait passer l'air time de
+  0.49 a 1.51 s et divise la clearance par huit -- sixieme declenchement de C7,
+  et le seul que j'avais explicitement annonce comme impossible. La regle est
+  desormais sans exception : aucun cout attache a l'atterrissage ne peut etre
+  augmente, ni par le poids, ni par le plafond, ni par le seuil.
+
+  Ce terme se paie pendant la descente, par seconde, sur la composante
+  verticale descendante seule. Rester en l'air ne l'evite pas : un pied qui
+  plane descend lentement mais longtemps. Ce qui l'evite est de descendre
+  lentement, ce qu'on veut. Symetrique de swing_height_bonus_dense.
+
+  impact_vel garde son plafond de 0.45, inchange.
+  """
+  from mjlab.tasks.velocity.mdp import rewards as _r  # noqa: F401
+  vs = tuple(
+    f"robot/{side}_foot_{part}_lin_vel"
+    for side in ("left", "right")
+    for part in ("toes", "heel", "inner", "outer")
+  )
+  cfg.rewards["descent"] = RewardTermCfg(
+    func=mdp.descent_speed_cost,
+    weight=float(os.environ.get("RHPS1_W_DESCENT", "-1.0")),
+    params={
+      "sensor_name": "feet_ground_contact_split",
+      "vel_sensor_names": vs,
+      "limit": float(os.environ.get("RHPS1_DESCENT_LIMIT", "0.20")),
+      "command_name": "twist",
+      "command_threshold": 0.1,
+    },
+  )
+
+
 def _instr(cfg, full) -> None:
   """Measurement without training effect: the metric terms at weight 1e-9.
 
@@ -2175,7 +2210,7 @@ def _wide(cfg, full) -> None:
 
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
-  "hist": _hist, "hist5": _hist5, "instr": _instr, "comshift": _comshift, "capture": _capture, "swingbonus": _swingbonus, "clock": _clock, "comprof": _comprof, "cbal": _cbal, "exec": _exec, "proj": _proj,
+  "hist": _hist, "hist5": _hist5, "instr": _instr, "comshift": _comshift, "capture": _capture, "swingbonus": _swingbonus, "descent": _descent, "clock": _clock, "comprof": _comprof, "cbal": _cbal, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,

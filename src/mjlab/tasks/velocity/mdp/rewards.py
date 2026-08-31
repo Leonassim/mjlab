@@ -3381,3 +3381,54 @@ def swing_height_bonus_dense(
     torch.sum(heights * in_air.float()) / n
   )
   return reward
+
+
+def descent_speed_cost(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  vel_sensor_names: tuple[str, ...],
+  limit: float = 0.20,
+  command_name: str | None = None,
+  command_threshold: float = 0.1,
+) -> torch.Tensor:
+  """Couter la vitesse de DESCENTE pendant le vol, jamais au contact.
+
+  C7 a mordu six fois : cbal, capture, freevel seul, flat_touchdown,
+  foot_swing_height a -3.0 malgre l'horloge, et enfin le plafond de impact_vel
+  ramene de 0.45 a 0.20 -- qui a fait passer l'air time de 0.49 a 1.51 s et
+  divise la clearance par huit. Toute demande faite a l'atterrissage est
+  satisfaite en n'atterrissant plus, sans exception connue.
+
+  Ici le cout se paie PENDANT la descente, par seconde, sur la composante
+  verticale descendante seule. Rester en l'air ne l'evite pas : un pied qui
+  plane descend lentement mais longtemps, et un pied qui ne redescend jamais
+  finit par tomber. Ce qui l'evite est de descendre lentement -- ce qu'on veut.
+  Symetrique exact de swing_height_bonus_dense, qui a debloque D1.
+
+  Seule la descente est comptee : penaliser la montee combattrait directement
+  le bonus de hauteur.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  found = sensor.data.found
+  assert found is not None and found.shape[1] >= 8
+  in_air = torch.all(found[:, :8].view(-1, 2, 4) == 0, dim=2)  # [B, 2]
+
+  cost = torch.zeros(env.num_envs, device=env.device)
+  per_foot = len(vel_sensor_names) // 2
+  for idx, path in enumerate(vel_sensor_names):
+    data = env.scene[path].data
+    assert data is not None
+    vz = data[:, 2]
+    descent = torch.clamp(-vz, min=0.0)  # 0 quand le pied monte
+    excess = torch.clamp(descent - limit, min=0.0)
+    foot = idx // per_foot
+    cost = cost + torch.square(excess) * in_air[:, foot].float()
+
+  if command_name is not None:
+    c = env.command_manager.get_command(command_name)
+    total = torch.norm(c[:, :2], dim=1) + torch.abs(c[:, 2])
+    cost = cost * (total > command_threshold).float()
+
+  n = torch.clamp(torch.sum(in_air.float()), min=1.0)
+  env.extras["log"]["Metrics/descent_speed_mean"] = cost.mean()
+  return cost
