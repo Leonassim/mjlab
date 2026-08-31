@@ -79,16 +79,26 @@ disparaît aussi. Viser 1.3 à 1.5 fois la mesure.
 augmenté**, ni par le poids, ni par le plafond, ni par le seuil. La demande est
 toujours satisfaite en n'atterrissant plus.
 
-Six occurrences : `cbal` (double appui 0.94), `capture` (0.88), `freevel` seul
-(0.94), `flat_touchdown`, `foot_swing_height` à −3.0 **malgré une horloge à
-3.16/s**, et le plafond de `impact_vel` ramené de 0.45 à 0.20 — air time 0.49 →
-1.51 s et clearance divisée par huit.
+Cinq occurrences : `cbal` (double appui 0.94), `capture` (0.88), `freevel` seul
+(0.94), `flat_touchdown`, et `foot_swing_height` à −3.0 **malgré une horloge à
+3.16/s**.
 
-Les deux derniers ont été lancés en connaissance de C7, sur un raisonnement qui
-la croyait neutralisée. Il n'y a pas de cas particulier : le levier est
-toujours un coût ou un gain payé **pendant le vol**, par seconde.
+**Le plafond de `impact_vel` à 0.20 avait été compté comme une sixième : c'est
+faux.** Le checkpoint de reprise (`22-19-33 model_3300`) avait été pris 150
+itérations après une reprise, alors que la run planait déjà — track 1.11, air
+2.73 s, chutes 0.10. La run `descent` qui a suivi, avec le plafond rendu à 0.45
+et un terme entièrement différent, a reproduit la MÊME trajectoire à trois
+décimales près. L'effondrement venait de la reprise, pas du barème.
+
+Le levier reste un coût ou un gain payé **pendant le vol**, par seconde.
 `swing_height_bonus_dense` (hauteur) et `descent_speed_cost` (vitesse de
 descente) sont les deux formes qui marchent.
+
+**Corollaire ajouté à C4 : ne jamais prendre un checkpoint sans vérifier l'état
+de sa run à cette itération.** Trois checkpoints de la campagne — `3899`,
+`6900`, `3300` — ont été pris en plein transitoire et ont contaminé tout ce qui
+en repartait. Le seul point de reprise fiable est un checkpoint dont le
+balayage déterministe a été fait.
 
 ---
 
