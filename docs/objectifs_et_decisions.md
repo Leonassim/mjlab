@@ -172,6 +172,30 @@ répartition de charge (`evenness` 0.2504) et un pas résiduel toutes les ~3 s.
 
 ---
 
+| 19 | D1 | **porte sur le temps de vol** + **division par `step_dt`** dans `foot_swing_height` | `peak_height_mean` 0.0009 → 0.0150 (vérité 0.011–0.015), terme ×31 | **CORRECTIF** — le broutement de contact facturait l'erreur maximale à chaque micro-contact, et masquait le défaut C5 en le déclenchant 200× trop souvent |
+| 20 | D1 | `foot_swing_height` −1.0 → −3.0, pari que l'horloge neutralise C7 | air_time 0.49 → **1.55 s**, chutes 0.008 → 0.83, couple 0.41 → 0.46 | **REJETÉ** — C7 vaut **même sous horloge** : la politique préfère payer l'horloge (3.16/s) plutôt que la pénalité de pose. Toute la famille « coût à l'atterrissage » est éliminée pour D1 |
+| 21 | — | retour à −1.0 depuis le checkpoint d'origine | air_time 5.76 s, clearance 0.0029, chutes 0.56 | **REJETÉ** — c'est C4 : revenir à la config d'un checkpoint EST une reprise à configuration identique. On n'annule pas un échec par un retour de poids |
+| 22 | D1 | **`swingbonus`** — hauteur payée **par seconde de vol**, aucune pénalité de pose (`foot_swing_height` à 0.0) | clearance **0.0217** contre 0.0156 au mieux, période 0.704, air 0.492, chutes 0.0006, sat jambes 0.162 | **GARDÉ** — première réponse franche à D1. Immunisé à C7 par construction : ne pas se poser ne rapporte rien de plus |
+
+### Run propre `2026-08-31_15-11-13`, pile complète
+
+`hist5+mirror+masscom+prox+swt+fclr+comshift+clock+steplen+swingbonus`, depuis
+zéro — quatre reprises consécutives depuis `model_6900` ayant donné des
+transitoires dont aucune n'est revenue.
+
+| | it 467 | it 931 | it 1397 | it 1863 | sans bonus |
+|---|---|---|---|---|---|
+| clearance | 0.0091 | 0.0146 | 0.0174 | **0.0217** | 0.0058 |
+| période | 0.271 | 0.390 | 0.466 | 0.704 | 0.217 |
+| air | 0.199 | 0.289 | 0.386 | 0.492 | — |
+| chutes | 0.000 | 0.001 | 0.000 | 0.001 | — |
+| sat haut | 0.308 | 0.285 | 0.263 | 0.249 | — |
+
+Couple à 0.474 à l'entraînement, à confirmer au balayage (contrainte C2 : les
+métriques d'entraînement surestiment d'un facteur ~10).
+
+---
+
 ## 6. Ce qui reste ouvert
 
 | | sujet | état |
