@@ -28,6 +28,6 @@ export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
   --video-interval 12000 --video-length 600 \
   --agent.max-iterations 6000 \
   --agent.resume True \
-  --agent.load-run 2026-08-30_17-52-22 \
+  --agent.load-run 2026-08-30_20-39-24 \
   --agent.load-checkpoint model_5250.pt \
   >> logs/probes/clock6.train.log 2>&1

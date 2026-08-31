@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -740,6 +741,125 @@ def _comprof(cfg, full) -> None:
   )
 
 
+def _capture(cfg, full) -> None:
+  """Penalite de placement du pied sur le point de capture, en sagittal.
+
+  Heuristique et non imitation : le robot la satisfait comme il veut. Mesure du
+  BWC (log 2026-08-27-17-47-32) contre la politique comshift (353 poses) :
+
+                  BWC     RL      demi-pied
+    avant-arriere 1.5 cm  5.8 cm    5.25 cm
+    lateral       7.2 cm  7.6 cm    2.75 cm
+
+  Le lateral n'est PAS note : la politique y est deja au niveau du BWC, et
+  l'ecart lateral n'est pas une erreur mais le decalage qui entretient
+  l'oscillation. Le corriger reviendrait a demander d'arreter de marcher.
+
+  PENALITE, deliberement : RewardManager divise par step_dt, donc un terme paye
+  a l'evenement devient un tarif proportionnel au nombre d'evenements. Un bonus
+  par pose recompense d'en faire plus -- c'est ce qui a fait echouer slowstep.
+  Un cout par pose pousse a en faire moins, soit la cadence lente cherchee, et
+  le meme cout pousse aussi a poser juste.
+  """
+  r = cfg.rewards
+  sites = r["foot_swing_height"].params["asset_cfg"].site_names
+  r["capture"] = RewardTermCfg(
+    func=mdp.capture_point_placement,
+    weight=float(os.environ.get("RHPS1_W_CAPTURE", "-2.0")),
+    params={
+      "sensor_name": "feet_ground_contact_split",
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=sites),
+    },
+  )
+
+
+def _clock(cfg, full) -> None:
+  """Horloge de demarche explicite (Siekmann et al.), reprise de la config
+  complete : elle PRESCRIT le rythme au lieu de le recompenser apres coup.
+
+  Toute la journee du 2026-08-29/30 a essaye de faire ralentir la demarche par
+  des recompenses reactives, et les cinq ont echoue : slowstep accelerait,
+  freevel ne changeait rien, comprof deportait en accelerant, capture figeait
+  le robot debout, un poids plus fort saturait. La docstring de
+  gait_phase_tracking decrivait deja ce mur -- "elles ne recompensent qu'une
+  demarche deja decouverte, elles ne disent pas a la politique quel rythme
+  essayer".
+
+  Reglages de la config complete, qui sont exactement la cible de Leo :
+  swing_duration 0.4 s, periode 2.0 s a l'arret et 1.1 s a pleine vitesse, donc
+  tout le temps de cycle en trop passe en DOUBLE APPUI et non en equilibre sur
+  une jambe.
+
+  L'observation de phase est indispensable : sans elle la politique ne voit pas
+  l'horloge et ne peut que subir la penalite. Elle ajoute 4 canaux par pas
+  d'historique (sin/cos des deux pieds), donc l'espace d'observation change et
+  cette configuration ne peut PAS reprendre un checkpoint existant.
+  """
+  # Construit ici et non copie de `full` : la config plate dont derive cette
+  # lignee ne porte pas gait_phase, il ne vit que dans rhps1_rough_env_cfg.
+  # Valeurs reprises de la, telles quelles.
+  r = cfg.rewards
+  sites = r["foot_swing_height"].params["asset_cfg"].site_names
+  r["gait_phase"] = RewardTermCfg(
+    func=mdp.gait_phase_tracking,
+    weight=float(os.environ.get("RHPS1_W_CLOCK", "2.0")),
+    params={
+      "sensor_name": "feet_ground_contact_split",
+      "command_name": "twist",
+      "asset_cfg": SceneEntityCfg("robot", site_names=sites),
+      "period_slow": float(os.environ.get("RHPS1_CLOCK_SLOW", "2.0")),
+      "period_fast": float(os.environ.get("RHPS1_CLOCK_FAST", "1.1")),
+      "swing_duration": float(os.environ.get("RHPS1_CLOCK_SWING", "0.4")),
+      "command_ref": 0.7,
+      "force_std": 12.0,
+      "vel_std": 0.15,
+      "command_threshold": 0.1,
+    },
+  )
+  hist = 5 if "hist5" in selection() else 1
+  obs_cfg = ObservationTermCfg(
+    func=mdp.gait_phase_obs, params={"reward_name": "gait_phase"}
+  )
+  if hist > 1:
+    obs_cfg.history_length = hist
+    obs_cfg.flatten_history_dim = True
+  for grp in ("actor", "critic"):
+    cfg.observations[grp].terms["gait_phase"] = copy.deepcopy(obs_cfg)
+
+
+def _swingbonus(cfg, full) -> None:
+  """Bonus de hauteur PAR SECONDE DE VOL. Vise D1, echappe a C7.
+
+  Cinq fois de suite, une demande faite a l'atterrissage a ete satisfaite en
+  n'atterrissant plus -- la derniere, foot_swing_height a -3.0, MALGRE une
+  horloge de demarche a 3.16/s : air_time 0.49 -> 1.55 s, chutes 0.008 -> 0.83,
+  couple 0.41 -> 0.46. La politique prefere payer l'horloge.
+
+  Ici il n'y a rien a esquiver : le bonus se percoit pendant le vol, et ne pas
+  se poser ne rapporte pas plus puisque le paiement est deja par seconde. Lever
+  plus haut est la seule facon d'augmenter le gain.
+
+  Poids 2.0 : a 15 mm mesures pour 50 vises le terme vaut ~0.54/s, et 1.8/s si
+  la cible est atteinte -- donc 1.26/s a gagner, du meme ordre que
+  com_step_progress qui vaut 1.04/s et contre lequel il est en concurrence.
+  """
+  r = cfg.rewards
+  sites = r["foot_swing_height"].params["asset_cfg"].site_names
+  r["swing_bonus"] = RewardTermCfg(
+    func=mdp.swing_height_bonus_dense,
+    weight=float(os.environ.get("RHPS1_W_SWINGBONUS", "2.0")),
+    params={
+      "sensor_name": "feet_ground_contact_split",
+      "target_height": float(os.environ.get("RHPS1_SWINGBONUS_H", "0.05")),
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=sites),
+    },
+  )
+
+
 def _instr(cfg, full) -> None:
   """Measurement without training effect: the metric terms at weight 1e-9.
 
@@ -903,7 +1023,7 @@ def _swt(cfg, full) -> None:
   """
   t = float(os.environ.get("RHPS1_SWT_TARGET", "0.05"))
   cfg.rewards["foot_swing_height"].params["target_height"] = t
-  _w(cfg, "foot_swing_height", -5.0)
+  _w(cfg, "foot_swing_height", float(os.environ.get("RHPS1_W_SWING", "-1.0")))
 
 
 def _mfhr(cfg, full) -> None:
@@ -2055,7 +2175,7 @@ def _wide(cfg, full) -> None:
 
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
-  "hist": _hist, "hist5": _hist5, "instr": _instr, "comshift": _comshift, "comprof": _comprof, "cbal": _cbal, "exec": _exec, "proj": _proj,
+  "hist": _hist, "hist5": _hist5, "instr": _instr, "comshift": _comshift, "capture": _capture, "swingbonus": _swingbonus, "clock": _clock, "comprof": _comprof, "cbal": _cbal, "exec": _exec, "proj": _proj,
   "ctorque": _ctorque, "cscan": _cscan,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,

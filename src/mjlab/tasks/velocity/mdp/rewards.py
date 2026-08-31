@@ -1544,7 +1544,14 @@ class split_feet_swing_height:
       torch.zeros_like(self.peak_heights),
       self.peak_heights,
     )
-    return cost
+    # RewardManager rend raw * weight * dt : une impulsion payee a l'evenement
+    # encaisse ce dt et se retrouve divisee par ~200. Ce fichier enregistre deja
+    # le meme defaut sur com_step_progress et flat_touchdown. Ici il etait
+    # MASQUE par le broutement de contact, qui declenchait le terme ~200 fois
+    # plus souvent et compensait par accident ; la porte sur le temps de vol l'a
+    # revele -- le terme est tombe a 0.0141/s pour 6.6 attendus, soit 70 fois
+    # moins que celui qui paie la foulee, et la clearance s'est mise a baisser.
+    return cost / self.step_dt
 
 
 class split_feet_min_swing_height(split_feet_swing_height):
@@ -3316,3 +3323,61 @@ class capture_point_placement:
       torch.sum(torch.abs(local[..., 1]) * newly.float()) / n
     )
     return cost / self.step_dt
+
+
+def swing_height_bonus_dense(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  target_height: float = 0.05,
+  min_air_time: float = 0.05,
+  command_name: str | None = None,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Payer la hauteur du pied PAR SECONDE DE VOL, jamais a l'atterrissage.
+
+  Seul terme de hauteur qui echappe a la contrainte C7 par construction. Cinq
+  fois de suite, une demande faite a la pose a ete satisfaite en ne posant
+  plus : cbal (double appui 0.94), capture (0.88), freevel seul (0.94),
+  flat_touchdown, et foot_swing_height a -3.0 -- ce dernier MALGRE une horloge
+  de demarche a 3.16/s, ce qui etait le pari et il est perdu. La politique
+  prefere payer l'horloge plutot que la penalite de pose.
+
+  Ici il n'y a rien a esquiver : le bonus se percoit pendant le vol, et ne pas
+  se poser ne rapporte pas davantage puisque le paiement est deja par seconde.
+  Lever plus haut est la seule facon d'augmenter le gain.
+
+  Rampe lineaire clampee a target_height, et non un noyau : le gradient reste
+  constant sur tout le trajet de 0 a la cible, la ou un exp s'ecrase loin d'elle
+  (contrainte C6). Le pied mesure 15 mm pour 50 vises, donc l'essentiel du
+  chemin est justement "loin".
+
+  min_air_time ecarte le broutement du solveur, qui avait rendu
+  peak_height_mean illisible (0.9 mm pour 11 reels) et dominait le cout de
+  foot_swing_height.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  sensor: ContactSensor = env.scene[sensor_name]
+  found = sensor.data.found
+  assert found is not None and found.shape[1] >= 8
+
+  in_air = torch.all(found[:, :8].view(-1, 2, 4) == 0, dim=2)
+
+  heights = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
+  for i, name in enumerate(asset_cfg.site_names or ()):
+    scan = env.scene[f"{name}_scan"]
+    heights[:, i] = heights[:, i] - scan.data.hit_pos_w[..., 2].mean(dim=-1)
+
+  ratio = torch.clamp(heights / max(target_height, 1e-6), 0.0, 1.0)
+  reward = torch.sum(ratio * in_air.float(), dim=1)
+
+  if command_name is not None:
+    c = env.command_manager.get_command(command_name)
+    total = torch.norm(c[:, :2], dim=1) + torch.abs(c[:, 2])
+    reward = reward * (total > command_threshold).float()
+
+  n = torch.clamp(torch.sum(in_air.float()), min=1.0)
+  env.extras["log"]["Metrics/swing_height_mean"] = (
+    torch.sum(heights * in_air.float()) / n
+  )
+  return reward
