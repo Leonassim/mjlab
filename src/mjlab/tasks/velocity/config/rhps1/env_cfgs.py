@@ -979,11 +979,14 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.observations[actor_group_name].enable_corruption = False
     # push_base is dropped in rhps1_flat_env_cfg, not here: it is added later
     # in this function, so a pop at this point would see nothing.
-    # Disable debug visualizers to recover viewer FPS.
-    twist_cmd.debug_vis = False
+    # La fleche de commande est REMISE : elle coute deux traits, et sans elle on
+    # ne voit pas ce qu'on demande au robot. Ce sont les rayons qui coutent, et
+    # eux restent eteints.
+    twist_cmd.debug_vis = True
     for sensor in cfg.scene.sensors:
       if isinstance(sensor, RayCastSensorCfg):
         sensor.debug_vis = False
+
 
     if cfg.scene.terrain is not None:
       if cfg.scene.terrain.terrain_generator is not None:

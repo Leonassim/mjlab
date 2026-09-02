@@ -382,6 +382,27 @@ def run_play(task_id: str, cfg: PlayConfig):
         run_status=wandb_run.state,
       )
 
+  # Vitesse d'impact au terminal, a chaque pose de pied. Le mecanisme vit dans
+  # BaseViewer._maybe_log_impact_velocities mais attend ces trois attributs, que
+  # rien ne definissait pour le RHPS1 -- d'ou un affichage muet.
+  #
+  # Les capteurs de force declenchent la detection de pose, les velocimetres
+  # donnent la vitesse au contact. Meme ordre dans les deux listes.
+  try:
+    _scene = env.unwrapped.scene
+    _force = ["robot/LeftFootForceSensor_fsensor", "robot/RightFootForceSensor_fsensor"]
+    _vel = ["robot/left_foot_lin_vel", "robot/right_foot_lin_vel"]
+    # `in` sur la scene n'est pas un test d'appartenance : il indexe. On accede
+    # donc reellement a chaque capteur, et l'absence leve.
+    for _n in _force + _vel:
+      _scene[_n]
+    env.unwrapped._debug_impact_force_sensors = _force
+    env.unwrapped._debug_impact_vel_sensors = _vel
+    env.unwrapped._debug_impact_force_threshold = 50.0
+    print("[INFO]: vitesses d'impact affichees a chaque pose de pied.")
+  except Exception as _e:
+    print(f"[WARN]: affichage des impacts indisponible ({_e}).")
+
   # Handle "auto" viewer selection.
   if cfg.viewer == "auto":
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
