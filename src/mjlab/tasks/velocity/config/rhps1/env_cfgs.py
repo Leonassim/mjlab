@@ -1421,6 +1421,30 @@ def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Ablation ladder, no-op unless RHPS1_ABLATION is set. Applied last so it sees
   # the finished configuration and nothing downstream can undo it.
   ablation.apply_env(cfg)
+
+  # En lecture, retirer ce qui ne sert qu'a l'entrainement. Mesure du
+  # 2026-09-02, un environnement sur CPU : config complete 60.6 ms, sans les
+  # capteurs de proximite 56.4, sans les termes de mesure 53.3. Les deux
+  # ensemble rendent 17%. Le socle mjlab nu coute deja 51.6 ms, donc c'est tout
+  # ce que la configuration peut rendre -- au-dela c'est le cout fixe par pas de
+  # mujoco-warp, qui est fait pour des milliers d'environnements a la fois.
+  #
+  # Capteurs et recompenses de proximite partent ENSEMBLE : retirer les capteurs
+  # seuls laisse les termes les chercher par nom et la construction leve.
+  #
+  # RHPS1_PLAY_LEAN=0 desactive ce nettoyage, si on veut lire les memes valeurs
+  # qu'a l'entrainement.
+  if play and os.environ.get("RHPS1_PLAY_LEAN", "1") != "0":
+    _prox_names = {
+      "crotch_proximity", "leg_proximity", "knee_proximity", "arm_torso_proximity",
+      "shoulder_chest_proximity", "shoulder_body_proximity", "wrist_thigh_proximity",
+    }
+    for _n in list(cfg.rewards):
+      if _n in _prox_names or _n.startswith("metrics_"):
+        cfg.rewards.pop(_n, None)
+    cfg.scene.sensors = tuple(
+      _s for _s in cfg.scene.sensors if getattr(_s, "name", None) not in _prox_names
+    )
   return cfg
 
 
