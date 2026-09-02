@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import copy
 import os
+import pathlib
 from typing import TYPE_CHECKING
 
 import torch
@@ -56,6 +57,23 @@ LADDER = ("rand", "obs", "knee", "feet", "prox", "pose", "mirror", "static")
 def selection() -> list[str] | None:
   """Steps requested, or None when the variable is unset."""
   raw = os.environ.get(ENV_VAR, "").strip()
+  if not raw:
+    # Repli sur un fichier a la racine du depot, pour qu'un `uv run play` nu
+    # reconstruise la bonne configuration. Sans ca il faut reciter dix variables
+    # d'environnement sur la ligne de commande, et en oublier une ne donne pas
+    # une erreur claire : l'environnement se batit a 246 dims et le chargement
+    # casse sur la taille du normaliseur.
+    #
+    # Une ligne "cle=valeur" par variable, les commentaires en '#' ignores.
+    cfg = pathlib.Path(__file__).resolve().parents[6] / ".rhps1_ablation"
+    if cfg.is_file():
+      for line in cfg.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or "=" not in line:
+          continue
+        k, v = (x.strip() for x in line.split("=", 1))
+        os.environ.setdefault(k, v)
+      raw = os.environ.get(ENV_VAR, "").strip()
   if not raw:
     return None
   steps = [s for s in raw.split("+") if s]

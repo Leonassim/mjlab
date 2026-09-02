@@ -1,0 +1,16 @@
+# Configuration de la politique qui passe les six criteres
+# (run 2026-09-01_17-45-07 model_4500, checkpoints/rhps1_6sur6_it4500.pt).
+#
+# Lu automatiquement quand RHPS1_ABLATION n'est pas dans l'environnement, pour
+# qu'un `uv run play ... --checkpoint-file checkpoints/rhps1_6sur6_it4500.pt`
+# fonctionne sans prefixe. Une variable deja definie dans le shell gagne.
+RHPS1_ABLATION=p0+hist5+mirror+masscom+prox+instr+swt+fclr+comshift+clock+steplen+swingbonus+descent
+RHPS1_SWT_TARGET=0.05
+RHPS1_W_SWING=0.0
+RHPS1_W_SWINGBONUS=2.0
+RHPS1_SWINGBONUS_H=0.05
+RHPS1_W_CLOCK=2.0
+RHPS1_STEP_TARGET=0.03
+RHPS1_W_STEPLEN=2.0
+RHPS1_W_DESCENT=-4.0
+RHPS1_DESCENT_LIMIT=0.12
