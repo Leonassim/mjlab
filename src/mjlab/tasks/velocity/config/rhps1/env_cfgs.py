@@ -983,6 +983,11 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # ne voit pas ce qu'on demande au robot. Ce sont les rayons qui coutent, et
     # eux restent eteints.
     twist_cmd.debug_vis = True
+    # La fleche se dessine a z_offset * scale au-dessus du BASSIN, pas du sol.
+    # A 1.0 * 0.5 elle tombait dans le cou. Le RHPS1 mesure ~1.35 m pour un
+    # bassin a ~0.85, donc il faut ~0.7 m au-dessus du bassin pour degager la
+    # tete : 1.4 * 0.5.
+    twist_cmd.viz.z_offset = 1.4
     for sensor in cfg.scene.sensors:
       if isinstance(sensor, RayCastSensorCfg):
         sensor.debug_vis = False
