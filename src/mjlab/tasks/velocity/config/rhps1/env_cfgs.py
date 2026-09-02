@@ -984,10 +984,17 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # eux restent eteints.
     twist_cmd.debug_vis = True
     # La fleche se dessine a z_offset * scale au-dessus du BASSIN, pas du sol.
-    # A 1.0 * 0.5 elle tombait dans le cou. Le RHPS1 mesure ~1.35 m pour un
-    # bassin a ~0.85, donc il faut ~0.7 m au-dessus du bassin pour degager la
-    # tete : 1.4 * 0.5.
-    twist_cmd.viz.z_offset = 1.4
+    # Mesure sur le modele : bassin a 0.857 m, HEAD_Y_LINK a 1.452, donc la tete
+    # est a 0.595 m au-dessus du bassin. A 1.0 * 0.5 la fleche tombait dans le
+    # cou, a 1.4 * 0.5 elle rasait encore le crane.
+    #
+    # 2.6 * 0.5 = 1.30 m au-dessus du bassin, soit 0.70 m de degagement -- assez
+    # pour qu'elle soit lisible sans chercher.
+    twist_cmd.viz.z_offset = 2.6
+    print(
+      f"[INFO]: fleche de commande a {twist_cmd.viz.z_offset * twist_cmd.viz.scale:.2f} m "
+      f"au-dessus du bassin (tete a 0.60 m)."
+    )
     for sensor in cfg.scene.sensors:
       if isinstance(sensor, RayCastSensorCfg):
         sensor.debug_vis = False
