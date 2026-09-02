@@ -26,4 +26,4 @@ export RHPS1_W_STEPLEN=2.0
 export RHPS1_W_DESCENT=-4.0
 export RHPS1_DESCENT_LIMIT=0.12
 uv run play Mjlab-Velocity-Flat-RHPS1 \
-  --checkpoint checkpoints/rhps1_6sur6_it4500.pt "$@"
+  --checkpoint-file checkpoints/rhps1_6sur6_it4500.pt "$@"
