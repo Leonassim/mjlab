@@ -1439,9 +1439,18 @@ def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "crotch_proximity", "leg_proximity", "knee_proximity", "arm_torso_proximity",
       "shoulder_chest_proximity", "shoulder_body_proximity", "wrist_thigh_proximity",
     }
-    for _n in list(cfg.rewards):
-      if _n in _prox_names or _n.startswith("metrics_"):
-        cfg.rewards.pop(_n, None)
+    # TOUTES les recompenses sauf gait_phase. Elles coutent 9.5 ms sur les
+    # ~50 d'un pas et ne servent a rien en lecture : le viewer n'affiche pas le
+    # budget. gait_phase est la seule exception non negociable -- l'horloge de
+    # demarche vit dans ce terme et alimente 20 des 530 dimensions
+    # d'observation, donc la retirer empeche le robot de marcher.
+    #
+    # Le curriculum part avec, sinon step_target et air_time referencent des
+    # termes disparus.
+    for _n in [n for n in list(cfg.rewards) if n != "gait_phase"]:
+      cfg.rewards.pop(_n, None)
+    for _n in list(cfg.curriculum):
+      cfg.curriculum.pop(_n, None)
     cfg.scene.sensors = tuple(
       _s for _s in cfg.scene.sensors if getattr(_s, "name", None) not in _prox_names
     )
