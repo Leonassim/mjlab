@@ -648,3 +648,66 @@ contre 0.35 en mc_mujoco -- meme facteur deux, meme direction.
 Lecon de methode, la troisieme du jour : une mesure dont la statistique est un
 maximum sur une population melange le cas nominal et le cas degrade. Ce n'est
 pas une mesure de la marche, c'est une mesure du pire robot.
+
+
+### 10.11 Le retard de la pile de deploiement etait deja mesure, dans notre propre config
+
+`etc/mc_rtc_superbuild_mujoco.in.yaml` porte une mesure du 2026-08-24, policy 0,
+en marche dans mc_mujoco :
+
+```
+                       K=8000   K=1600
+lag q_rl -> qIn (ms)     52.5     59.7
+q_rl - qOut (mrad)       9.47    12.50     l'etage QP
+qOut - qIn  (mrad)       1.12     1.13     le servo, intact
+|tau| max (N.m)          99.3    115.6
+```
+
+**La pile de deploiement a ~52 ms de retard**, dix pas de politique. Et diviser
+K par cinq n'en ajoute que 14 % la ou la theorie du second ordre en predisait
+26 % : le gros de ces 52 ms n'est PAS la raideur, c'est le jeu de contraintes du
+QP et la dynamique corps-complet, qu'aucun gain ne recupere. L'entrainement, lui,
+a zero retard -- `posture_task_stiffness: null`.
+
+**Ce que ca explique, et qui manquait.** Pourquoi la 6/6 tape et pas la policy 0 :
+
+```
+                    mjlab (marche)          mc_mujoco
+policy 0 genou           87 N.m       ~99 N.m (max tous joints)   coherent
+6/6      genou           47 N.m      ~150 N.m (mesure de Leo)     x3
+```
+
+Policy 0 transfere fidelement, la 6/6 non. Le couple vaut kp x retard x vitesse
+de la cible : meme retard, mais la 6/6 bouge beaucoup plus vite -- horloge de
+demarche, vols plus amples, lever de pied 6.5x celui de la policy 0. Trois fois
+la vitesse de cible, trois fois le couple.
+
+**Pourquoi la tentative d'aout a echoue, et ce qui change.** Le filtre de
+posture a ete retire le 2026-08-17 pour deux raisons : place en AMONT de la
+difference finie alors que la PostureTask est en aval, et cale sur K=1600 donc
+sur ~25 ms. La mesure du 24 dit que le retard reel est de 52 ms et qu'il ne
+vient pas de la raideur. Le modeliser comme un second ordre en K etait donc
+doublement faux : mauvaise place, et mauvais mecanisme. Un retard pur ou un
+premier ordre de 52 ms, applique en dernier avant le PD, est une hypothese
+differente et mieux fondee.
+
+**Test qui tranche, cote Leo :** relancer la 6/6 en mc_mujoco et relever le pic
+de couple genou a K=8000 au lieu de 1600.
+
+### 10.12 T2 agit, mesure en marche
+
+Checkpoint a 450 iterations de penalite (`2026-09-03_11-26-29 model_4950`),
+mesure `demand_walking.py` a 0.2 m/s :
+
+```
+                  6/6 depart   T2 @450   policy 0 (cible)
+total exces^2        0.8475     0.5914             0.1203
+L_ELBOW_Y p99          5.43       4.51                 --
+L_WRIST_R max          9.00       7.99               2.17
+ratio max global       9.82       9.65               4.91
+```
+
+-30 % sur le total pendant que la politique se remet encore de la reprise. Le
+gros de la distribution descend, la queue resiste. Il reste un facteur cinq
+jusqu'a la cible ; la run continue depuis ce checkpoint plutot que de repartir
+de la 6/6, pour ne pas perdre les 450 iterations acquises.

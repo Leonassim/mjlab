@@ -33,7 +33,7 @@ exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-01_17-45-07 --agent.load-checkpoint model_4500.pt \
+  --agent.load-run 2026-09-03_11-26-29 --agent.load-checkpoint model_4950.pt \
   --agent.max-iterations 2500
 # 2500 et non 400 : la run 6/6 a mis 1250 iterations a remonter de son propre
 # creux de reprise (-1.14 a l'iteration 3150, -15.8 au creux, +79.9 a 4400).
