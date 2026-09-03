@@ -16,7 +16,16 @@ same way export_onnx.py needs them.
 """
 
 import argparse
+import os
 import statistics
+
+# RHPS1_PLAY_LEAN allege la config de play pour le viewer : il retire TOUTES les
+# recompenses sauf gait_phase et les capteurs de proximite. Ce banc lit ses
+# criteres dans extras["log"], donc sous play lean cinq criteres sur six
+# remontent nan -- et le banc concluait "tous les criteres mesures passent".
+# Force ici, avant tout import de la config : un test d'acceptation ne doit pas
+# dependre du fait qu'on se souvienne d'une variable d'environnement.
+os.environ["RHPS1_PLAY_LEAN"] = "0"
 from pathlib import Path
 
 import torch

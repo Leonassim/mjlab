@@ -833,3 +833,69 @@ ratio max              9.82      9.65       9.52       4.91
 -45 % au total. Les p99 s'effondrent, la queue extreme resiste : le maximum ne
 bouge pas alors que le corps de la distribution descend. Il reste un facteur 3.8
 jusqu'a la reference.
+
+
+### 10.16 T5b : l'impact est resolu, au prix du lever de pied
+
+Verdict deterministe en marche, `2026-09-03_16-20-16 model_7200`, reward
+plafonne a 77.5 :
+
+```
+                    6/6 depart   T5 -40   T5b -120   policy 0   BWC
+descente p50            0.2218   0.1818     0.1625     0.1478    --
+descente p99            0.3456   0.2873     0.2664     0.1927    --
+force p99 (x poids)       2.13x    2.03x      1.64x      1.71x    --
+force max (x poids)       2.57x    2.41x      1.89x      1.86x   2.0x
+```
+
+**La force de pic passe de 2.57x a 1.89x le poids** -- le niveau de la policy 0
+(1.86x), sous le BWC (2.0x), et au p99 on fait mieux que la reference (1.64x
+contre 1.71x). L'objectif O2 est atteint sur le critere qui compte
+physiquement ; la vitesse de descente reste 10 % au-dessus en mediane.
+
+La demande a suivi sans effort supplementaire :
+
+```
+                  6/6 depart   T2 @450   T5 -40   T5b -120   policy 0
+total exces^2        0.8475    0.5914    0.4632     0.3935     0.1203
+ratio max              9.82      9.65      9.52       8.68      4.91
+```
+
+**Balayage d'acceptation : 5 criteres sur 6.**
+
+```
+  ECHEC lever de pied      0.0271   seuil 0.030   (+10% du seuil)
+  OK   pieds a plat        0.0478   seuil 0.050
+  OK   ne jamais tomber    0.0000   seuil 0.010
+  OK   impact faible       0.1230   seuil 0.160
+  OK   couples haut corps  0.0000   seuil 0.030
+  OK   couples faisables   0.0212   seuil 0.030
+```
+
+Le lever ne tombe qu'a **une seule commande**, vx=0.10, la marche la plus
+lente ; a 0.20 et 0.30 il vaut 0.036. Le critere prend le pire, donc il echoue.
+
+Echange contre la 6/6 : impact 0.1441 -> 0.1230, mais lever 0.0326 -> 0.0271 et
+pieds a plat 0.0295 -> 0.0478. **On a paye l'impact avec le lever de pied**, ce
+que le cout de descente encourage directement. `pieds a plat` est passe de 0.0295
+a 0.0478 pour un seuil de 0.050 : a surveiller aussi.
+
+T6 : contrepoids par `swing_height_bonus_dense`, 2.0 -> 3.0. C'est l'oppose
+exact -- il paie la HAUTEUR pendant le vol, en continu, donc C7-immun comme lui.
+Les deux peuvent coexister tant qu'il reste du temps de vol, et la periode est a
+0.73 s contre 0.90 pour le BWC.
+
+### 10.17 Le banc d'acceptation rendait nan sur cinq criteres sur six
+
+Premier passage du balayage : `falls` seul mesure, tout le reste nan, et la
+conclusion imprimee etait **"tous les criteres mesures passent"**.
+
+Cause : le bloc `RHPS1_PLAY_LEAN` ajoute le 2026-09-02 pour rendre des FPS au
+viewer retire TOUTES les recompenses sauf `gait_phase`. Le banc lit ses criteres
+dans `extras["log"]`, alimente par ces memes termes.
+
+Une optimisation d'affichage a donc silencieusement vide le test d'acceptation
+-- exactement le "trou silencieux" que le docstring du banc dit exister pour
+eviter. Corrige en forcant `RHPS1_PLAY_LEAN=0` dans `sweep_eval.py` avant tout
+import : un test d'acceptation ne doit pas dependre du fait qu'on se souvienne
+d'une variable d'environnement.

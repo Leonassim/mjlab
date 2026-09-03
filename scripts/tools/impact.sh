@@ -45,11 +45,22 @@ export RHPS1_W_DESCENT=-120.0
 # Limite inchangee a 0.12, qui est DEJA sous la mediane de la policy 0 (0.1476).
 # Ce n'est pas la limite qui manquait.
 export RHPS1_DESCENT_LIMIT=0.12
+# Contrepoids. Le balayage a -120 donne 5 criteres sur 6 : impact 0.1441 ->
+# 0.1230, mais lever de pied 0.0326 -> 0.0271, sous le seuil de 0.030 -- et
+# UNIQUEMENT a vx=0.10, la marche la plus lente ; a 0.20 et 0.30 il vaut 0.036.
+# On a paye l'impact avec le lever, ce que le cout de descente encourage.
+#
+# swing_height_bonus_dense est l'oppose exact : il paie la HAUTEUR pendant le
+# vol, en continu, donc il est C7-immun comme lui et s'y oppose directement.
+# 3.0 au lieu de 2.0. Les deux peuvent coexister -- monter plus haut ET
+# descendre plus lentement est possible tant qu'il reste du temps de vol, et la
+# periode est a 0.73 s contre 0.90 pour le BWC.
+export RHPS1_W_SWINGBONUS=3.0
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-03_13-31-05 --agent.load-checkpoint model_6300.pt \
+  --agent.load-run 2026-09-03_16-20-16 --agent.load-checkpoint model_7200.pt \
   --agent.max-iterations 2500
