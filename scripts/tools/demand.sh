@@ -14,11 +14,16 @@ export RHPS1_ABLATION="${RHPS1_ABLATION}+demand"
 # 12.5. Le carre y vaut 14 400 sur un seul joint-pas, donc il paie surtout le
 # bruit d'exploration -- dont le deploiement n'a rien, l'ONNX est deterministe.
 export RHPS1_DEMAND_POWER=${RHPS1_DEMAND_POWER:-1.0}
-export RHPS1_DEMAND_CAP=${RHPS1_DEMAND_CAP:-4.0}
-# -0.003 et non -0.04 : la valeur brute passe de 1.1 (carre, deterministe) a
-# ~15 (lineaire, entrainement, ~30 articulations). Verifie sur les premieres
-# iterations via Episode_Reward/torque_demand, cible -0.9.
-export RHPS1_W_DEMAND=${RHPS1_W_DEMAND:--0.003}
+# cap 12 et non 4 : a 4, un coude a ratio 12.5 est PLAFONNE, donc sans gradient
+# -- le terme n'agissait plus sur les seules articulations qui depassent. A 12,
+# le gradient court jusqu'a ratio 13 et le bruit d'exploration a ratio 109
+# contribue 12 au lieu de 14 400.
+export RHPS1_DEMAND_CAP=${RHPS1_DEMAND_CAP:-12.0}
+# -0.03 : a -0.003 le terme etait INERTE. Compare a 100 iterations contre le
+# controle a configuration identique, tout coincidait -- falls 1.73 contre 2.02,
+# lift 0.0497 contre 0.0514, impact 0.1228 contre 0.1200, period 0.568 contre
+# 0.564. Rdmd saturait a -0.026 quand les autres termes valent 0.4 a 3.0.
+export RHPS1_W_DEMAND=${RHPS1_W_DEMAND:--0.03}
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes
 # video_interval est en pas de politique, pas en iterations : 24 pas par

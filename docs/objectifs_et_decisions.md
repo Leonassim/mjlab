@@ -503,3 +503,39 @@ qui transforme 121 en 120 plutot qu'en 14 400.
 
 Si le controle s'effondre aussi : la methode T2 entiere est invalide, aucune
 reprise depuis ce checkpoint n'est exploitable, et il faut repartir autrement.
+
+
+### 10.8 Le critere de T2 ne peut pas etre une metrique d'entrainement
+
+Deux poids ont ete essayes, a un facteur dix d'ecart, et `Metrics/torque_demand_ratio_max`
+suit la MEME trajectoire dans les deux cas :
+
+```
+                        +25    +50    +75   +100   +150   +200   (iterations)
+poids -0.003, cap 4      --   81.2   81.9   54.9   47.9   50.2
+poids -0.03,  cap 12   115.4  102.6   60.2   55.2   50.0   43.7
+```
+
+La decrue est la reconvalescence de la politique apres reprise, pas l'effet de
+la penalite. Raison : ces metriques lisent l'action **echantillonnee**, dont
+45 % des joint-pas depassent la limite contre 2 % en deterministe. Elles
+mesurent surtout la largeur de la gaussienne d'exploration, que l'ONNX deploye
+n'a pas.
+
+**Le verdict de T2 se prend donc en deterministe**, avec
+`scripts/tools/size_demand_penalty.py` sur le checkpoint obtenu, contre la
+reference 6/6 :
+
+```
+reference 6/6      total exces^2 1.105   L_ELBOW_Y ratio max 12.53
+```
+
+Regle deja ecrite ("mesurer en deterministe, pas a l'entrainement"), et qui
+aurait evite les deux relances si je l'avais appliquee au choix du critere et
+pas seulement au choix du poids.
+
+Le reste tient : a poids -0.03 la marche suit le controle a configuration
+identique -- falls 2.05 contre 2.02, lift 0.0532 contre 0.0514, impact 0.1308
+contre 0.1200, period 0.547 contre 0.564. Le terme coute sans casser, et
+`Episode_Reward/torque_demand` vaut -0.25, la famille de min_foot_height
+(-0.24) et angular_momentum (-0.30).
