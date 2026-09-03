@@ -27,10 +27,21 @@ cd /home/lmoussafir/mjlab-rhps1 || exit 1
 set -a; source <(grep -E "^RHPS1_" .rhps1_ablation); set +a
 export RHPS1_ABLATION="${RHPS1_ABLATION}+demand"
 export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.03
-# -40 et non -4 : dix fois, ce qui porte Episode_Reward/descent de -0.013 a
-# ~-0.13. Modere volontairement -- cinq effondrements de type C7 sont dans ce
-# journal, et meme un terme immunise merite d'etre monte par paliers.
-export RHPS1_W_DESCENT=-40.0
+# -120, deuxieme palier. A -40 la mesure en marche donne p99 0.346 -> 0.287,
+# soit -16% seulement, et la force de pic EMPIRE (2.57x -> 2.72x le poids) :
+# baisser l'elan sans allonger le contact ne change pas Delta_p/Delta_t.
+#
+# Hypothese "jambe raide" TESTEE ET FAUSSE : la policy 0 atterrit avec MOINS de
+# flexion de genou que nous (2.0 deg contre 2.9) et tape moins fort. La flexion
+# n'est pas le levier, donc pas de terme de compliance.
+#
+# Le vrai mecanisme est la cadence : 411 poses contre 1737 pour la policy 0 sur
+# la meme duree, soit quatre fois plus de vol par pas et d'autant plus de
+# hauteur a retomber. C'est le prix direct de la cadence BWC obtenue en reglant
+# D5, et le seul moyen de garder les deux est de freiner activement la descente.
+# Le levier est donc le bon, il est trop faible : Episode_Reward/descent vaut
+# -0.10 quand flat_support vaut -0.47.
+export RHPS1_W_DESCENT=-120.0
 # Limite inchangee a 0.12, qui est DEJA sous la mediane de la policy 0 (0.1476).
 # Ce n'est pas la limite qui manquait.
 export RHPS1_DESCENT_LIMIT=0.12
@@ -40,5 +51,5 @@ exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-03_12-54-58 --agent.load-checkpoint model_5100.pt \
+  --agent.load-run 2026-09-03_13-31-05 --agent.load-checkpoint model_6300.pt \
   --agent.max-iterations 2500

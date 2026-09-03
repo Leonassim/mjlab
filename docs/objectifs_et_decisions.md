@@ -759,3 +759,77 @@ UNE deviation : `RHPS1_W_DESCENT` de -4 a -40. Limite inchangee a 0.12, qui est
 deja sous la mediane de la policy 0.
 
 Cible : descente p99 <= 0.19 et force max <= 1.8x le poids, le niveau policy 0.
+
+
+### 10.14 T5 a -40 : la vitesse baisse un peu, la force non. Et "jambe raide" est faux
+
+Verdict deterministe en marche sur `2026-09-03_13-31-05 model_6300`, 1300
+iterations apres la reprise, reward plafonne a 74.
+
+```
+                    6/6 depart   T5 -40   policy 0
+descente p50            0.2218   0.2098     0.1476
+descente p99            0.3456   0.2914     0.1859
+force max (x poids)       2.57x    2.72x      1.82x
+```
+
+**Troisieme fois que la metrique d'entrainement ment.** Elle annoncait un
+facteur QUATRE sur l'impact (0.207 -> 0.0526) ; en marche la descente ne baisse
+que de 16 % au p99 et la force de pic EMPIRE. Meme cause que les deux
+precedentes : `Metrics/landing_vel_mean` moyenne sur une distribution de
+commandes majoritairement lente ou immobile.
+
+Physiquement c'est coherent : la force vaut Delta_p/Delta_t. Baisser l'elan sans
+allonger le contact ne la change pas.
+
+**Hypothese "jambe raide" : testee, et fausse.** Le BWC atterrit a 38 degres de
+flexion de genou, la politique a 10-20, donc une recompense de flexion a la pose
+semblait le levier -- et compatible C7, puisqu'une recompense PAYEE en
+atterrissant n'encourage pas a ne pas atterrir. Mesure, meme fenetre :
+
+```
+flexion de genou a la pose (deg, ecart au defaut)
+                    policy 0   T5 -40
+p50                     2.0      2.9
+max                     3.4      5.3
+```
+
+La policy 0 atterrit avec MOINS de flexion que nous et tape moins fort. La
+flexion n'est pas le discriminant, et le terme de compliance n'a pas lieu
+d'etre. Une heure de GPU economisee en mesurant avant d'ecrire.
+
+**Le vrai mecanisme, lui, est trivial une fois vu :**
+
+```
+poses detectees, meme duree       policy 0 1737      T5 411      4.2x
+```
+
+La 6/6 fait quatre fois moins de pas. Quatre fois plus de vol par pas, donc
+d'autant plus de hauteur a retomber. **C'est le prix direct de la cadence BWC
+obtenue en reglant D5** -- on a echange le piaffement contre des enjambees, et
+une enjambee retombe de plus haut.
+
+Garder les deux exige de freiner activement la descente, ce qui est exactement
+`descent_speed_cost`. Le levier est le bon et il est trop faible :
+Episode_Reward/descent vaut -0.10 quand flat_support vaut -0.47.
+
+T5b : deuxieme palier, poids -120, depuis `model_6300`. Une deviation.
+
+**Ce que T5 a quand meme donne**, et qui n'est pas rien : falls 0.0000 sur six
+releves consecutifs, saturation de couple des jambes 0.2155 -> 0.1699, et la
+demande continue de descendre (voir 10.15). Le lever de pied a plonge sous la
+garde a 0.0284 puis est REMONTE seul a 0.0350, sans intervention -- le mode
+d'echec annonce ne s'est pas materialise.
+
+### 10.15 T2 tient la distance
+
+```
+                  6/6 depart   T2 @450   T5 @6300   policy 0
+total exces^2        0.8475    0.5914     0.4632     0.1203
+L_ELBOW_Y p99          5.43      4.51       2.65         --
+ratio max              9.82      9.65       9.52       4.91
+```
+
+-45 % au total. Les p99 s'effondrent, la queue extreme resiste : le maximum ne
+bouge pas alors que le corps de la distribution descend. Il reste un facteur 3.8
+jusqu'a la reference.

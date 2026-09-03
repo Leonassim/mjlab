@@ -70,7 +70,12 @@ def main():
   alive = torch.ones(a.envs, dtype=torch.bool, device=device)
   prev_contact = torch.zeros(a.envs, 2, dtype=torch.bool, device=device)
   prev_vz = torch.zeros(a.envs, 2, device=device)
-  land_vz, land_f = [], []
+  land_vz, land_f, land_knee = [], [], []
+  # Flexion de genou a la pose. Le BWC atterrit a 38 deg, la politique a 10-20 :
+  # une jambe tendue raccourcit le contact autant qu'elle reduit l'elan, donc
+  # baisser la vitesse de descente seule ne fait pas baisser la force de pic.
+  knee_ids, _ = scene["robot"].find_joints([r"L_KNEE_P", r"R_KNEE_P"])
+  knee_default = scene["robot"].data.default_joint_pos[:, knee_ids]
   with torch.no_grad():
     for i in range(a.steps):
       obs, _, dones, _ = env.step(policy(obs))
@@ -83,6 +88,8 @@ def main():
       if i > a.steps // 4 and touchdown.any():
         land_vz.append((-prev_vz[touchdown]).cpu())   # descente positive
         land_f.append(f[touchdown].cpu())
+        flex = (scene["robot"].data.joint_pos[:, knee_ids] - knee_default).abs()
+        land_knee.append(flex[touchdown].cpu())
       prev_contact, prev_vz = contact, vz
 
   print(f"\ncommande {a.cmd:.2f} m/s   vivants "
@@ -100,6 +107,11 @@ def main():
   if weight:
     print(f"  en poids du robot ({weight:.0f} N) : p50 {q(fc,.5)/weight:.2f}x   "
           f"p99 {q(fc,.99)/weight:.2f}x   max {float(fc.max())/weight:.2f}x")
+  if land_knee:
+    kc = torch.cat(land_knee) * 180.0 / 3.14159265
+    print(f"\nflexion de genou a la pose (deg, ecart au defaut)")
+    print(f"  p10 {q(kc,.1):.1f}   p50 {q(kc,.5):.1f}   p90 {q(kc,.9):.1f}   "
+          f"max {float(kc.max()):.1f}      (BWC ~38)")
 
 
 if __name__ == "__main__":
