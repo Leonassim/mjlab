@@ -944,3 +944,61 @@ echecs a 0.3 % du seuil sur une run dont le reward montait encore quand je l'ai
 arretee pour mesurer ne justifient pas de toucher au bareme. Ils justifient de
 la laisser finir. T6b continue depuis `model_8100`, meme configuration, 4000
 iterations.
+
+
+### 10.19 T6b : le lever passe, les couples basculent. Le compromis est identifie
+
+`2026-09-03_21-08-16 model_12099`, 4000 iterations, reward plafonne a 90-95 --
+au-dessus de la 6/6 (80-85).
+
+Impact, toujours meilleur :
+
+```
+                    6/6      T6      T6b   policy 0   BWC
+descente p99      0.3456  0.2528   0.2468     0.1927    --
+force p99          2.13x   1.47x    1.56x      1.71x    --
+force max          2.57x   1.82x    1.80x      1.86x   2.0x
+flexion genou p50     --   5.4deg   8.3deg     2.0deg  ~38
+```
+
+Force de pic **1.80x**, la meilleure des trois, sous la policy 0 et bien sous le
+BWC. La flexion de genou a triple depuis le depart (2.9 -> 8.3 degres), toujours
+sans terme dedie : elle suit l'atterrissage controle au lieu de le causer.
+
+**Balayage : 5 sur 6, mais le critere qui echoue a change.**
+
+```
+                   6/6      T5b      T6      T6b     seuil
+falls           0.0000   0.0000  0.0068   0.0088     0.010
+lever           0.0326   0.0271  0.0299   0.0386     0.030   passe
+impact          0.1441   0.1230  0.1115   0.1376     0.160
+couples jambes  0.0178   0.0212  0.0301   0.0418     0.030   ECHEC +39%
+couples haut    0.0000   0.0000  0.0001   0.0001     0.030
+pieds a plat    0.0295   0.0478  0.0371   0.0399     0.050
+```
+
+Les 3000 iterations supplementaires ont fait passer le lever de pied, et la
+saturation de couple des jambes a suivi. Ce n'est plus du bruit : +39 % du
+seuil, contre +0.3 % la veille.
+
+**Le compromis, isole par croisement des quatre runs :**
+
+```
+                      vol   descente    lever   couples
+6/6                   2.0         -4   0.0326   0.0178
+T5b                   2.0       -120   0.0271   0.0212
+T6b                   3.0       -120   0.0386   0.0418
+```
+
+Le cout de descente seul coute peu : a bonus de vol constant, il fait -17 % de
+lever et +19 % de couple. **C'est le bonus de vol porte a 3.0 qui a double la
+saturation** (+97 %). Lever plus haut coute du couple, mecaniquement. J'ai
+sur-corrige en 10.16.
+
+T7 : bonus de vol a 2.5, une deviation. L'interpolation donne lever ~0.033 et
+couples ~0.031, soit les deux au seuil -- la tension est reelle et se joue entre
+2.3 et 2.5. Si 2.5 echoue encore sur les couples, le levier suivant n'est pas le
+poids mais la CIBLE `RHPS1_SWINGBONUS_H` : a 0.05 pour un vol realise de 0.048,
+le bonus tire encore ; le descendre a 0.04 le sature et arrete la poussee sans
+retirer la hauteur acquise (regle "une cible plafonnee a sa valeur n'a plus de
+gradient").

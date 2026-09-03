@@ -55,12 +55,23 @@ export RHPS1_DESCENT_LIMIT=0.12
 # 3.0 au lieu de 2.0. Les deux peuvent coexister -- monter plus haut ET
 # descendre plus lentement est possible tant qu'il reste du temps de vol, et la
 # periode est a 0.73 s contre 0.90 pour le BWC.
-export RHPS1_W_SWINGBONUS=3.0
+# 2.5, a mi-chemin. Trois runs encadrent le compromis :
+#
+#                       vol   descente    lever   couples
+#   6/6                 2.0        -4    0.0326    0.0178
+#   T5b                 2.0      -120    0.0271    0.0212
+#   T6b                 3.0      -120    0.0386    0.0418   seuils 0.030 / 0.030
+#
+# Le cout de descente seul coute peu (+19% de couple a lever constant). C'est le
+# bonus de vol porte a 3.0 qui a double la saturation : lever plus haut coute du
+# couple, mecaniquement. A 2.5 l'interpolation donne lever ~0.033 et couples
+# ~0.031, les deux au seuil -- la tension est reelle et se joue entre 2.3 et 2.5.
+export RHPS1_W_SWINGBONUS=2.5
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-03_18-48-39 --agent.load-checkpoint model_8100.pt \
-  --agent.max-iterations 4000
+  --agent.load-run 2026-09-03_21-08-16 --agent.load-checkpoint model_12099.pt \
+  --agent.max-iterations 3000
