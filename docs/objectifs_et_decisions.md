@@ -592,3 +592,59 @@ Lecon de methode : le controle qui manquait n'etait pas une autre run, c'etait
 une politique dont on SAIT qu'elle va sur le vrai robot. Sans elle j'ai passe la
 journee a traiter comme un defaut un niveau de depassement que la reference a
 aussi.
+
+
+### 10.10 Mesurer en MARCHE, pas pendant une chute -- et le genou est definitivement hors de cause
+
+Objection de Leo : "j'ai teste dans mc_mujoco et j'ai pas ces pics, il faut
+evaluer durant un mouvement de marche classique, pas quand il tombe". Juste, et
+c'etait un defaut de la mesure : `size_demand_penalty.py` tournait en conditions
+d'ENTRAINEMENT -- randomisation, poussees, commandes tirees au hasard -- et
+rapportait le maximum sur 512 robots dont certains tombaient.
+
+`scripts/tools/demand_walking.py` corrige trois choses : `play=True` (ni
+randomisation ni poussee, ce qu'est mc_mujoco), commande epinglee a une vitesse
+de marche, et un masque de vie qui exclut definitivement tout env ayant termine
+une fois. Il rapporte des percentiles et pas seulement le maximum -- sur
+115 000 echantillons, le max est la queue.
+
+**Ce que la correction change.** Policy 0 passe de "ratio max 9.14" a 4.91, et
+son genou de 2.00 a 0.87.
+
+```
+                    policy 0       6/6
+total exces^2         0.1203    0.8475      7x pire
+ratio max               4.91      9.82
+fraction au-dessus    0.0098    0.0057      la 6/6 depasse MOINS souvent
+L_ELBOW_Y max           2.88      9.82
+L_WRIST_R max           2.17      9.00
+R_KNEE_P  max           0.87      0.47      la 6/6 est MEILLEURE au genou
+```
+
+**Correction a 10.9 : les 200 N.m au genou de la policy 0 n'existent pas.** Ce
+pic etait un robot en train de tomber. En marche, son genou plafonne a 0.87,
+soit 87 N.m, et ne depasse jamais la limite. Ma conclusion "le genou est
+innocent" tenait, mais l'argument etait faux.
+
+**Deux resultats, et le second est le vrai.**
+
+1. La regression est reelle et purement dans les BRAS : coude et poignet gauches
+   passent de ~2.5x a ~9.5x, sept fois pire au total. La 6/6 depasse moins
+   souvent mais beaucoup plus fort. Critere de T2 corrige :
+
+   ```
+   total exces^2 <= 0.12      ratio max <= 4.9      (niveau policy 0, en marche)
+   ```
+
+2. **Le genou de la 6/6 plafonne a 0.47 -- 47 N.m -- en marche dans mjlab,
+   pendant que Leo mesure ~150 N.m en mc_mujoco.** Meme politique, meme
+   commande, un facteur TROIS entre les deux simulateurs. Ce n'est pas ce que la
+   politique demande : c'est la pile de deploiement qui fabrique le pic.
+
+C'est maintenant l'anomalie principale, et elle est nettement isolee. Elle
+rejoint la divergence deja connue sur la vitesse d'atterrissage, 0.18 en mjlab
+contre 0.35 en mc_mujoco -- meme facteur deux, meme direction.
+
+Lecon de methode, la troisieme du jour : une mesure dont la statistique est un
+maximum sur une population melange le cas nominal et le cas degrade. Ce n'est
+pas une mesure de la marche, c'est une mesure du pire robot.
