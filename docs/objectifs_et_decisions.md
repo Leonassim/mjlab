@@ -394,6 +394,68 @@ Candidat principal : la PostureTask est un second ordre de constante 25 ms --
 cinq pas de politique -- absente de l'entrainement, ou la politique commande le
 PD directement. Un vol retarde ne decelere pas a temps avant la pose.
 
+### 10.7 Le controle a repondu : le terme est innocent, et je l'ai juge trop tot
+
+Le controle -- meme reprise, meme checkpoint, configuration IDENTIQUE, sans le
+terme -- s'effondre de la meme facon :
+
+```
+             4510      4520      4530      4540      4550      4560
+reward   -46.5877  -48.2516  -49.4767  -63.3972  -72.8829  -79.7226
+falls      7.5208    4.1042    4.0417    3.2174    3.0870    2.7273
+```
+
+Ecarte, un par un, tout ce qui aurait pu expliquer une regression reelle :
+
+- `params/env.yaml` **identique** entre les deux runs, au caractere pres ;
+- aucune ligne de code d'entrainement modifiee depuis le commit de la 6/6 --
+  le diff de `rewards.py` et `ablation.py` n'a que des ajouts, et les
+  changements d'`env_cfgs.py` sont tous sous `if play:` ;
+- normaliseurs d'observation presents et sains dans le checkpoint, acteur et
+  critique, count 8.85e8 ;
+- taux d'apprentissage a 1e-5 des deux cotes, comme dans la run d'origine a la
+  meme iteration ; `Policy/mean_std` 0.667, continu ;
+- curriculum restaure a l'identique, les onze entrees.
+
+**Puis la vraie reponse, dans la run 6/6 elle-meme :**
+
+```
+  it 3150   reward   -1.14      sa propre reprise part de zero
+  it 3163   reward  -15.82      son creux
+  it 4400   reward  +79.92      1250 iterations pour remonter
+```
+
+`Train/mean_reward` est un accumulateur episodique : il repart vide a chaque
+reprise et ne veut rien dire avant que les episodes se terminent, a 4000 pas
+soit 166 iterations. **J'ai tue T2 a 13 iterations en le comparant a une
+baseline qui avait mis 1250 iterations a remonter.**
+
+Sixieme occurrence du meme travers : un seuil absolu applique a une run qui
+debute mesure la reprise, pas le changement. La regle etait deja ecrite
+("les gardes du chien de garde doivent etre relatives") et je l'ai quand meme
+enfreinte -- parce que la chute etait spectaculaire et que j'avais une
+hypothese seduisante sous la main.
+
+**Ce que le detour a quand meme rapporte.** La forme du terme etait vraiment
+mauvaise, independamment de la reprise. A l'entrainement l'action est
+ECHANTILLONNEE :
+
+```
+                    deterministe    entrainement
+fraction au-dessus         0.022            0.48
+ratio max                   12.5             109
+```
+
+Un exces au CARRE vaut 14 400 sur un seul joint-pas a ratio 109. Le terme
+payait donc massivement le bruit d'exploration -- dont le deploiement n'a rien,
+l'ONNX etant deterministe. Le lineaire borne fait 3.0 pour ce meme ratio, tout
+en gardant un gradient constant jusqu'au plafond, ce qu'un carre plafonne
+n'aurait pas : au-dela du plafond il n'a plus aucun gradient et laisserait une
+demande a 12x sans raison de redescendre.
+
+Relance avec `power=1.0`, `cap=4.0`, poids -0.003, et **2500 iterations** --
+pas 400.
+
 ### 10.6 T2 lance, effondre, controle en cours
 
 Reprise depuis 2026-09-01_17-45-07 model_4500, verifie sur un plateau avant

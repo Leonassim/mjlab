@@ -1037,7 +1037,11 @@ def _demand(cfg, full) -> None:
   cfg.rewards["torque_demand"] = RewardTermCfg(
     func=mdp.torque_demand_overshoot,
     weight=float(os.environ.get("RHPS1_W_DEMAND", "-0.04")),
-    params={"asset_cfg": SceneEntityCfg("robot")},
+    params={
+      "asset_cfg": SceneEntityCfg("robot"),
+      "power": float(os.environ.get("RHPS1_DEMAND_POWER", "1.0")),
+      "cap": float(os.environ.get("RHPS1_DEMAND_CAP", "4.0")),
+    },
   )
 
 

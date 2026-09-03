@@ -3480,16 +3480,37 @@ class torque_demand_overshoot:
     self,
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    power: float = 1.0,
+    cap: float = 4.0,
   ) -> torch.Tensor:
+    """power=1.0 et cap=4.0 par defaut, et les deux valeurs sont defensives.
+
+    A l'entrainement l'action est ECHANTILLONNEE, pas deterministe, et la demande
+    n'a pas le meme ordre de grandeur : fraction au-dessus 0.48 contre 0.022, et
+    ratio max 109 contre 12.5 sur la meme politique. Un exces au CARRE y vaut
+    alors 14 400 sur un seul joint-pas. Sa moyenne reste petite -- elle a lu
+    -1.42 pendant que le reward tombait a -82 -- mais le gradient sur cet
+    echantillon est enorme, et PPO prend un pas destructeur.
+
+    Le carre payait donc surtout le bruit d'exploration, dont le deploiement
+    n'a rien : l'ONNX est deterministe. Le lineaire borne fait 3.0 pour un ratio
+    de 109 la ou le carre faisait 14 400, tout en gardant un gradient constant
+    jusqu'au plafond -- contrairement a un carre plafonne, qui n'en a plus aucun
+    au-dela et laisserait une demande a 12x sans raison de redescendre.
+    """
     ratios = [a._raw_torque_peak for a in self._acts if a._raw_torque_peak is not None]
     if not ratios:
       return torch.zeros(env.num_envs, device=env.device)
     ratio = torch.cat(ratios, dim=1)
     excess = torch.clamp(ratio - 1.0, min=0.0)
+    if power != 1.0:
+      excess = torch.pow(excess, power)
+    if cap > 0.0:
+      excess = torch.clamp(excess, max=cap)
 
     env.extras["log"]["Metrics/torque_demand_ratio_max"] = torch.max(ratio)
     env.extras["log"]["Metrics/torque_demand_ratio_mean"] = torch.mean(ratio)
     env.extras["log"]["Metrics/torque_demand_over_frac"] = torch.mean(
       (ratio > 1.0).float()
     )
-    return torch.sum(torch.square(excess), dim=1)
+    return torch.sum(excess, dim=1)
