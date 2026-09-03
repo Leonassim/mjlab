@@ -253,3 +253,84 @@ métriques d'entraînement surestiment d'un facteur ~10).
 10. **Le budget dit ce qu'un comportement coûte, pas s'il est atteignable
     depuis l'autre.** Un bassin dont la politique ne ressort pas ne se voit pas
     dans une somme de poids.
+
+
+---
+
+## 10. Bilan du 2026-09-03 et plan de test
+
+### 10.1 Où on en est, objectif par objectif
+
+| | objectif | état | mesure |
+|---|---|---|---|
+| O1 | couples faisables | **non tenu, et mal mesuré** | la demande dépasse la limite 2.35 % du temps, pic 7.6× |
+| O2 | impact faible | tenu en simu, **non tenu en déploiement** | 0.1441 au balayage, ~150 N·m au genou en mc_mujoco |
+| O3 | ne jamais tomber | tenu | 0.0000 |
+| O4 | haut du corps calme | à juger sur vidéo | poignets saturés 0.38–0.53 à l'entraînement |
+| D1 | lever de pied | tenu | 0.0326 pour 0.030 visé |
+| D5 | cadence | quasi tenu | période 0.70–0.95 s contre 0.90 pour le BWC |
+| D6 | contacts propres | partiel | pieds à plat OK, répartition de charge 0.25 |
+
+### 10.2 La découverte qui invalide O1
+
+**Aucune métrique du barème ne voit un dépassement de couple.** Les trois
+qu'on surveillait mesurent l'aval du filet :
+
+- `joint_torque_limit_margin_penalty` lit `data.actuator_force`, la force
+  **appliquée** par MuJoCo, donc bornée par construction — son ratio ne peut
+  pas dépasser 1.0 ;
+- `torque_saturated_frac` compte la **fréquence** de l'écrêtage, pas son
+  amplitude ;
+- `TorqueRatio/*` sont des moyennes d'épisode et plafonnent à 0.69.
+
+Or mjlab termine son PD par `torch.clamp(torque, ±force_limit)` et ce filet
+n'existe nulle part en aval : mc_mujoco applique `MjRobot::PD` tel quel, le XML
+déclare `forcelimited="false"`, et le vrai robot a des variateurs qui saturent.
+L'entraînement rabote 18 % des pas sans jamais le facturer.
+
+**Six critères sur six ont donc été validés sur une politique qui demande
+jusqu'à 7.6 fois la limite.**
+
+`torque_demand_overshoot` corrige la mesure : il lit
+`FiniteDifferencePdActuator._raw_torque_peak`, le ratio que l'actionneur
+calcule lui-même avant écrêtage. Le recalculer depuis `data.joint_vel_target`
+donne un résultat faux — vérifié contre `actuator_force`, 50 N·m d'écart médian
+— parce que l'actionneur emploie une vitesse filtrée par différence finie.
+
+### 10.3 Ce que ce terme ne résoudra PAS
+
+Remarque de Léo, décisive : **à l'impact, les 150 N·m sont le couple subi**, la
+réaction du sol qui remonte dans la jambe, et non le couple commandé. Un terme
+sur la demande avant écrêtage ne le voit pas.
+
+Ce qui gouverne le couple d'impact est mécanique :
+- la vitesse verticale au contact,
+- la flexion du genou à la pose, qui amortit,
+- la raideur du contact.
+
+Mesure de référence : le BWC atterrit à **1055 N** de pic total (2.0× le poids)
+avec 38° de flexion de genou ; la politique atterrit à **1630 N** (3.0×) avec
+10–20°.
+
+### 10.4 Plan de test
+
+**T1 — instrumenter avant de régler.** Ajouter au barème, à poids 1e-9 :
+`torque_demand_overshoot` (demande avant écrêtage) et une mesure du couple
+**subi** aux articulations de jambe au moment du contact. Sans la seconde, on
+ne saura pas si un changement a agi sur ce que Léo mesure.
+
+**T2 — pénaliser la demande.** `torque_demand_overshoot` à poids réel. Porte :
+`torque_demand_ratio_max` sous 2.0 et fraction au-dessus sous 0.005, sans perte
+sur D1 ni D5.
+
+**T3 — pénaliser le couple subi à l'impact**, si T1 montre qu'il est découplé de
+la demande. Le levier est la flexion de genou à la pose, pas la commande.
+
+**T4 — référence BWC en entrée**, si T2 et T3 ne suffisent pas. Les profils sont
+déjà extraits : vol du pied par phase, déport latéral du CoM, durées d'appui,
+placement au point de capture. En **observation**, pas en récompense, pour que
+la politique garde le droit de s'en écarter.
+
+**Ordre imposé par les contraintes :** T1 avant tout le reste, parce que trois
+termes de couple ont déjà été réglés à l'aveugle sur une mesure qui ne voyait
+rien. C'est la règle M1 — mesurer sur une politique existante avant d'entraîner.

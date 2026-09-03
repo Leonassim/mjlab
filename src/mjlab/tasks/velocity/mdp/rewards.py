@@ -3432,3 +3432,61 @@ def descent_speed_cost(
   n = torch.clamp(torch.sum(in_air.float()), min=1.0)
   env.extras["log"]["Metrics/descent_speed_mean"] = cost.mean()
   return cost
+
+
+class torque_demand_overshoot:
+  """Penaliser la demande de couple AVANT ecretage, lue dans l'actionneur.
+
+  Rien dans ce fichier ne voyait le depassement, et c'est structurel :
+  joint_torque_limit_margin_penalty lit `data.actuator_force`, la force APPLIQUEE
+  par MuJoCo, donc bornee par construction -- son ratio ne peut pas depasser 1.0.
+  `torque_saturated_frac` compte la FREQUENCE de l'ecretage, pas son amplitude.
+  Les deux mesurent l'aval du filet.
+
+  Or mjlab termine son PD par torch.clamp(torque, +/-force_limit)
+  (pd_actuator.py:68) et ce filet n'existe nulle part en aval : mc_mujoco
+  applique MjRobot::PD tel quel et le XML declare forcelimited="false", le vrai
+  robot a des variateurs qui saturent. Leo a mesure ~150 N.m au genou en
+  mc_mujoco pour une limite de 70, et l'entrainement rabotait 18% des pas sans
+  jamais le facturer.
+
+  La source est `FiniteDifferencePdActuator._raw_torque_peak`, que l'actionneur
+  calcule deja : |pd_torque(kp, kd, cible AVANT projection)| / force_limit, avec
+  la vitesse desiree filtree. Le recalculer depuis data.joint_vel_target donne
+  un resultat FAUX -- verifie contre data.actuator_force, 50 N.m d'ecart median
+  et une demande absurde de 851 N.m, parce que ce n'est pas la vitesse que
+  l'actionneur emploie.
+
+  Seul l'EXCEDENT au-dela de la limite est paye. En dessous le terme vaut zero,
+  donc il ne pousse pas a economiser du couple utile : il interdit seulement de
+  compter sur un filet qui n'existera pas au deploiement.
+  """
+
+  def __init__(self, env: ManagerBasedRlEnv, cfg: RewardTermCfg) -> None:
+    name = cfg.params.get("asset_cfg", _DEFAULT_ASSET_CFG).name
+    self._acts = [
+      a for a in env.scene[name].actuators if hasattr(a, "_raw_torque_peak")
+    ]
+    if not self._acts:
+      raise RuntimeError(
+        "torque_demand_overshoot exige des FiniteDifferencePdActuator "
+        "(aucun _raw_torque_peak trouve)."
+      )
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    ratios = [a._raw_torque_peak for a in self._acts if a._raw_torque_peak is not None]
+    if not ratios:
+      return torch.zeros(env.num_envs, device=env.device)
+    ratio = torch.cat(ratios, dim=1)
+    excess = torch.clamp(ratio - 1.0, min=0.0)
+
+    env.extras["log"]["Metrics/torque_demand_ratio_max"] = torch.max(ratio)
+    env.extras["log"]["Metrics/torque_demand_ratio_mean"] = torch.mean(ratio)
+    env.extras["log"]["Metrics/torque_demand_over_frac"] = torch.mean(
+      (ratio > 1.0).float()
+    )
+    return torch.sum(torch.square(excess), dim=1)
