@@ -539,3 +539,56 @@ identique -- falls 2.05 contre 2.02, lift 0.0532 contre 0.0514, impact 0.1308
 contre 0.1200, period 0.547 contre 0.564. Le terme coute sans casser, et
 `Episode_Reward/torque_demand` vaut -0.25, la famille de min_foot_height
 (-0.24) et angular_momentum (-0.30).
+
+
+### 10.9 La policy 0 comme reference : elle depasse aussi, et le genou est innocent
+
+Suggestion de Leo, decisive : mesurer la demande sur la policy 0, dont les
+couples sont valides sur le ROBOT REEL. Mesure sur sa reproduction
+(`2026-07-10_20-59-17 model_9900`, ablation `p0`, 126 dims), memes gains
+kp 20000 / kd 400 et meme limite 100 N.m que la 6/6 :
+
+```
+                        policy 0      6/6 actuelle
+total exces^2             0.4498            1.105
+ratio max                   9.14            12.53
+fraction au-dessus        0.0265           0.0220
+L_ELBOW_Y ratio max         4.05            12.53
+L_WRIST_R ratio max         3.93            11.00
+R_KNEE_P  ratio max         2.00             1.21
+```
+
+**Trois corrections a ce que j'avais ecrit.**
+
+1. **Depasser la limite n'est pas en soi un defaut.** La policy 0 depasse a 9.1x
+   et le fait meme PLUS SOUVENT que la 6/6 (2.65 % contre 2.20 %), tout en
+   marchant sur le robot reel. L'affirmation de 10.5 -- "les bras commandent 12x
+   leur limite et rien ne les arrete sur le robot, c'est un risque materiel" --
+   etait trop forte. Les variateurs encaissent visiblement ce niveau.
+
+2. **Le genou est innocent, definitivement.** La policy 0 monte a 2.0x, soit
+   **200 N.m**, contre 1.21x pour la 6/6, et c'est la policy 0 qui va bien. Les
+   150 N.m mesures par Leo sont EN DESSOUS de ce que la reference fait deja. Le
+   genou n'est pas la variable qui separe les deux.
+
+3. **L'asymetrie gauche est structurelle**, pas une regression : la policy 0 a
+   exactement le meme motif (L_ELBOW_P, L_SHOULDER_Y, jamais les droits).
+
+**Ce qui survit, et qui est maintenant chiffre.** La 6/6 demande 2.5x plus que
+la reference, et c'est concentre sur deux articulations : coude et poignet
+gauches passent de ~4x a ~12x. C'est une vraie regression contre une politique
+connue bonne.
+
+**Critere d'acceptation de T2, deterministe et absolu :**
+
+```
+total exces^2  <= 0.45      ratio max  <= 9.1      (le niveau policy 0)
+```
+
+Sans perte sur les six criteres, et sans que la marche s'ecarte du controle a
+configuration identique.
+
+Lecon de methode : le controle qui manquait n'etait pas une autre run, c'etait
+une politique dont on SAIT qu'elle va sur le vrai robot. Sans elle j'ai passe la
+journee a traiter comme un defaut un niveau de depassement que la reference a
+aussi.
