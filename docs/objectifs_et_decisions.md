@@ -711,3 +711,51 @@ ratio max global       9.82       9.65               4.91
 gros de la distribution descend, la queue resiste. Il reste un facteur cinq
 jusqu'a la cible ; la run continue depuis ce checkpoint plutot que de repartir
 de la 6/6, pour ne pas perdre les 450 iterations acquises.
+
+
+### 10.13 L'impact, mesure en marche : Leo a raison, et le terme existait deja
+
+Leo : "il faut quand meme diminuer cette vitesse d'impact trop forte".
+`scripts/tools/impact_walking.py`, 0.2 m/s, 256 envs tous vivants, capteurs de
+force et velocimetres lus directement (pas les Metrics/* du bareme, qui ne sont
+pas les memes d'une ablation a l'autre) :
+
+```
+                      policy 0      6/6
+descente p50            0.1476   0.2218    1.5x
+descente p90            0.1722   0.2980
+descente p99            0.1859   0.3456    1.9x
+descente max            0.1945   0.3833    2.0x
+force p99 (x poids)       1.72x    2.13x
+force max (x poids)       1.82x    2.57x
+poses detectees            3307      772    4x moins de pas
+```
+
+Le BWC atterrit a 2.0x le poids. La policy 0 est a 1.82x. **La 6/6 est la seule
+des trois a taper**, a 2.57x.
+
+**Correction : il n'y a PAS de divergence sim-vers-deploiement sur l'impact.**
+Le "0.18 en mjlab contre 0.35 en mc_mujoco" repete toute la journee etait un
+artefact : 0.18 venait de `Metrics/landing_vel_mean` a l'entrainement, moyenne
+sur une distribution de commandes majoritairement lente ou immobile. En marche,
+mjlab donne 0.22 en mediane et 0.35 au p99 -- exactement ce que Leo mesure.
+Les deux simulateurs sont d'accord, donc ce qu'on corrige ici se transferera.
+
+**Ce qui manquait n'etait pas un terme mais un poids.** `descent_speed_cost` est
+actif depuis le debut et coute -0.0131 par episode, quand `flat_support` coute
+-0.47 et `torque_limit_margin` -1.11. Quarante fois trop faible pour peser.
+
+**C7 ne s'y applique pas.** La regle interdit d'augmenter un cout attache a
+l'ATTERRISSAGE, parce qu'il se satisfait toujours en n'atterrissant pas.
+`descent_speed_cost` se paie pendant toute la descente, par seconde : planer ne
+l'evite pas, un pied qui descend lentement descend longtemps.
+
+**Mais un mode d'echec voisin existe** et n'etait pas ecrit : ne PAS lever le
+pied evite le cout. `swing_bonus` (2.0) et l'horloge de demarche s'y opposent,
+mais la garde reste necessaire -- `sole_height_p90` au-dessus de 0.030.
+
+T5 lance depuis `2026-09-03_12-54-58 model_5100` (600 iterations de T2 acquises),
+UNE deviation : `RHPS1_W_DESCENT` de -4 a -40. Limite inchangee a 0.12, qui est
+deja sous la mediane de la policy 0.
+
+Cible : descente p99 <= 0.19 et force max <= 1.8x le poids, le niveau policy 0.
