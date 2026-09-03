@@ -899,3 +899,48 @@ Une optimisation d'affichage a donc silencieusement vide le test d'acceptation
 eviter. Corrige en forcant `RHPS1_PLAY_LEAN=0` dans `sweep_eval.py` avant tout
 import : un test d'acceptation ne doit pas dependre du fait qu'on se souvienne
 d'une variable d'environnement.
+
+
+### 10.18 T6 : le contrepoids tient, l'impact passe sous la reference
+
+`2026-09-03_18-48-39 model_8100`, reward 82.2 (la 6/6 plafonnait a 80-85).
+
+```
+                    6/6 depart   T5b -120     T6   policy 0   BWC
+descente p50            0.2218     0.1625  0.1664     0.1478    --
+descente p99            0.3456     0.2664  0.2528     0.1927    --
+force p99 (x poids)       2.13x      1.64x   1.47x      1.71x    --
+force max (x poids)       2.57x      1.89x   1.82x      1.86x   2.0x
+flexion genou p50           --       2.9deg 5.4deg      2.0deg  ~38
+```
+
+**Meilleur que la policy 0 sur les deux statistiques de force** : 1.82x au pic
+contre 1.86x, 1.47x au p99 contre 1.71x. Et sous le BWC.
+
+Note sur la flexion de genou : elle est passee de 2.9 a 5.4 degres SANS terme
+dedie. L'hypothese de 10.14 etait fausse comme LEVIER mais la flexion apparait
+bien -- comme consequence d'un atterrissage controle, pas comme sa cause.
+L'inverse de ce que je supposais.
+
+**Balayage : 4 criteres sur 6, les deux echecs a 0.3 % du seuil.**
+
+```
+                   6/6      T5b       T6     seuil
+falls           0.0000   0.0000   0.0068     0.010
+lever           0.0326   0.0271   0.0299     0.030   ECHEC de 0.0001
+impact          0.1441   0.1230   0.1115     0.160
+couples jambes  0.0178   0.0212   0.0301     0.030   ECHEC de 0.0001
+couples haut    0.0000   0.0000   0.0001     0.030
+pieds a plat    0.0295   0.0478   0.0371     0.050
+```
+
+Impact ameliore de 23 % contre la 6/6, pieds a plat revenus de 0.0478 a 0.0371.
+Le cout est sur les couples de jambe, 0.0178 -> 0.0301 : lever plus haut coute
+du couple, c'est direct, et le bonus de vol a 3.0 le paie.
+
+**Pas de changement de configuration.** La bande de bruit de ce banc est de 46 %
+sur la hauteur de pied (regle deja ecrite : "les verdicts a run unique") ; deux
+echecs a 0.3 % du seuil sur une run dont le reward montait encore quand je l'ai
+arretee pour mesurer ne justifient pas de toucher au bareme. Ils justifient de
+la laisser finir. T6b continue depuis `model_8100`, meme configuration, 4000
+iterations.
