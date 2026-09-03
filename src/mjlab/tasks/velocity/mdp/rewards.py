@@ -3447,7 +3447,10 @@ class torque_demand_overshoot:
   (pd_actuator.py:68) et ce filet n'existe nulle part en aval : mc_mujoco
   applique MjRobot::PD tel quel et le XML declare forcelimited="false", le vrai
   robot a des variateurs qui saturent. Leo a mesure ~150 N.m au genou en
-  mc_mujoco pour une limite de 70, et l'entrainement rabotait 18% des pas sans
+  mc_mujoco pour une limite de 100 -- et c.est bien la demande COMMANDEE :
+  mj_sim.cpp:707 publie data->qfrc_actuator, la force des actionneurs seuls, que
+  MjRobot::PD produit sans ecretage (XML: forcelimited="false"). La reaction du
+  sol vit dans qfrc_constraint, jamais lue. L.entrainement rabotait 22% des pas sans
   jamais le facturer.
 
   La source est `FiniteDifferencePdActuator._raw_torque_peak`, que l'actionneur

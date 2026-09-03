@@ -297,40 +297,147 @@ calcule lui-même avant écrêtage. Le recalculer depuis `data.joint_vel_target`
 donne un résultat faux — vérifié contre `actuator_force`, 50 N·m d'écart médian
 — parce que l'actionneur emploie une vitesse filtrée par différence finie.
 
-### 10.3 Ce que ce terme ne résoudra PAS
+### 10.3 La réserve sur le couple subi est levée
 
-Remarque de Léo, décisive : **à l'impact, les 150 N·m sont le couple subi**, la
-réaction du sol qui remonte dans la jambe, et non le couple commandé. Un terme
-sur la demande avant écrêtage ne le voit pas.
+Réserve initiale de Léo : à l'impact les 150 N·m seraient le couple **subi**, la
+réaction du sol, et non le couple commandé — auquel cas un terme sur la demande
+avant écrêtage ne le verrait pas.
 
-Ce qui gouverne le couple d'impact est mécanique :
-- la vitesse verticale au contact,
-- la flexion du genou à la pose, qui amortit,
-- la raideur du contact.
+**Vérifiée dans la source de mc_mujoco, et fausse.** `mj_sim.cpp:707` :
 
-Mesure de référence : le BWC atterrit à **1055 N** de pic total (2.0× le poids)
-avec 38° de flexion de genou ; la politique atterrit à **1630 N** (3.0×) avec
-10–20°.
+```cpp
+torques[mj_jnt_to_rjo[i]] = data->qfrc_actuator[model->jnt_dofadr[mj_jnt_ids[i]]];
+```
+
+`qfrc_actuator` est la force des **actionneurs seuls**. La réaction du sol vit
+dans `qfrc_constraint`, que mc_mujoco ne lit jamais. Et rien ne l'écrête :
+`MjRobot::PD` retourne `kp*e_p + kd*e_v` nu, et la classe par défaut du XML
+déclare `forcelimited="false" gear="1"`.
+
+Les 150 N·m sont donc **le couple commandé avant écrêtage**. Le PD réagit à
+l'impact — l'erreur de position explose, kp=20000 la multiplie — mais le pic est
+produit par le régulateur, pas transmis par le sol.
+
+Recoupement indépendant : la médiane des maxima de demande vaut 1.68 sur le
+checkpoint déployé, soit 168 N·m pour une limite à 100. Léo mesure ~150. Les
+deux mesures concordent, par deux chemins sans rapport.
+
+**Conséquence : `torque_demand_overshoot` adresse directement ce que Léo
+mesure.** L'instrumentation séparée du couple subi devient inutile.
 
 ### 10.4 Plan de test
 
-**T1 — instrumenter avant de régler.** Ajouter au barème, à poids 1e-9 :
-`torque_demand_overshoot` (demande avant écrêtage) et une mesure du couple
-**subi** aux articulations de jambe au moment du contact. Sans la seconde, on
-ne saura pas si un changement a agi sur ce que Léo mesure.
+**T1 — instrumenter. FAIT, sans entraînement.** La question qu'il posait
+— la demande est-elle découplée du couple mesuré en déploiement ? — est tranchée
+par la lecture de `mj_sim.cpp` en 10.3 : c'est la même grandeur. Et la demande
+est déjà mesurée sur le checkpoint déployé : ratio max 7.62, médiane des maxima
+1.68, 2.35 % des pas au-dessus.
 
-**T2 — pénaliser la demande.** `torque_demand_overshoot` à poids réel. Porte :
-`torque_demand_ratio_max` sous 2.0 et fraction au-dessus sous 0.005, sans perte
-sur D1 ni D5.
+**T2 — pénaliser la demande.** `torque_demand_overshoot` à poids réel, une seule
+déviation depuis la configuration 6/6. Porte : `torque_demand_ratio_max` sous
+2.0 et fraction au-dessus sous 0.005, sans perte sur D1 ni D5.
 
-**T3 — pénaliser le couple subi à l'impact**, si T1 montre qu'il est découplé de
-la demande. Le levier est la flexion de genou à la pose, pas la commande.
+**T3 — annulé.** Reposait sur l'hypothèse d'un couple subi distinct de la
+demande. 10.3 la réfute.
 
-**T4 — référence BWC en entrée**, si T2 et T3 ne suffisent pas. Les profils sont
-déjà extraits : vol du pied par phase, déport latéral du CoM, durées d'appui,
+**T4 — référence BWC en entrée**, si T2 ne suffit pas. Les profils sont déjà
+extraits : vol du pied par phase, déport latéral du CoM, durées d'appui,
 placement au point de capture. En **observation**, pas en récompense, pour que
 la politique garde le droit de s'en écarter.
 
-**Ordre imposé par les contraintes :** T1 avant tout le reste, parce que trois
-termes de couple ont déjà été réglés à l'aveugle sur une mesure qui ne voyait
-rien. C'est la règle M1 — mesurer sur une politique existante avant d'entraîner.
+**Ce que M1 a rapporté ici :** mesurer avant d'entraîner a supprimé deux des
+quatre essais. T1 s'est résolu en lisant une ligne de source, et T3 n'avait pas
+lieu d'être. Le coût en GPU de la règle est nul et son rendement est de deux
+runs économisés.
+
+
+### 10.5 Le depassement est dans les bras, pas dans le genou
+
+Mesure par articulation sur le checkpoint 6/6, en conditions d'entrainement,
+politique deterministe (`scripts/tools/size_demand_penalty.py`) :
+
+```
+joint          exces^2    part   ratioMax  fracOver
+L_ELBOW_Y      0.52145   47.2%      12.53    0.0800
+L_WRIST_R      0.43372   39.2%      11.00    0.0884
+CHEST_P        0.04036    3.7%      12.15    0.1217
+CHEST_Y        0.04004    3.6%       9.40    0.1214
+...
+R_KNEE_P       0.00000    0.0%       1.21    0.0001
+L_KNEE_P       0.00000    0.0%       1.01    0.0000
+L_CROTCH_P     0.00000    0.0%       0.92    0.0000
+```
+
+**Le genou ne depasse jamais** : 1.21x au pire, un joint-pas sur dix mille. Le
+"mediane des maxima 1.68" de la veille etait un maximum sur TOUS les joints,
+attribue au genou parce qu'il recoupait les 150 N.m. C'etait une coincidence.
+
+Deux consequences.
+
+**Une vraie faille O1 existe, mais dans le haut du corps.** Coude et poignet
+demandent 12 fois leur limite et 86 % du terme vient d'eux. Sur le robot reel ce
+sont les variateurs qui saturent. Asymetrie a expliquer : L_ELBOW_Y et L_WRIST_R
+seuls, jamais leurs homologues droits, alors que le rung `mirror` est actif.
+
+**Le terme ne traitera pas les 150 N.m du genou.** Sous QP, la sortie de la
+politique devient une cible de PostureTask que le QP resout, et c'est SA sortie
+qui entre dans le PD a kp=20000. 150 N.m y valent 0.0075 rad, soit **0.43
+degre** d'erreur de suivi. Ce n'est pas une commande agressive, c'est un servo
+tres raide qui encaisse un impact. Le BWC sous le meme kp ferait le meme pic si
+son atterrissage etait aussi dur : il atterrit a 2.0x le poids, la politique a
+3.0x.
+
+**Le levier est donc la durete de l'impact**, et la divergence a expliquer est
+deja mesuree : vitesse d'atterrissage **0.18 en mjlab contre 0.35 en
+mc_mujoco**. Le facteur deux sur la vitesse est le facteur deux sur le couple.
+Candidat principal : la PostureTask est un second ordre de constante 25 ms --
+cinq pas de politique -- absente de l'entrainement, ou la politique commande le
+PD directement. Un vol retarde ne decelere pas a temps avant la pose.
+
+### 10.6 T2 lance, effondre, controle en cours
+
+Reprise depuis 2026-09-01_17-45-07 model_4500, verifie sur un plateau avant
+(C4) : fell_down 0.0000, sole_height_p90 0.0329->0.0368, mean_reward 78->84
+monotones sur 4200-4800.
+
+Premiere surprise des l'amorcage : a l'entrainement l'action est ECHANTILLONNEE,
+et la demande explose par rapport a la politique deterministe.
+
+```
+                    deterministe    entrainement
+fraction au-dessus         0.022            0.48
+ratio max                   12.5             109
+```
+
+Le poids -0.04 avait ete dimensionne sur la colonne de gauche.
+
+Puis l'effondrement, en treize iterations :
+
+```
+             4502      4504      4506      4508      4510      4512
+reward    -6.7612  -10.3380  -51.8726  -72.3370  -71.0069  -81.7666
+falls      0.0000    0.0000    5.5000   13.1250   10.6875    6.1667
+Rdmd      -0.1862   -0.3429   -0.6799   -1.2267   -1.1907   -1.4223
+```
+
+La reprise part deja a -6.76 la ou la run d'origine etait a +80 a la meme
+iteration, avec une penalite de -0.19. **La penalite moyenne n'explique pas la
+chute** -- elle vaut 1.7 % de l'amplitude du reward.
+
+Deux hypotheses, et elles donnent la meme courbe :
+
+1. **C4** -- reprendre depuis ce checkpoint le casse, independamment du terme.
+2. **La variance du terme** -- un exces au carre a ratio 121 vaut 14 400 sur un
+   seul joint-pas. La moyenne reste petite parce que c'est rare ; le gradient
+   sur cet echantillon est enorme, et PPO prend un pas destructeur.
+
+Le controle -- meme reprise, sans le terme, 150 iterations -- est lance. Rien
+d'autre ne peut les departager, et c'est exactement la regle "blamer le
+checkpoint d'abord" qui exige de le lancer avant de corriger le terme.
+
+Si le controle tient a +80 : le terme est coupable, et la correction est de
+borner la contribution par articulation -- exces lineaire au lieu du carre, ce
+qui transforme 121 en 120 plutot qu'en 14 400.
+
+Si le controle s'effondre aussi : la methode T2 entiere est invalide, aucune
+reprise depuis ce checkpoint n'est exploitable, et il faut repartir autrement.

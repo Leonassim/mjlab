@@ -1004,6 +1004,43 @@ def _ctorque(cfg, full) -> None:
     cfg.observations["critic"].terms["joint_torques"] = full["critic"]["joint_torques"]
 
 
+
+def _demand(cfg, full) -> None:
+  """Payer la demande de couple AVANT ecretage. Vise O1.
+
+  Le barreau existe parce qu'AUCUNE metrique du bareme ne voyait un depassement.
+  joint_torque_limit_margin_penalty lit data.actuator_force, la force APPLIQUEE
+  par MuJoCo -- ratio <= 1.0 par construction, et Metrics/torque_limit_ratio_max
+  vaut exactement 1.0000 a chaque iteration de la run 6/6. torque_saturated_frac
+  compte la frequence de l'ecretage, pas son amplitude. Les six criteres ont donc
+  ete valides sur une politique qui demande jusqu'a 12.5 fois la limite.
+
+  CE QUE CE BARREAU NE FAIT PAS. Il ne traite pas les ~150 N.m que Leo mesure au
+  genou en mc_mujoco. Mesure sur le checkpoint 6/6, en conditions
+  d'entrainement, le depassement est entierement dans le HAUT du corps :
+
+    L_ELBOW_Y  47.2%  ratio max 12.53      R_KNEE_P  0.0%  ratio max 1.21
+    L_WRIST_R  39.2%  ratio max 11.00      L_KNEE_P  0.0%  ratio max 1.01
+
+  Le genou ne depasse jamais. Le pic du deploiement vient d'ailleurs : sous QP la
+  cible passe par une PostureTask que le QP resout, et c'est sa sortie qui entre
+  dans un PD a kp=20000 -- 150 N.m y valent 0.0075 rad d'erreur, soit 0.43 deg.
+  C'est un servo raide qui encaisse un impact, pas une commande agressive. Le
+  levier est la durete de l'atterrissage, et la divergence a expliquer est
+  vitesse d'impact 0.18 en mjlab contre 0.35 en mc_mujoco.
+
+  Poids -0.04 : la valeur brute mesuree vaut 1.105 par pas et Episode_Reward
+  vaut poids x 20 x brut, ce qui place le terme a -0.88 -- la famille des
+  penalites de couple existantes (torque_limit_margin -1.11, joint_torques_l2
+  -0.40), sans ecraser le suivi (1.41 + 2.78).
+  """
+  cfg.rewards["torque_demand"] = RewardTermCfg(
+    func=mdp.torque_demand_overshoot,
+    weight=float(os.environ.get("RHPS1_W_DEMAND", "-0.04")),
+    params={"asset_cfg": SceneEntityCfg("robot")},
+  )
+
+
 def _cscan(cfg, full) -> None:
   """Critic sees the per-foot height scan."""
   if "foot_height_scan" in full["critic"]:
@@ -2229,7 +2266,7 @@ def _wide(cfg, full) -> None:
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "hist5": _hist5, "instr": _instr, "comshift": _comshift, "capture": _capture, "swingbonus": _swingbonus, "descent": _descent, "clock": _clock, "comprof": _comprof, "cbal": _cbal, "exec": _exec, "proj": _proj,
-  "ctorque": _ctorque, "cscan": _cscan,
+  "ctorque": _ctorque, "cscan": _cscan, "demand": _demand,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
