@@ -1097,10 +1097,20 @@ def _bwcref(cfg, full) -> None:
       "profile_path": os.environ.get(
         "RHPS1_BWC_PROFILE", "docs/bwc_gait_profile.json"),
       "reward_name": "gait_phase",
-      # std 0.06 rad et non 0.15 : a 0.15 le terme vaut deja 0.77 sur 1 pour la
-      # posture par defaut, qui est proche du profil, donc presque aucun
-      # gradient. A 0.06 il part a 0.19 et a de la place pour progresser.
-      "std": float(os.environ.get("RHPS1_BWCREF_STD", "0.06")),
+      # std 0.03 rad, resserre apres P1. A 0.06 le suivi s'installe a 0.061 rad
+      # d'erreur RMS -- 3.5 deg sur des amplitudes de 14-18 -- et le terme vaut
+      # 36 % de son maximum, donc il se contente d'un suivi approximatif.
+      #
+      # Or la hauteur du pied est une petite difference de grands mouvements
+      # articulaires : un suivi a 3.5 deg l'ecrase. Mesure sur P1 : le profil
+      # porte 3.2 cm de lever, la politique qui le suit a 0.061 en produit 1.3.
+      # Pire, AJOUTER la reference a divise le lever par trois par rapport au
+      # bonus de vol seul (0.043-0.046 sans elle) -- a cette fidelite elle
+      # combat le bonus au lieu de l'aider.
+      #
+      # A 0.03, l'erreur actuelle ne rapporte plus que 1.6 % du maximum : la
+      # pression est forte la ou il faut, pres de zero.
+      "std": float(os.environ.get("RHPS1_BWCREF_STD", "0.03")),
       "command_name": "twist",
       "command_threshold": 0.05,
       "lateral_std": float(os.environ.get("RHPS1_BWCREF_LAT_STD", "0.15")),

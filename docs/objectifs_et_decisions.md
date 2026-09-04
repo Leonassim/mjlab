@@ -1503,3 +1503,72 @@ securite : mjlab termine son PD par un `torch.clamp` que le deploiement n'a pas,
 donc une politique qui s'appuie dessus commande des couples que le robot
 appliquera vraiment. C'est ainsi que l'index 11 en est venu a demander 12 fois
 sa limite au coude. Signal de tendance, pas de verdict.
+
+
+### 11.6 P1 : la cadence est gagnee, le lever est perdu
+
+Mesure deterministe en marche a 0.2 m/s, `2026-09-05_03-08-04 model_3000`,
+apres plateau (reward -0.8 % sur 200 iterations).
+
+```
+                        BWC       index 11        P1
+descente p50          0.047          0.171     0.1284
+pic de charge p50   0.86-1.10x       1.62x      1.43x
+poses (400 pas)         --             478       1116
+lever de pied          3.2 cm         4.4 cm     1.3 cm
+```
+
+**La cadence est le gain reel** : 2.3 fois plus de pas, la vitesse de descente
+tombe de 0.171 a 0.128 et le pic de charge de 1.62 a 1.43. C'est ce qu'on
+cherchait depuis le debut.
+
+**Mais ajouter la reference a divise le lever par trois** (0.043-0.046 avec le
+seul bonus de vol, 0.013 avec elle). A 0.061 rad d'erreur RMS -- 3.5 degres sur
+des amplitudes de 14-18 -- le suivi est trop approximatif : la hauteur du pied
+est une petite difference de grands mouvements articulaires, donc un suivi
+imprecis l'ecrase. Le profil porte 3.2 cm ; la politique qui le suit a 3.5 degres
+pres en produit 1.3.
+
+A cette fidelite, la reference COMBAT le bonus de vol au lieu de l'aider.
+
+### 11.7 Deux erreurs de plus, et ce qu'elles ont en commun
+
+**Le profil etait aplati de moitie.** Les sommets de vol sont disperses sur 56 %
+du cycle normalise, donc une mediane point par point lisse le pic : 2.4 cm de
+lever au lieu de 3.2, hanche 7.4 degres au lieu de 19.5. Corrige en alignant les
+cycles sur le sommet avant de mediane.
+
+**La reference etait decalee d'un demi-cycle** -- gauche suivait la droite.
+Balayage des 50 decalages (`scripts/tools/check_phase_align.py`) :
+
+```
+decalage  0 (mon alignement)   erreur RMS 0.0947 rad
+decalage 23 (46 % du cycle)               0.0644   -32 %
+decalage 25 (50 %, demi-cycle)            0.0654
+```
+
+Le symptome etait lisible et sous mes yeux : `refErr` MONTAIT pendant que le
+reward montait, et 0.100 est pire que les ~0.084 d'une politique immobile a sa
+posture par defaut. **Une politique qui s'eloigne activement d'une reference a
+generalement raison.** Je cherchais a la forcer par le poids.
+
+**Ce que les deux ont en commun.** J'avais ecrit dans le code "alignement
+determine, pas devine". Il etait DEDUIT -- mon raisonnement sur les conventions
+d'horloge tenait sur le papier, mais je n'avais jamais verifie que `phase_left`
+pilote le pied gauche du CAPTEUR. Et le profil, je ne l'avais jamais confronte a
+la grandeur qu'il est cense reproduire : son propre lever de pied.
+
+Regle : un artefact extrait d'une mesure doit etre valide en reproduisant une
+grandeur observable de la source. Trois lignes auraient suffi dans les deux cas.
+
+### 11.8 Chiffres de reference corriges
+
+Les "7.1 cm du BWC" cites pendant deux jours etaient son MAXIMUM sur 20 cycles.
+
+```
+lever de pied du BWC   mediane 3.2 cm   max 7.1 cm
+```
+
+La fourchette de Leo -- "3 a 5 cm minimum" -- etait donc la bonne reference
+depuis le debut, et l'index 11 avec ses 4.4 cm y etait deja. Cible ramenee de
+0.060 a 0.045.
