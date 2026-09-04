@@ -32,4 +32,6 @@ mkdir -p logs/probes
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
+  --agent.resume True \
+  --agent.load-run 2026-09-04_22-26-54 --agent.load-checkpoint model_1200.pt \
   --agent.max-iterations 12000

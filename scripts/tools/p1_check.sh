@@ -35,6 +35,10 @@ print(f"run {sys.argv[1].rstrip('/').split('/')[-1]}   iteration {its[-1]}")
 # La saturation d'ENTRAINEMENT affichee ici n'est pas comparable a ces chiffres
 # (action echantillonnee, randomisation) : elle sert de signal de tendance, et
 # le verdict se prend en deterministe au banc contre les valeurs ci-dessus.
+# lift : cible 0.045 et non 0.060. Les "7.1 cm du BWC" que je citais etaient son
+# MAXIMUM sur 20 cycles ; sa mediane reelle est 3.2 cm. La fourchette de Leo,
+# "3 a 5 cm minimum", est la bonne reference, et l'index 11 a 4.4 cm y etait deja.
+#
 # demiPer : Metrics/step_period_mean compte l'intervalle entre deux poses de
 # N'IMPORTE QUEL pied (landed = first.any(dim=1)), donc un DEMI-cycle. La cible
 # 0.45 correspond au cycle complet de 0.887 s du BWC. Lu comme un cycle complet,
@@ -42,7 +46,7 @@ print(f"run {sys.argv[1].rstrip('/').split('/')[-1]}   iteration {its[-1]}")
 W=[("reward","Train/mean_reward",None,None),
    ("impact","Metrics/landing_vel_mean","<=",0.100),
    ("falls","Episode_Termination/fell_down","<=",0.010),
-   ("lift","Metrics/sole_height_p90",">=",0.060),
+   ("lift","Metrics/sole_height_p90",">=",0.045),
    ("--","",None,None),
    ("refErr","Metrics/bwc_ref_err_rad",".",0.030),
    ("demiPer","Metrics/step_period_mean",".",0.450),
