@@ -41,7 +41,17 @@ export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.03
 # D5, et le seul moyen de garder les deux est de freiner activement la descente.
 # Le levier est donc le bon, il est trop faible : Episode_Reward/descent vaut
 # -0.10 quand flat_support vaut -0.47.
-export RHPS1_W_DESCENT=-120.0
+# -80 et non -120. L'incitation a lever ne peut pas etre touchee (T7 et T8), donc
+# c'est l'autre cote du compromis qui recule. La marge est de ce cote-la :
+#
+#   impact          0.1376   seuil 0.160    14% de marge, on peut en rendre
+#   lever de pied   0.0386   seuil 0.030    marge, mais toucher au vol casse
+#   couples jambes  0.0418   seuil 0.030    39% AU-DESSUS, rien a rendre
+#
+# Relacher la descente laisse le pied tomber un peu plus vite, ce qui coute de
+# l'impact -- dont on a 14% de marge -- et rend du couple de jambe, dont on n'a
+# aucune.
+export RHPS1_W_DESCENT=-80.0
 # Limite inchangee a 0.12, qui est DEJA sous la mediane de la policy 0 (0.1476).
 # Ce n'est pas la limite qui manquait.
 export RHPS1_DESCENT_LIMIT=0.12
@@ -77,7 +87,13 @@ export RHPS1_W_SWINGBONUS=3.0
 # plus de poussee, sans retirer l'incitation a lever -- ce qui est precisement
 # ce que retirer du poids a detruit. Regle deja ecrite : "une cible plafonnee a
 # sa valeur n'a plus de gradient".
-export RHPS1_SWINGBONUS_H=0.04
+# Cible REMISE a 0.05. L'essai a 0.04 (T8) a casse la demarche exactement comme
+# T7 : lever 0.0098, periode 1.65 s, reward -144 a 890 iterations, contre +85
+# pour T6b au meme point. Les DEUX facons de reduire l'incitation a lever --
+# le poids (T7) et la cible (T8) -- donnent la meme rupture. Ce n'est donc pas
+# le parametre, c'est le seuil au-dela duquel lever ne vaut plus son cout de
+# descente.
+export RHPS1_SWINGBONUS_H=0.05
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \

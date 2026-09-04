@@ -1047,3 +1047,39 @@ detruit. Regle deja ecrite : "une cible plafonnee a sa valeur n'a plus de
 gradient".
 
 T8 : bonus de vol remis a 3.0, cible 0.05 -> 0.04, depuis `model_12099`.
+
+
+### 10.21 T8 confirme : c'est le SEUIL d'incitation, pas le parametre
+
+Cible de vol 0.05 -> 0.04, bonus remis a 3.0. Meme rupture que T7 :
+
+```
+                T7 (poids 2.5)   T8 (cible 0.04)   T6b au meme point
+reward @+890          -115.31           -144.25               +85
+lift                   0.0053            0.0098             0.047
+period                 1.5782 s          1.6473 s           0.75 s
+```
+
+**Les deux facons de reduire l'incitation a lever donnent la meme rupture.** Ce
+n'est donc pas le parametre choisi, c'est le seuil au-dela duquel lever le pied
+ne vaut plus son cout de descente. L'hypothese de 10.20 -- "la cible sature sans
+retirer l'incitation" -- etait raisonnable et fausse : plafonner le bonus a 0.04
+retire bien de l'incitation, puisque le vol realise est a 0.048.
+
+**Consequence : l'incitation a lever est intouchable a descente -120.** Le
+compromis doit donc reculer de l'autre cote, et la marge y est :
+
+```
+                  valeur   seuil   marge
+impact            0.1376   0.160   14%, on peut en rendre
+lever de pied     0.0386   0.030   marge, mais y toucher casse la demarche
+couples jambes    0.0418   0.030   39% AU-DESSUS, rien a rendre
+```
+
+T9 : cout de descente -120 -> -80, bonus de vol et cible inchanges, depuis
+`model_12099`. Le pied tombe un peu plus vite, ce qui coute de l'impact -- dont
+on a 14 % de marge -- et rend du couple de jambe, dont on n'a aucune.
+
+**Regle a retenir de T7 et T8 :** dans un compromis a deux termes opposes, ne
+pas chercher le point intermediaire sur le terme qui porte l'INCITATION a faire
+la chose. Reculer sur le terme qui la PENALISE. Deux runs perdus a l'apprendre.
