@@ -3514,3 +3514,121 @@ class torque_demand_overshoot:
       (ratio > 1.0).float()
     )
     return torch.sum(excess, dim=1)
+
+
+class bwc_reference_tracking:
+  """Suivre le profil articulaire du BaselineWalkingController, indexe par phase.
+
+  POURQUOI UNE REFERENCE ET PAS UN CRITERE DE PLUS. Onze runs de reglage de
+  bareme (T2 a T12) ont echoue, et le compte honnete montre que deux des trois
+  causes etaient des MESURES fausses, pas la methode : la force lue a l'instant
+  du contact au lieu du pic de charge 95 ms plus tard, et un seuil d'impact qui
+  recalait la policy 0 (1.86x le poids) tout en laissant passer une politique
+  qui tape a 2.57x. Chaque fois que j'ai specifie un nombre, il etait faux. La
+  reference supprime la specification : elle dit ce que le mouvement doit etre.
+
+  CE QU'ELLE CORRIGE, et qu'aucun terme ne voyait. Repartition du mouvement
+  entre appui et vol, mesuree sur 20 cycles du BWC contre 4 de l'index 11 :
+
+      L_KNEE_P        APPUI      VOL
+      BWC            8.6 deg   16.1 deg    concentre en vol
+      index 11      24.5 deg   23.4 deg    autant sous charge qu'en l'air
+
+  La politique bouge le genou de 24.5 degres pendant qu'il porte le poids du
+  corps. Bouger une articulation chargee coute du couple, d'ou 150 N.m contre
+  81. Le BWC leve meme 7.1 cm contre nos 4.4 avec MOINS d'amplitude totale : son
+  mouvement est au bon endroit du cycle, pas plus grand.
+
+  ALIGNEMENT DE PHASE, determine et non devine. L'horloge pose
+  `phase_left = phase` et fait voler le pied gauche tant que
+  `phase < swing_ratio` ; donc phase 0 est le DECOLLAGE du pied gauche et
+  `phase = swing_ratio` sa POSE. Le profil est indexe depuis la pose du pied
+  gauche (cycles decoupes sur les fronts montants de la force), d'ou
+
+      indice = ((phase - swing_ratio) mod 1) * N
+
+  Verification qui tombe juste : swing_duration 0.4 s sur une periode de 0.887 s
+  donne 45 % de vol, soit 55 % d'appui -- exactement le rapport mesure sur le
+  BWC. Seule la periode etait fausse, le rapport de vol etait deja bon.
+
+  LE POIDS DOIT DECROITRE. Une reference tenue jusqu'au bout refait le BWC, qui
+  existe deja et marche deja ; ce qu'on veut du RL est ce qu'il ajoute --
+  robustesse aux poussees, commandes variees, terrain. La reference met le
+  mouvement au bon endroit pendant l'apprentissage, puis on la relache.
+
+  LIMITE : un seul log, une seule vitesse, marche avant. La reference ne couvre
+  ni la marche arriere, ni le lateral, ni les rotations, d'ou le masque sur la
+  commande.
+  """
+
+  def __init__(self, env: ManagerBasedRlEnv, cfg: RewardTermCfg) -> None:
+    import json
+    import pathlib
+
+    path = cfg.params.get("profile_path", "docs/bwc_gait_profile.json")
+    data = json.loads(pathlib.Path(path).read_text())
+    asset: Entity = env.scene[cfg.params["asset_cfg"].name]
+    names = list(asset.joint_names)
+    joints = cfg.params["joint_names"]
+    self._ids = [names.index(n) for n in joints]
+    prof = torch.tensor(
+      [data["joints"][n] for n in joints], dtype=torch.float, device=env.device
+    )  # [J, N]
+    self._prof = prof.t().contiguous()  # [N, J]
+    self._n = self._prof.shape[0]
+    self._period = float(data["period_s"])
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg,
+    joint_names: tuple[str, ...],
+    profile_path: str = "docs/bwc_gait_profile.json",
+    reward_name: str = "gait_phase",
+    std: float = 0.15,
+    command_name: str = "twist",
+    command_threshold: float = 0.05,
+    lateral_std: float = 0.15,
+  ) -> torch.Tensor:
+    del profile_path, joint_names
+    gait = env.reward_manager.get_term_cfg(reward_name).func
+    phase = getattr(gait, "phase", None)
+    if phase is None:
+      return torch.zeros(env.num_envs, device=env.device)
+    swing_ratio = getattr(gait, "swing_ratio_last", None)
+    if swing_ratio is None:
+      cfgp = env.reward_manager.get_term_cfg(reward_name).params
+      swing_ratio = torch.full_like(
+        phase, float(cfgp["swing_duration"]) / self._period
+      )
+
+    idx = (((phase - swing_ratio) % 1.0) * self._n).long().clamp(0, self._n - 1)
+    ref = self._prof[idx]  # [B, J]
+
+    asset: Entity = env.scene[asset_cfg.name]
+    q = asset.data.joint_pos[:, self._ids]
+    err = torch.mean(torch.square(q - ref), dim=1)
+    reward = torch.exp(-err / (std * std))
+
+    # Marche AVANT seulement : le profil vient d'un unique log a ~0.2 m/s, donc
+    # le payer sur une commande laterale ou une rotation demanderait a la
+    # politique de reproduire une demarche qui n'a rien a voir.
+    #
+    # PONDERATION DOUCE, et non une porte. Une porte "|vy| < 0.05 ET
+    # |yaw| < 0.05" ne retient que ~1 % des commandes tirees (vy sur +/-0.35,
+    # yaw sur +/-0.4), et le terme lisait 0.0000 au banc d'essai : la reference
+    # n'aurait jamais ete payee. Le poids decroit continument avec l'ecart a la
+    # marche avant pure, ce qui donne aussi un credit partiel aux commandes
+    # presque droites.
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    off = torch.square(command[:, 1]) + torch.square(command[:, 2])
+    active = (command[:, 0] > command_threshold).float() * torch.exp(
+      -off / (lateral_std * lateral_std)
+    )
+    w = active.sum()
+    env.extras["log"]["Metrics/bwc_ref_err_rad"] = torch.sqrt(
+      (err * active).sum() / torch.clamp(w, min=1.0)
+    )
+    env.extras["log"]["Metrics/bwc_ref_active_frac"] = active.mean()
+    return reward * active

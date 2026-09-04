@@ -1045,6 +1045,58 @@ def _demand(cfg, full) -> None:
   )
 
 
+
+_BWC_LEGS = (
+  "L_CROTCH_Y","L_CROTCH_R","L_CROTCH_P","L_KNEE_P","L_ANKLE_R","L_ANKLE_P",
+  "R_CROTCH_Y","R_CROTCH_R","R_CROTCH_P","R_KNEE_P","R_ANKLE_R","R_ANKLE_P",
+)
+
+
+def _bwcref(cfg, full) -> None:
+  """P1 : suivre le profil du BWC, indexe par phase, avec cadence calee dessus.
+
+  Mesures qui fixent les valeurs (log mc_mujoco du 2026-09-04, 20 cycles) :
+
+                                BWC     index 11
+    periode/pied             0.887 s      1.705 s
+    appui, part du cycle        55 %         50 %
+    lever de pied             7.1 cm       4.4 cm
+    |v| a la pose          0.047-0.185  0.226-0.284
+    couple genou max          81 N.m   150-155 N.m
+    genou : amplitude en appui   8.6 deg   24.5 deg
+
+  La periode passe a 0.9 s des DEUX cotes de l'interpolation : la reference est
+  un seul profil, elle n'a pas de version lente. swing_duration reste a 0.4, qui
+  donne 45 % de vol sur 0.9 s -- le rapport mesure sur le BWC.
+  """
+  _clock(cfg, full)
+  r = cfg.rewards
+  r["gait_phase"].params["period_slow"] = float(os.environ.get("RHPS1_CLOCK_SLOW", "0.9"))
+  r["gait_phase"].params["period_fast"] = float(os.environ.get("RHPS1_CLOCK_FAST", "0.9"))
+  r["bwc_ref"] = RewardTermCfg(
+    func=mdp.bwc_reference_tracking,
+    # 0.5, dimensionne et non devine. Episode_Reward ~ poids x brut x 20, et le
+    # brut plafonne a active_frac (0.22 mesure) quand le suivi est parfait :
+    # 0.5 donne ~2.2 a convergence, la moitie du suivi de vitesse (4.2). A 3.0
+    # il aurait pese ~13 et ecrase tout le reste.
+    weight=float(os.environ.get("RHPS1_W_BWCREF", "0.5")),
+    params={
+      "asset_cfg": SceneEntityCfg("robot", joint_names=_BWC_LEGS),
+      "joint_names": _BWC_LEGS,
+      "profile_path": os.environ.get(
+        "RHPS1_BWC_PROFILE", "docs/bwc_gait_profile.json"),
+      "reward_name": "gait_phase",
+      # std 0.06 rad et non 0.15 : a 0.15 le terme vaut deja 0.77 sur 1 pour la
+      # posture par defaut, qui est proche du profil, donc presque aucun
+      # gradient. A 0.06 il part a 0.19 et a de la place pour progresser.
+      "std": float(os.environ.get("RHPS1_BWCREF_STD", "0.06")),
+      "command_name": "twist",
+      "command_threshold": 0.05,
+      "lateral_std": float(os.environ.get("RHPS1_BWCREF_LAT_STD", "0.15")),
+    },
+  )
+
+
 def _cscan(cfg, full) -> None:
   """Critic sees the per-foot height scan."""
   if "foot_height_scan" in full["critic"]:
@@ -2270,7 +2322,7 @@ def _wide(cfg, full) -> None:
 DECOMPOSED = {
   "fs": _fs, "fsct": _fsct, "fscg": _fscg, "fsload": _fsload, "air": _air, "mfh": _mfh, "sss": _sss, "imp": _imp,
   "hist": _hist, "hist5": _hist5, "instr": _instr, "comshift": _comshift, "capture": _capture, "swingbonus": _swingbonus, "descent": _descent, "clock": _clock, "comprof": _comprof, "cbal": _cbal, "exec": _exec, "proj": _proj,
-  "ctorque": _ctorque, "cscan": _cscan, "demand": _demand,
+  "ctorque": _ctorque, "cscan": _cscan, "demand": _demand, "bwcref": _bwcref,
   "lift": _lift, "stride": _stride, "tq": _tq, "nodamp": _nodamp,
   "steplen": _steplen, "freevel": _freevel, "freeroll": _freeroll,
   "footladder": _footladder, "dense": _dense, "calm": _calm,
