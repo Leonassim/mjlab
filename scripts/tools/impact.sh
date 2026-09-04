@@ -55,18 +55,29 @@ export RHPS1_DESCENT_LIMIT=0.12
 # 3.0 au lieu de 2.0. Les deux peuvent coexister -- monter plus haut ET
 # descendre plus lentement est possible tant qu'il reste du temps de vol, et la
 # periode est a 0.73 s contre 0.90 pour le BWC.
-# 2.5, a mi-chemin. Trois runs encadrent le compromis :
+# 3.0, et NON 2.5. L'essai a 2.5 (T7) a casse la demarche : lever 0.0053,
+# periode 1.58 s, reward -115 la ou T6b valait +85 au meme point. Le robot a
+# arrete de lever le pied -- le mode d'echec annonce en lancant le cout de
+# descente, declenche en baissant le contrepoids et non en montant le cout.
+#
+# Le systeme est BISTABLE, pas lineaire. J'avais interpole entre les deux runs
+# connus pour predire "lever ~0.033, couples ~0.031" a 2.5 ; il n'y a pas de
+# point intermediaire, le bonus de vol est soit au-dessus du seuil ou lever vaut
+# la peine, soit en dessous et la politique bascule sur le piaffement.
 #
 #                       vol   descente    lever   couples
-#   6/6                 2.0        -4    0.0326    0.0178
-#   T5b                 2.0      -120    0.0271    0.0212
-#   T6b                 3.0      -120    0.0386    0.0418   seuils 0.030 / 0.030
-#
-# Le cout de descente seul coute peu (+19% de couple a lever constant). C'est le
-# bonus de vol porte a 3.0 qui a double la saturation : lever plus haut coute du
-# couple, mecaniquement. A 2.5 l'interpolation donne lever ~0.033 et couples
-# ~0.031, les deux au seuil -- la tension est reelle et se joue entre 2.3 et 2.5.
-export RHPS1_W_SWINGBONUS=2.5
+#   6/6                 2.0         -4   0.0326   0.0178
+#   T5b                 2.0       -120   0.0271   0.0212
+#   T6b                 3.0       -120   0.0386   0.0418
+#   T7                  2.5       -120   0.0053   ---      casse
+export RHPS1_W_SWINGBONUS=3.0
+# Le levier contre la saturation de couple est donc la CIBLE, pas le poids.
+# A 0.05 pour un vol realise de 0.048, le bonus tire encore et paie du couple
+# pour trois millimetres. A 0.04 il sature : plus de gradient au-dessus, donc
+# plus de poussee, sans retirer l'incitation a lever -- ce qui est precisement
+# ce que retirer du poids a detruit. Regle deja ecrite : "une cible plafonnee a
+# sa valeur n'a plus de gradient".
+export RHPS1_SWINGBONUS_H=0.04
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \

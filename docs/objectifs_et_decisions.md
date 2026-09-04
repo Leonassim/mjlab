@@ -1002,3 +1002,48 @@ poids mais la CIBLE `RHPS1_SWINGBONUS_H` : a 0.05 pour un vol realise de 0.048,
 le bonus tire encore ; le descendre a 0.04 le sature et arrete la poussee sans
 retirer la hauteur acquise (regle "une cible plafonnee a sa valeur n'a plus de
 gradient").
+
+
+### 10.20 T7 : le compromis est BISTABLE, pas lineaire
+
+Bonus de vol 3.0 -> 2.5, une seule deviation, configuration verifiee par diff
+d'`env.yaml` (une ligne, `weight: 3.0` -> `2.5`). Resultat a 890 iterations :
+
+```
+                 T7        T6b au meme point
+lift         0.0053                   0.047
+period       1.5782 s                 0.75 s
+reward     -115.31                   +85
+```
+
+**Le robot a arrete de lever le pied.** C'est le mode d'echec annonce en
+lancant le cout de descente en 10.13 -- "ne PAS lever le pied evite le cout" --
+mais declenche en baissant le CONTREPOIDS, pas en montant le cout. Il ne s'etait
+pas materialise a -40 ni a -120 tant que le bonus tenait a 3.0.
+
+**Ce que j'avais mal raisonne.** J'ai interpole lineairement entre les deux runs
+connus pour predire, a 2.5, "lever ~0.033 et couples ~0.031, les deux au seuil".
+Il n'y a pas de point intermediaire :
+
+```
+                      vol   descente    lever   couples
+6/6                   2.0         -4   0.0326   0.0178
+T5b                   2.0       -120   0.0271   0.0212
+T6b                   3.0       -120   0.0386   0.0418
+T7                    2.5       -120   0.0053   ---       casse
+```
+
+Le bonus de vol est soit au-dessus du seuil ou lever vaut la peine face au cout
+de descente, soit en dessous et la politique bascule sur le piaffement. Deux
+points d'un systeme bistable ne s'interpolent pas.
+
+**Consequence sur le levier.** Retirer du POIDS retire l'incitation a lever tout
+court, ce qui est le contraire du but. Le levier contre la saturation de couple
+est donc la CIBLE : a `RHPS1_SWINGBONUS_H` = 0.05 pour un vol realise de 0.048,
+le bonus tire encore et paie du couple pour trois millimetres. A 0.04 il sature
+-- plus de gradient au-dessus, donc plus de poussee -- **sans retirer
+l'incitation a lever**, qui est precisement ce que le retrait de poids a
+detruit. Regle deja ecrite : "une cible plafonnee a sa valeur n'a plus de
+gradient".
+
+T8 : bonus de vol remis a 3.0, cible 0.05 -> 0.04, depuis `model_12099`.
