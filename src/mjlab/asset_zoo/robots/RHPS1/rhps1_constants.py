@@ -1044,9 +1044,36 @@ for a in RHPS1_ARTICULATION.actuators:
   for n in names:
     RHPS1_ACTION_SCALE[n] = e / s
 
-# Upper-body joints: capped below saturation (effort/stiffness ≈ 0.003 for shoulders).
-# 0.002 keeps torques well under effort limits and reduces oscillation.
-upper_scale = 0.002
+# Upper-body joints: capped below saturation (effort/stiffness ~= 0.003 for shoulders).
+#
+# "0.002 keeps torques well under effort limits" -- MESURE FAUSSE, corrigee le
+# 2026-09-04. En marche deterministe, coude et poignet gauches demandent 8 a 12
+# fois leur limite AVANT ecretage, et toute la demande hors-limite de la
+# politique vient du haut du corps : les jambes sont a zero.
+#
+# L'echelle n'etait pas le probleme en soi -- rapportee a la fenetre de couple
+# (effort/kp), une unite d'action vaut 0.70 limite au coude contre 1.40 au
+# genou, donc le haut etait DEJA plus prudent que les jambes. Le probleme est
+# que la politique s'en sert : les jambes sont contraintes par le contact et une
+# dizaine de termes, les bras sont libres et a peine penalises, donc elle les
+# agite.
+#
+# Mesure sur les logs mc_mujoco du 2026-09-04, en marche :
+#
+#                        BWC        index 11
+#   epaules/coudes/poignets   0.0 deg      5-9 deg
+#   R_SHOULDER_P |tau| max    5.8 N.m     26.2 N.m
+#
+# Le BWC ne bouge PAS les bras en marchant ; seul le tronc travaille. Donc
+# borner l'autorite du haut ne retire rien d'utile, et c'est un changement de
+# PLANT -- effet mecanique direct -- la ou quatre tentatives par les penalites
+# ont echoue (T7 a T10).
+#
+# 0.0007 : une unite d'action vaut alors 0.25 limite au coude, il en faudrait 48
+# pour atteindre les 12x mesures. A n'appliquer qu'a un entrainement DEPUIS ZERO
+# -- l'echelle definit ce que la sortie du reseau signifie, la changer en cours
+# de route est exactement ce qui a casse T7, T8 et T12.
+upper_scale = float(__import__("os").environ.get("RHPS1_UPPER_SCALE", "0.0007"))
 upper_keys = [
   k
   for k in RHPS1_ACTION_SCALE
