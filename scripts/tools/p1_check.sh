@@ -35,13 +35,17 @@ print(f"run {sys.argv[1].rstrip('/').split('/')[-1]}   iteration {its[-1]}")
 # La saturation d'ENTRAINEMENT affichee ici n'est pas comparable a ces chiffres
 # (action echantillonnee, randomisation) : elle sert de signal de tendance, et
 # le verdict se prend en deterministe au banc contre les valeurs ci-dessus.
+# demiPer : Metrics/step_period_mean compte l'intervalle entre deux poses de
+# N'IMPORTE QUEL pied (landed = first.any(dim=1)), donc un DEMI-cycle. La cible
+# 0.45 correspond au cycle complet de 0.887 s du BWC. Lu comme un cycle complet,
+# il ferait croire a un facteur deux qui n'existe pas.
 W=[("reward","Train/mean_reward",None,None),
    ("impact","Metrics/landing_vel_mean","<=",0.100),
    ("falls","Episode_Termination/fell_down","<=",0.010),
    ("lift","Metrics/sole_height_p90",">=",0.060),
    ("--","",None,None),
    ("refErr","Metrics/bwc_ref_err_rad",".",0.030),
-   ("period","Metrics/step_period_mean",".",0.900),
+   ("demiPer","Metrics/step_period_mean",".",0.450),
    ("satleg","Metrics/torque_saturated_frac_legs",".",0.200),
    ("refFrac","Metrics/bwc_ref_active_frac",None,None)]
 show=its[::max(1,len(its)//6)][-6:]
