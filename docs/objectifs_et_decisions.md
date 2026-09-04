@@ -1193,3 +1193,66 @@ Attendu : lever ~0.030, couples ~0.019, force ~2.0x.
 tape le moins fort (1.80x, sous la policy 0 et sous le BWC) mais sature les
 jambes a 4x la reference ; la branche 2.0 passerait les six criteres en tapant
 plus fort (~2.0x). Aucune option ne domine l'autre.
+
+
+### 10.25 Les 150 N.m ne sont PAS un pic d'impact -- log mc_mujoco a l'appui
+
+Leo a teste l'index 11 (`model_12099`, celui qui atterrit a 1.80x le poids en
+simulation, mieux que la policy 0 et que le BWC) et releve **les memes 150 N.m**.
+Log `/tmp/mc-control-NewRLQPController-2026-09-04-16-53-21.bin`, 72 s de marche.
+
+```
+L_KNEE_P  |tau| max 149.5   p99 90.8   mediane 29.2
+R_KNEE_P  |tau| max 154.9   p99 97.3   mediane 29.0
+```
+
+**Ou ils se produisent :**
+
+```
+                          L_KNEE_P   R_KNEE_P
+excursions EN APPUI         100.0 %     99.5 %
+excursions EN VOL             0.0 %      0.5 %
+delai depuis la pose, mediane  95 ms     130 ms
+```
+
+Aucun n'est un pic d'impact. Tous sont en phase d'appui, ~100 ms apres la pose,
+c'est-a-dire pendant le TRANSFERT DE CHARGE -- le premier pic de reaction
+verticale de la marche, un phenomene normal.
+
+**Cela invalide toute la campagne T5-T11 comme reponse a ce probleme.** Faire
+passer l'atterrissage de 2.57x a 1.80x le poids etait un vrai progres, mesure et
+transferable, mais il ne pouvait pas deplacer les 150 N.m puisqu'ils ne viennent
+pas de l'atterrissage. J'avais accepte le cadrage "ca tape a l'impact" sans
+verifier OU le pic tombait dans le cycle -- c'etait verifiable des le premier
+log.
+
+**D'ou ils viennent :**
+
+```
+                       L_KNEE_P    R_KNEE_P
+kp*(qOut-qIn)            -183.2      -146.9    erreur 9.2 / 7.3 mrad
+kd*(alphaOut-alphaIn)     -28.6      -123.4    erreur 0.07 / 0.31 rad/s
+part P au-dessus de 100 N.m   77%        78%
+```
+
+78 % de l'erreur de POSITION, qui vaut 0.42 a 0.53 degre. Confirmation directe
+de 10.11 : un demi-degre de retard de suivi sous kp=20000 fait 150 N.m. Le
+levier est le retard du QP, pas le bareme.
+
+**Severite : le materiel encaisse.** `scripts/ppc/joint_torque_limits_rotate.csv`
+donne pour le genou 91.71 N.m en continu et **180.75 N.m en pic pendant 23.5 s**
+(N=210, Kt=0.424, I_peak=2.03 A).
+
+```
+temps au-dessus du continu 91.7      0.97 % / 1.42 %
+temps au-dessus du pic    180.8      0.00 % -- jamais
+excursions                              21 / 28, duree mediane 30-35 ms
+```
+
+Les 100 N.m qui servaient de reference etaient **la limite d'entrainement que
+j'ai fixee**, pas celle du genou. On est a 0.83x du pic materiel pendant 30 ms,
+avec 1 % de temps au-dessus du continu contre 23.5 s tolerees.
+
+**Regle a ajouter :** avant d'accepter un cadrage causal fourni avec la mesure
+("ca tape a l'impact"), verifier OU la grandeur culmine dans le cycle. Une
+journee de campagne a suivi une attribution que trois lignes de log refutaient.
