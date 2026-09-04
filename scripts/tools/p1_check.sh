@@ -19,11 +19,15 @@ print(f"run {sys.argv[1].rstrip('/').split('/')[-1]}   iteration {its[-1]}")
 # qui EXPLIQUE le couple, pas un objectif -- en faire une porte reviendrait a
 # exiger que la politique resolve le probleme comme le BWC.
 #
-# Le couple se juge contre la POLICY 0, pas contre un seuil invente ni contre la
-# fiche technique. La fiche (91.71 N.m continu, 180.75 en pic 23.5 s) est trop
-# permissive pour discriminer : l'index 11 tient 150 N.m par bouffees de 30 ms
-# et reste dedans. La policy 0 est la seule politique dont on SAIT qu'elle
-# marche sur le robot, et elle donne, en mesure deterministe :
+# Le couple se juge contre la POLICY 0. Les limites du MODELE sont les bonnes --
+# ce sont des limites operationnelles, pas des maxima moteur, et l'ecretage
+# existe pour empecher le robot de faire n'importe quoi. Detour du 2026-09-04 :
+# j'etais alle chercher les pics de la fiche technique (genou 180.8 contre 100)
+# en croyant que mes mesures surestimaient la gravite. Faux : ce que le moteur
+# PEUT fournir n'est pas ce qu'on AUTORISE.
+#
+# La policy 0 est la seule politique dont on SAIT qu'elle est acceptable sur le
+# robot, donc elle dit quel niveau d'ecretage passe. En mesure deterministe :
 #
 #   saturation jambes (banc)              0.0103
 #   demande avant ecretage (en marche)    total exces^2 0.1203, ratio max 4.91
