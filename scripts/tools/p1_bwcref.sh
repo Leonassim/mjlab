@@ -25,6 +25,7 @@ export RHPS1_W_SWINGBONUS=3.0 RHPS1_SWINGBONUS_H=0.05
 # Haut du corps borne : le BWC ne bouge PAS les bras en marchant (0.0 deg contre
 # nos 5-9), et toute la demande hors-limite de l.index 11 vient de la -- coude et
 # poignet a 8-12x leur limite, jambes a zero.
+export RHPS1_W_BWCREF=${RHPS1_W_BWCREF:-12.0}
 export RHPS1_UPPER_SCALE=${RHPS1_UPPER_SCALE:-0.0007}
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes

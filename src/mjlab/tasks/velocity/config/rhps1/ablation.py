@@ -1075,11 +1075,22 @@ def _bwcref(cfg, full) -> None:
   r["gait_phase"].params["period_fast"] = float(os.environ.get("RHPS1_CLOCK_FAST", "0.9"))
   r["bwc_ref"] = RewardTermCfg(
     func=mdp.bwc_reference_tracking,
-    # 0.5, dimensionne et non devine. Episode_Reward ~ poids x brut x 20, et le
-    # brut plafonne a active_frac (0.22 mesure) quand le suivi est parfait :
-    # 0.5 donne ~2.2 a convergence, la moitie du suivi de vitesse (4.2). A 3.0
-    # il aurait pese ~13 et ecrase tout le reste.
-    weight=float(os.environ.get("RHPS1_W_BWCREF", "0.5")),
+    # 12.0, CALIBRE SUR MESURE et non sur une formule extrapolee.
+    #
+    # Episode_Reward vaut exactement `moyenne du brut x poids` : le gestionnaire
+    # divise la somme d'episode par max_episode_length_s, ce qui annule le dt et
+    # la duree (reward_manager.py:108). Le facteur 20 que j'appliquais venait
+    # d'une calibration empruntee a un autre terme et etait faux.
+    #
+    # Mesure a 360 iterations du premier essai : poids 0.5 donnait 0.0338, soit
+    # un brut de 0.0676 -- 70 fois moins que upright (2.94) ou gait_phase (2.58).
+    # Le terme etait INERTE, et `refErr` n'avait pas bouge d'un iota en 360
+    # iterations. Meme panne que torque_demand a -0.003.
+    #
+    # Le brut plafonne a active_frac (0.21) quand le suivi est parfait, donc
+    # 12.0 donne ~2.5 a convergence, le niveau de gait_phase, et deja 0.81
+    # maintenant -- assez pour avoir un gradient des le depart.
+    weight=float(os.environ.get("RHPS1_W_BWCREF", "12.0")),
     params={
       "asset_cfg": SceneEntityCfg("robot", joint_names=_BWC_LEGS),
       "joint_names": _BWC_LEGS,
