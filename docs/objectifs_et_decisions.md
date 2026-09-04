@@ -1310,3 +1310,155 @@ vitesse d'impact du controleur RL, et couple genou contre force verticale.
 Premiere version ecrite avec des chaines la ou `graph_labels` attend des
 dictionnaires, ce qui faisait planter mc_log_ui au demarrage -- verifier
 desormais en appelant `load_UserPlots`, pas en relisant le JSON.
+
+
+---
+
+## 11. Plan d'entrainement du 2026-09-04, cale sur la reference BWC
+
+### 11.1 Ce que la reference dit, mesure
+
+Log `mc-control-BaselineWalkingController-2026-09-04-20-36-43.bin`, 20 cycles
+propres extraits (`docs/bwc_gait_profile.json`), contre l'index 11 en marche
+commandee.
+
+```
+                              BWC       index 11    cible retenue
+cadence (periode/pied)     0.887 s        1.705 s        ~0.9 s
+appui, part du cycle           55 %           50 %          55 %
+lever de pied               7.1 cm         4.4 cm        >= 6 cm
+vitesse a la pose        0.047 m/s    0.14-0.15 m/s     <= 0.08
+couple genou max            81 N.m     150-155 N.m      <= 100
+angle genou au pic          33 deg     37-38.5 deg          ~33
+```
+
+Amplitudes articulaires par cycle, et c'est la que tout se joue :
+
+```
+                    BWC    index 11
+L_CROTCH_P          7.4       27.1 deg   3.7x
+L_ANKLE_P           7.6       20.4       2.7x
+L_KNEE_P           16.1       27.1       1.7x
+L_CROTCH_R          1.5        7.1       4.7x
+L_ANKLE_R           1.2        7.2       6x
+```
+
+### 11.2 Le mecanisme, enfin identifie
+
+Repartition du mouvement entre appui et vol :
+
+```
+                     APPUI      VOL
+BWC  L_KNEE_P       8.6 deg   16.1 deg     concentre en vol
+RL   L_KNEE_P      24.5 deg   23.4 deg     autant sous charge qu'en l'air
+```
+
+**La politique bouge le genou de 24.5 degres pendant qu'il porte le poids du
+corps, contre 8.6 pour le BWC.** Bouger une articulation chargee coute du
+couple : c'est l'explication directe des 150 contre 81 N.m, et elle est
+mecanique, pas affaire de reglage.
+
+Le BWC fait l'inverse -- jambe quasi figee en appui, tout le mouvement pendant
+le vol -- ce qui explique aussi qu'il leve 7.1 cm avec MOINS d'amplitude totale
+que nous : son mouvement est au bon endroit du cycle.
+
+Aucun terme du bareme ne distingue le mouvement en appui du mouvement en vol.
+`stance_action_acc_l2` penalise l'acceleration d'action en appui, pas
+l'amplitude articulaire, et il vaut -1.49 quand `track` vaut 4.2.
+
+### 11.3 Pourquoi le bareme seul a echoue, et ce que ca implique
+
+Onze runs entre T2 et T12. Le compte honnete :
+
+```
+T2   demande de couple            -54 % sur la demande, sans effet sur le reste
+T5   descente -40                 -16 % de vitesse, force de pic PIRE
+T5b  descente -120                passe les 6 criteres, force 1.89x
+T6   vol 3.0                      lever OK, couples au seuil
+T6b  vol 3.0 + 4000 it            meilleur atterrissage, couples a +39 %
+T7   vol 2.5                      demarche cassee
+T8   cible de vol 0.04            demarche cassee
+T9   descente -80                 couples pires
+T10  demande -0.10                chutes 7-10
+T11  descente -60                 passe les 6 criteres
+T12  cadence 0.85 s               demarche cassee
+```
+
+Trois causes, et deux sont des defauts de MESURE, pas de methode :
+
+1. `impact_walking.py` lisait la force **a l'instant du contact** alors que le
+   pic de charge arrive ~95 ms plus tard. Corrige, mjlab (1.62x) et mc_mujoco
+   (1.63-1.70x) tombent d'accord.
+2. Le critere `impact faible` du banc lit `landing_vel_mean` a 0.160 : la
+   policy 0 le RATE en atterrissant a 1.86x le poids, la 6/6 le PASSE en tapant
+   a 2.57x. Il ne mesure pas ce que Leo ressent.
+3. Le compromis vol/descente est **bistable**. Reduire l'incitation a lever, par
+   le poids (T7) ou par la cible (T8), fait basculer d'un coup sur le
+   piaffement. Il n'y a pas de point intermediaire a trouver.
+
+### 11.4 Le plan
+
+**P0 -- instrumenter avant tout. Bloquant.**
+
+Chaque conclusion de ces deux jours a ete affaiblie par un defaut de mesure, et
+trois l'ont ete par les questions de Leo. Etat actuel :
+
+```
+mjlab      velocimetre en repere de SITE (tourne avec le pied)
+log BWC    derivee de la pose de SURFACE, repere monde
+log RL     vitesse du corps CHEVILLE, repere monde
+```
+
+Le repere vaut ~12 %. Le point vaut jusqu'a 0.114 m/s la ou le pied tourne a
+1.14 rad/s (talon du BWC) -- l'ordre du signal entier. Un seul point de
+comparaison est propre aujourd'hui : le pied gauche du BWC, qui se pose a plat
+(0.084 rad/s), a 0.047 m/s.
+
+A faire : publier la meme grandeur, au meme point, pour les deux controleurs
+(plugin mc_rtc ou entree de log cote mc_mujoco), et aligner mjlab en tournant
+la lecture du velocimetre en repere monde.
+
+**P1 -- reference BWC indexee par la phase, run NEUF.**
+
+Pas une imitation : une recompense de suivi, relachee progressivement.
+
+- `docs/bwc_gait_profile.json` porte deja les 14 articulations sur 50 points de
+  phase, periode 0.887 s, median sur 20 cycles.
+- L'horloge de demarche existe et indexe deja la phase : la reference s'y
+  branche sans machinerie nouvelle. Regler `period_slow`/`period_fast` sur
+  0.9 s pour que reference et horloge parlent la meme langue.
+- Depuis ZERO, pas en reprise. T12 l'a montre : une politique convergee ne peut
+  pas absorber un changement de cadence, et la lignee actuelle porte huit
+  modifications empilees dont aucune n'a ete validee seule sur le bon critere.
+- Poids de suivi decroissant : la politique doit pouvoir s'ecarter de la
+  reference la ou elle fait mieux, sinon on refait le BWC, qui existe deja.
+
+**P2 -- terme sur le mouvement EN APPUI.**
+
+C'est le mecanisme de 11.2 et rien ne le couvre. Penaliser l'amplitude
+articulaire des jambes pendant que le pied porte, cible 8-10 degres au genou.
+Ce terme est C7-immun : il se paie en appui, donc ne pas atterrir ne l'evite
+pas -- au contraire.
+
+**P3 -- refaire les criteres du banc sur les mesures BWC.**
+
+```
+critere actuel                      remplacer par
+impact faible  landing_vel <= 0.160  pic de charge <= 1.4x le poids
+                                     (BWC 1.38-1.39x)
+lever de pied  >= 0.030              >= 0.060  (BWC 0.071)
+(absent)                             cadence 0.8-1.0 s
+(absent)                             amplitude genou en appui <= 12 deg
+```
+
+Le domaine reste >= 0.2 m/s : a 0.10 la demarche degenere et le critere
+remontait ce piaffement comme un echec sur trois politiques correctes.
+
+**Ordre et raison.** P0 avant P1 parce que sans lui on ne saura pas si P1 a
+marche. P2 apres P1 pour que la reference ait deja mis le mouvement au bon
+endroit du cycle. P3 peut se faire en parallele, c'est de l'outillage.
+
+**Limite connue de P1 :** un seul log, une seule vitesse, marche avant. La
+reference ne couvre ni la marche arriere, ni le lateral, ni les rotations. Soit
+d'autres logs BWC, soit ne l'appliquer qu'a la marche avant et laisser le reste
+au bareme actuel.
