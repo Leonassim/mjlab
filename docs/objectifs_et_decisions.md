@@ -1137,3 +1137,59 @@ depenses a chercher dans le mauvais espace de parametres.
 T10 : `torque_demand` -0.03 -> -0.10, tout le reste au point de fonctionnement
 de T6b, depuis `model_12099`. Ce levier ne touche pas l'equilibre vol/descente,
 dont on sait maintenant qu'il est bistable et fragile des deux cotes.
+
+
+### 10.24 Quatre echecs, et la vraie forme du probleme : deux branches disjointes
+
+```
+tentative                                      resultat
+T7   poids de vol 3.0 -> 2.5                   demarche cassee (piaffement)
+T8   cible de vol 0.05 -> 0.04                 demarche cassee, meme signature
+T9   descente -120 -> -80                      couples PIRES (0.287 contre 0.17)
+T10  torque_demand -0.03 -> -0.10              chutes 7-10, reward -51 a +870
+                                               (T6b valait +85 au meme point)
+```
+
+Quatre leviers, quatre echecs, tous depuis le meme checkpoint. Ce n'est plus une
+suite de malchances : le point de fonctionnement de T6b est un optimum fragile,
+et toute perturbation du bareme le detruit.
+
+**La vraie forme du probleme, en croisant tout ce qui est mesure :**
+
+```
+                     vol  descente    lever   couples   force de pic
+6/6                  2.0        -4   0.0326    0.0178          2.57x
+T5b                  2.0      -120   0.0271    0.0212          1.89x
+T6b (index 11)       3.0      -120   0.0386    0.0418          1.80x
+policy 0              --        --   ~0.005    0.0103          1.86x
+seuils                              >=0.030   <=0.030
+```
+
+**Deux branches, aucune ne passe tout.**
+
+- Branche vol 2.0 : les couples restent bons (0.018-0.021) quoi qu'on fasse a la
+  descente, mais le lever tombe sous le seuil des qu'on freine fort.
+- Branche vol 3.0 : lever et atterrissage excellents, couples doubles.
+
+Et **l'entre-deux n'existe pas** : T7 et T8 ont etabli que 3.0 -> 2.5 fait
+basculer la demarche d'un coup. Le compromis est discret, pas continu.
+
+Note sur la pente : passer le lever de 0.0326 a 0.0386 (+18 %) a fait plus que
+doubler la saturation de couple (0.0178 -> 0.0418). Le cout du lever est
+fortement superlineaire, ce qui explique pourquoi la policy 0, qui leve 0.5 cm,
+sature a 0.0103.
+
+**Ce qui n'a pas ete essaye** : rester sur la branche vol 2.0 -- celle qui a les
+bons couples -- et DOSER la descente au lieu de la saturer. Les deux bouts sont
+mesures (-4 et -120) et la relation y est monotone et douce, contrairement au
+bonus de vol.
+
+T11 : vol 2.0, descente -60, `torque_demand` remis a -0.03, depuis
+`2026-09-03_16-20-16 model_7200` (le checkpoint de la branche 2.0, et non celui
+de T6b -- reprendre la branche 3.0 avec un vol a 2.0 EST le scenario T7).
+Attendu : lever ~0.030, couples ~0.019, force ~2.0x.
+
+**Arbitrage a soumettre a Leo**, parce qu'il ne m'appartient pas : l'index 11
+tape le moins fort (1.80x, sous la policy 0 et sous le BWC) mais sature les
+jambes a 4x la reference ; la branche 2.0 passerait les six criteres en tapant
+plus fort (~2.0x). Aucune option ne domine l'autre.

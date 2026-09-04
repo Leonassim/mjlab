@@ -26,7 +26,7 @@ set -u
 cd /home/lmoussafir/mjlab-rhps1 || exit 1
 set -a; source <(grep -E "^RHPS1_" .rhps1_ablation); set +a
 export RHPS1_ABLATION="${RHPS1_ABLATION}+demand"
-export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.10
+export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.03
 # -0.10 et non -0.03. Trois tentatives ont echoue sur la saturation de couple
 # des jambes, et TOUTES portaient sur l'equilibre vol/descente :
 #
@@ -64,7 +64,21 @@ export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.10
 # Relacher la descente laisse le pied tomber un peu plus vite, ce qui coute de
 # l'impact -- dont on a 14% de marge -- et rend du couple de jambe, dont on n'a
 # aucune.
-export RHPS1_W_DESCENT=-120.0
+# -60, et sur la branche vol 2.0. Les deux bouts de cette branche sont mesures :
+#
+#                vol  descente    lever   couples   force de pic
+#   6/6          2.0        -4   0.0326    0.0178          2.57x
+#   T5b          2.0      -120   0.0271    0.0212          1.89x
+#   seuils                      >=0.030   <=0.030
+#
+# La branche vol 2.0 garde toujours de bons couples ; ce qui la fait echouer est
+# le lever, qui passe sous le seuil quand on freine trop la descente. Doser au
+# lieu de saturer : l'interpolation donne lever ~0.030 et couples ~0.019 a -60.
+#
+# L'autre branche (vol 3.0, index 11) a le meilleur atterrissage -- 1.80x, sous
+# la policy 0 et sous le BWC -- mais double les couples. L'entre-deux n'existe
+# pas : T7 et T8 ont montre que 3.0 -> 2.5 fait basculer la demarche.
+export RHPS1_W_DESCENT=-60.0
 # Limite inchangee a 0.12, qui est DEJA sous la mediane de la policy 0 (0.1476).
 # Ce n'est pas la limite qui manquait.
 export RHPS1_DESCENT_LIMIT=0.12
@@ -93,7 +107,7 @@ export RHPS1_DESCENT_LIMIT=0.12
 #   T5b                 2.0       -120   0.0271   0.0212
 #   T6b                 3.0       -120   0.0386   0.0418
 #   T7                  2.5       -120   0.0053   ---      casse
-export RHPS1_W_SWINGBONUS=3.0
+export RHPS1_W_SWINGBONUS=2.0
 # Le levier contre la saturation de couple est donc la CIBLE, pas le poids.
 # A 0.05 pour un vol realise de 0.048, le bonus tire encore et paie du couple
 # pour trois millimetres. A 0.04 il sature : plus de gradient au-dessus, donc
@@ -113,5 +127,5 @@ exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-03_21-08-16 --agent.load-checkpoint model_12099.pt \
+  --agent.load-run 2026-09-03_16-20-16 --agent.load-checkpoint model_7200.pt \
   --agent.max-iterations 3000
