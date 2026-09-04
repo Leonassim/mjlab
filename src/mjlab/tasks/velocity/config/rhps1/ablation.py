@@ -1104,6 +1104,10 @@ def _bwcref(cfg, full) -> None:
       "command_name": "twist",
       "command_threshold": 0.05,
       "lateral_std": float(os.environ.get("RHPS1_BWCREF_LAT_STD", "0.15")),
+      # 0.5 : decalage d'un demi-cycle, MESURE par check_phase_align.py et non
+      # deduit -- la reference demandait a la jambe gauche le mouvement de la
+      # droite. Erreur 0.0947 sans, 0.0654 avec.
+      "phase_offset": float(os.environ.get("RHPS1_BWCREF_PHASE", "0.5")),
     },
   )
 

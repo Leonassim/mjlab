@@ -3589,6 +3589,7 @@ class bwc_reference_tracking:
     command_name: str = "twist",
     command_threshold: float = 0.05,
     lateral_std: float = 0.15,
+    phase_offset: float = 0.5,
   ) -> torch.Tensor:
     del profile_path, joint_names
     gait = env.reward_manager.get_term_cfg(reward_name).func
@@ -3602,7 +3603,27 @@ class bwc_reference_tracking:
         phase, float(cfgp["swing_duration"]) / self._period
       )
 
-    idx = (((phase - swing_ratio) % 1.0) * self._n).long().clamp(0, self._n - 1)
+    # phase_offset MESURE, non deduit. Mon raisonnement sur les conventions
+    # d'horloge tenait sur le papier -- phase 0 = decollage du pied gauche,
+    # pose a swing_ratio, profil indexe depuis la pose -- mais le balayage des
+    # 50 decalages sur une politique reelle
+    # (scripts/tools/check_phase_align.py, run 2026-09-05_01-09-05 model_2100)
+    # donne :
+    #
+    #   decalage  0 (mon alignement)   erreur RMS 0.0947 rad
+    #   decalage 23 (46 % du cycle)               0.0644   -32 %
+    #   decalage 25 (50 %, demi-cycle)            0.0654
+    #
+    # Un demi-cycle : la reference demandait a la jambe GAUCHE de faire ce que
+    # fait la DROITE du BWC. Ce qui explique une erreur PIRE que celle d'une
+    # politique immobile (~0.084) et pourquoi la politique s'en eloignait
+    # activement -- elle avait raison. Ce que je n'avais pas verifie est que
+    # phase_left de l'horloge pilote bien le pied gauche du capteur.
+    idx = (
+      (((phase - swing_ratio + phase_offset) % 1.0) * self._n)
+      .long()
+      .clamp(0, self._n - 1)
+    )
     ref = self._prof[idx]  # [B, J]
 
     asset: Entity = env.scene[asset_cfg.name]
