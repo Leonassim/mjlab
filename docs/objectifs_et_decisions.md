@@ -1462,3 +1462,44 @@ endroit du cycle. P3 peut se faire en parallele, c'est de l'outillage.
 reference ne couvre ni la marche arriere, ni le lateral, ni les rotations. Soit
 d'autres logs BWC, soit ne l'appliquer qu'a la marche avant et laisser le reste
 au bareme actuel.
+
+
+### 11.5 Criteres corriges : ce qui juge, ce qui explique
+
+Objection de Leo : les criteres portaient sur le couple et l'amplitude du genou
+en appui, alors que c'est la vitesse d'impact qui importe.
+
+Juste, et c'est une derive a nommer : **j'avais promu un diagnostic au rang de
+critere.** L'amplitude du genou en appui EXPLIQUE le couple, elle n'est pas un
+objectif ; en faire une porte reviendrait a exiger que la politique resolve le
+probleme comme le BWC alors qu'une autre solution vaudrait autant.
+
+**Verdict, trois criteres seulement :**
+
+```
+impact   <= 0.100    la grandeur cinematique, celle en laquelle on a confiance
+falls    <= 0.010    non negociable
+lever    >= 0.060    demande initiale de Leo, calee sur le BWC (7.1 cm)
+```
+
+**Diagnostics, qui expliquent sans juger :** ecart a la reference, cadence,
+saturation de couple.
+
+**Le couple se juge contre la POLICY 0**, sur la suggestion de Leo, et non
+contre un seuil que j'invente ni contre la fiche technique. La fiche (91.71 N.m
+en continu, 180.75 en pic pendant 23.5 s au genou) est trop permissive pour
+discriminer : l'index 11 tient 150 N.m par bouffees de 30 ms et reste dedans.
+Les 100 N.m qui servaient de repere des deux cotes etaient la limite
+d'ENTRAINEMENT que j'avais fixee, pas celle du genou.
+
+```
+policy 0, mesures deterministes
+  saturation jambes (banc)            0.0103
+  demande avant ecretage (marche)     total exces^2 0.1203, ratio max 4.91
+```
+
+Il reste une raison de surveiller la saturation, mais elle n'est pas la
+securite : mjlab termine son PD par un `torch.clamp` que le deploiement n'a pas,
+donc une politique qui s'appuie dessus commande des couples que le robot
+appliquera vraiment. C'est ainsi que l'index 11 en est venu a demander 12 fois
+sa limite au coude. Signal de tendance, pas de verdict.
