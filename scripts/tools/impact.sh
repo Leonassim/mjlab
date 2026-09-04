@@ -26,7 +26,20 @@ set -u
 cd /home/lmoussafir/mjlab-rhps1 || exit 1
 set -a; source <(grep -E "^RHPS1_" .rhps1_ablation); set +a
 export RHPS1_ABLATION="${RHPS1_ABLATION}+demand"
-export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.03
+export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.10
+# -0.10 et non -0.03. Trois tentatives ont echoue sur la saturation de couple
+# des jambes, et TOUTES portaient sur l'equilibre vol/descente :
+#
+#   T7   poids de vol 3.0 -> 2.5        demarche cassee (piaffement)
+#   T8   cible de vol 0.05 -> 0.04      demarche cassee, meme signature
+#   T9   descente -120 -> -80           couples PIRES (0.287 contre 0.17)
+#
+# Or le terme qui vise DIRECTEMENT la demande de couple etait reste a -0.03 tout
+# du long. La reference valide le seuil : policy 0 a 0.0103, index 11 a 0.0418,
+# donc quatre fois pire -- c'est un vrai defaut, pas un seuil arbitraire.
+#
+# Ce levier ne touche pas l'equilibre vol/descente, dont on sait maintenant
+# qu'il est bistable et fragile des deux cotes.
 # -120, deuxieme palier. A -40 la mesure en marche donne p99 0.346 -> 0.287,
 # soit -16% seulement, et la force de pic EMPIRE (2.57x -> 2.72x le poids) :
 # baisser l'elan sans allonger le contact ne change pas Delta_p/Delta_t.
@@ -51,7 +64,7 @@ export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.03
 # Relacher la descente laisse le pied tomber un peu plus vite, ce qui coute de
 # l'impact -- dont on a 14% de marge -- et rend du couple de jambe, dont on n'a
 # aucune.
-export RHPS1_W_DESCENT=-80.0
+export RHPS1_W_DESCENT=-120.0
 # Limite inchangee a 0.12, qui est DEJA sous la mediane de la policy 0 (0.1476).
 # Ce n'est pas la limite qui manquait.
 export RHPS1_DESCENT_LIMIT=0.12

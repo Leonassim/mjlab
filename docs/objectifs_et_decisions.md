@@ -1083,3 +1083,57 @@ on a 14 % de marge -- et rend du couple de jambe, dont on n'a aucune.
 **Regle a retenir de T7 et T8 :** dans un compromis a deux termes opposes, ne
 pas chercher le point intermediaire sur le terme qui porte l'INCITATION a faire
 la chose. Reculer sur le terme qui la PENALISE. Deux runs perdus a l'apprendre.
+
+
+### 10.22 La reference valide le seuil de couple -- et invalide celui d'impact
+
+Banc d'acceptation passe sur la policy 0 (`2026-07-10_20-59-17 model_9900`,
+ablation `p0`), pour confronter mes six seuils a la seule politique dont on
+sache qu'elle marche sur le robot :
+
+```
+                       policy 0   6/6    index 11   seuil
+couples jambes           0.0103  0.0178    0.0418   0.030
+impact (vitesse)         0.1911  0.1441    0.1376   0.160
+chutes                   0.0000  0.0000    0.0088   0.010
+couples haut du corps    0.0028  0.0000    0.0001   0.030
+force de pic (marche)     1.86x   2.57x     1.80x     --
+```
+
+(`lever de pied` et `pieds a plat` ressortent nan sur la policy 0 : les termes
+qui les alimentent n'existent pas dans sa configuration.)
+
+**Le seuil de couple est fonde.** Policy 0 est a 0.0103, tres en dessous de
+0.030. L'index 11 a 0.0418 est donc reellement quatre fois pire que la
+reference : c'est un defaut, pas un seuil arbitraire. Hypothese de 10.21
+refutee, et c'est la bonne nouvelle -- le critere sert a quelque chose.
+
+**Le seuil d'impact, lui, est casse.** La policy 0 le RATE (0.1911, +19 %) alors
+qu'elle atterrit a 1.86x le poids, pendant que la 6/6 le PASSE (0.1441) en
+tapant a 2.57x. Vitesse d'atterrissage et force de pic sont decorrelees, et
+c'est la force que Leo ressent. Le critere `impact faible` devrait mesurer la
+force de pic en marche, seuil ~2.0x le poids (le BWC), et non
+`landing_vel_mean`.
+
+### 10.23 Trois echecs de suite, tous du meme cote du compromis
+
+```
+tentative                                          resultat
+T7   poids de vol 3.0 -> 2.5                       demarche cassee (piaffement)
+T8   cible de vol 0.05 -> 0.04                     demarche cassee, meme signature
+T9   cout de descente -120 -> -80                  couples PIRES, 0.287 contre 0.17
+```
+
+T9 est le plus instructif : relacher la penalite de descente ne rend PAS du
+couple, il en coute. Un pied qui tombe plus vite demande plus de couple pour
+etre rattrape. Les deux cotes du compromis vol/descente coutent donc du couple,
+ce qui le referme completement.
+
+**Ce que j'avais rate :** les trois tentatives portaient toutes sur l'equilibre
+vol/descente, alors que le terme qui vise DIRECTEMENT la demande de couple
+--- `torque_demand` -- etait reste a -0.03 depuis sa creation. Trois runs
+depenses a chercher dans le mauvais espace de parametres.
+
+T10 : `torque_demand` -0.03 -> -0.10, tout le reste au point de fonctionnement
+de T6b, depuis `model_12099`. Ce levier ne touche pas l'equilibre vol/descente,
+dont on sait maintenant qu'il est bistable et fragile des deux cotes.
