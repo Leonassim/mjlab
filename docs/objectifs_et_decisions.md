@@ -1256,3 +1256,57 @@ avec 1 % de temps au-dessus du continu contre 23.5 s tolerees.
 **Regle a ajouter :** avant d'accepter un cadrage causal fourni avec la mesure
 ("ca tape a l'impact"), verifier OU la grandeur culmine dans le cycle. Une
 journee de campagne a suivi une attribution que trois lignes de log refutaient.
+
+
+### 10.26 Chiffres de reference du BWC, mesures et non supposes
+
+Log mc_mujoco du 2026-09-04, BaselineWalkingController, 76 s.
+
+```
+                              BWC          RL index 11      seuil interne
+lever de pied             0.0712 m           0.043-0.046 m        0.030
+cadence (periode/pied)     0.85 s                  1.70 s
+vitesse de vol (max)       0.40 m/s                    --
+vitesse a la pose        0.05-0.19 m/s          0.14-0.15 m/s
+couple genou (max)         81 N.m                150-155 N.m
+angle genou au pic         33.0 deg              37-38.5 deg
+pic de charge / poids      0.86-1.10x            1.63-1.78x
+```
+
+**Le BWC leve le pied a 7.1 cm**, contre 4.3-4.6 pour notre meilleure politique
+et un seuil interne a 3.0. On est a 60 % de la reference sur un critere ou je
+croyais avoir de la marge.
+
+Son profil : il monte haut, atteint 0.40 m/s en plein vol, puis **decelere
+avant de poser** (0.05-0.19 a l'arrivee). Nous avons la trajectoire inverse --
+plus plate, plus longue, cadence deux fois plus lente -- donc plus de quantite
+de mouvement horizontale a arreter sur un pas plus long.
+
+**RESERVE SUR LA COMPARAISON DES VITESSES.** Les trois mesures ne sont pas la
+meme grandeur, et Leo l'a releve :
+
+```
+mjlab      mjSENS_VELOCIMETER sur un site -> repere du SITE, qui tourne
+log BWC    derivee de FootTask_*_pose_tz  -> repere monde, surface du pied
+log RL     NewRLQPController_*ImpactVel_z -> repere monde, corps CHEVILLE
+```
+
+Le repere vaut ~12 % (2-5 deg d'inclinaison a la pose melangent vx dans la
+lecture z). Le POINT vaut potentiellement 50 % ou plus : entre cheville et
+semelle il y a ~0.1 m, et a 1 rad/s de rotation du pied cela fait 0.1 m/s
+d'ecart de vitesse verticale -- l'ordre du signal entier.
+
+Donc "nos vitesses d'impact sont au niveau du BWC" est AFFAIBLI, pas etabli.
+
+**Correction propre, non lancee :** sortir le calcul de `leftFootImpactVel` de
+NewRLQPController vers un plugin mc_rtc ou une entree de log cote mc_mujoco, de
+sorte que les deux controleurs publient la meme grandeur au meme point ; puis
+aligner mjlab en tournant la lecture du velocimetre dans le repere monde. Tant
+que ce n'est pas fait, toute comparaison d'impact BWC/RL reste a +/-50 %.
+
+**Onglets mc_log_ui** ajoutes dans `~/.config/mc_log_ui/custom_plot.json` :
+vitesse verticale des pieds (via `y1d`, que mc_log_ui trace en np.diff/dt),
+vitesse d'impact du controleur RL, et couple genou contre force verticale.
+Premiere version ecrite avec des chaines la ou `graph_labels` attend des
+dictionnaires, ce qui faisait planter mc_log_ui au demarrage -- verifier
+desormais en appelant `load_UserPlots`, pas en relisant le JSON.

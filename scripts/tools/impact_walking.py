@@ -71,6 +71,11 @@ def main():
   prev_contact = torch.zeros(a.envs, 2, dtype=torch.bool, device=device)
   prev_vz = torch.zeros(a.envs, 2, device=device)
   land_vz, land_f, land_knee = [], [], []
+  # 200 ms : le pic de charge est a ~95 ms de la pose (mediane sur les logs
+  # mc_mujoco), p90 a 296 ms. 40 pas de 5 ms couvrent le cas nominal.
+  WINDOW = 40
+  pend = torch.full((a.envs, 2), -1, dtype=torch.long, device=device)
+  pmax = torch.zeros(a.envs, 2, device=device)
   # Flexion de genou a la pose. Le BWC atterrit a 38 deg, la politique a 10-20 :
   # une jambe tendue raccourcit le contact autant qu'elle reduit l'elan, donc
   # baisser la vitesse de descente seule ne fait pas baisser la force de pic.
@@ -85,9 +90,23 @@ def main():
       vz = torch.stack([scene[n].data[:, 2] for n in VEL], dim=1)
       contact = f > a.contact_n
       touchdown = contact & ~prev_contact & alive.unsqueeze(1)
-      if i > a.steps // 4 and touchdown.any():
-        land_vz.append((-prev_vz[touchdown]).cpu())   # descente positive
-        land_f.append(f[touchdown].cpu())
+      # Force au PIC DE CHARGE, pas a l'instant du contact. Mesure sur les logs
+      # mc_mujoco : le couple genou culmine ~95 ms APRES la pose, pendant le
+      # transfert de charge, et le pic de force y est 1.8x celui du premier
+      # instant. Ne lire que le contact donnait 1.80x le poids pour un vrai pic
+      # a 2.16x -- j'ai optimise le mauvais instant toute une journee.
+      if i > a.steps // 4:
+        if touchdown.any():
+          land_vz.append((-prev_vz[touchdown]).cpu())
+          flex = (scene["robot"].data.joint_pos[:, knee_ids] - knee_default).abs()
+          land_knee.append(flex[touchdown].cpu())
+          pend[touchdown] = i + WINDOW      # fenetre de suivi du pic
+          pmax[touchdown] = f[touchdown]
+        act = pend > i
+        pmax = torch.where(act, torch.maximum(pmax, f), pmax)
+        done = act & (pend == i + 1)
+        if done.any():
+          land_f.append(pmax[done].cpu())
         flex = (scene["robot"].data.joint_pos[:, knee_ids] - knee_default).abs()
         land_knee.append(flex[touchdown].cpu())
       prev_contact, prev_vz = contact, vz
@@ -102,7 +121,7 @@ def main():
   q = lambda t, p: float(torch.quantile(t.float(), p))
   print(f"\nvitesse de descente a la pose (m/s)")
   print(f"  p50 {q(vzc,.5):.4f}   p90 {q(vzc,.9):.4f}   p99 {q(vzc,.99):.4f}   max {float(vzc.max()):.4f}")
-  print(f"\nforce verticale au premier contact (N)")
+  print(f"\nforce verticale, PIC sur les 200 ms suivant la pose (N)")
   print(f"  p50 {q(fc,.5):7.1f}   p90 {q(fc,.9):7.1f}   p99 {q(fc,.99):7.1f}   max {float(fc.max()):7.1f}")
   if weight:
     print(f"  en poids du robot ({weight:.0f} N) : p50 {q(fc,.5)/weight:.2f}x   "

@@ -78,7 +78,7 @@ export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.03
 # L'autre branche (vol 3.0, index 11) a le meilleur atterrissage -- 1.80x, sous
 # la policy 0 et sous le BWC -- mais double les couples. L'entre-deux n'existe
 # pas : T7 et T8 ont montre que 3.0 -> 2.5 fait basculer la demarche.
-export RHPS1_W_DESCENT=-60.0
+export RHPS1_W_DESCENT=-120.0
 # Limite inchangee a 0.12, qui est DEJA sous la mediane de la policy 0 (0.1476).
 # Ce n'est pas la limite qui manquait.
 export RHPS1_DESCENT_LIMIT=0.12
@@ -107,7 +107,7 @@ export RHPS1_DESCENT_LIMIT=0.12
 #   T5b                 2.0       -120   0.0271   0.0212
 #   T6b                 3.0       -120   0.0386   0.0418
 #   T7                  2.5       -120   0.0053   ---      casse
-export RHPS1_W_SWINGBONUS=2.0
+export RHPS1_W_SWINGBONUS=3.0
 # Le levier contre la saturation de couple est donc la CIBLE, pas le poids.
 # A 0.05 pour un vol realise de 0.048, le bonus tire encore et paie du couple
 # pour trois millimetres. A 0.04 il sature : plus de gradient au-dessus, donc
@@ -121,11 +121,33 @@ export RHPS1_W_SWINGBONUS=2.0
 # le parametre, c'est le seuil au-dela duquel lever ne vaut plus son cout de
 # descente.
 export RHPS1_SWINGBONUS_H=0.05
+# CADENCE, calibree sur le BaselineWalkingController et non devinee. Mesure sur
+# le log mc_mujoco du 2026-09-04, restreinte a la marche effectivement commandee
+# (velCmd_x > 0.05), a vitesse d'avance comparable (0.20 contre 0.18 m/s) :
+#
+#                 poses   periode/pied   pic de charge / poids
+#   BWC           20-23   0.79 - 0.90 s        0.86 - 1.10x
+#   RL index 11     6-7          1.70 s        1.76 - 1.78x
+#
+# L'horloge faisait exactement ce qu'on lui demandait : period_slow 2.0,
+# period_fast 1.1, command_ref 0.7 donnent 1.74 s a 0.2 m/s, soit les 1.70 s
+# mesures. C'est le REGLAGE qui etait calibre pour une demarche deux fois plus
+# lente que le BWC, et personne n'avait jamais confronte ces valeurs a une
+# mesure de la reference.
+#
+# A vitesse egale, une cadence deux fois plus lente fait des pas deux fois plus
+# longs, qui retombent de plus haut : la force au sol, le couple genou et
+# l'erreur de suivi en decoulent mecaniquement.
+#
+# swing_duration reste a 0.4 s : a periode 1.0 cela fait 40% de vol, ce qui est
+# la proportion usuelle de la marche. Une seule deviation a la fois.
+export RHPS1_CLOCK_SLOW=1.0
+export RHPS1_CLOCK_FAST=0.8
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-03_16-20-16 --agent.load-checkpoint model_7200.pt \
+  --agent.load-run 2026-09-03_21-08-16 --agent.load-checkpoint model_12099.pt \
   --agent.max-iterations 3000

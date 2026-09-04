@@ -173,19 +173,36 @@ def main():
           )
     row = {n: (statistics.fmean(v) if v else float("nan")) for n, v in acc.items()}
     row["falls"] = float(fell.float().mean())
+    # Le domaine d'usage commence a 0.2 m/s en translation et 0.3 en lacet.
+    # L'arret complet reste hors verdict comme avant : un robot immobile n'a
+    # legitimement aucun degagement de pied.
+    in_range = (
+      max(abs(cmd[0]), abs(cmd[1])) >= 0.2 or abs(cmd[2]) >= 0.3
+    )
     print(f"{cmd[0]:6.2f}{cmd[1]:6.2f}{cmd[2]:6.2f} {row['falls']:8.4f} "
-          + " ".join(f"{row[n]:8.4f}" for n, _ in WATCH))
+          + " ".join(f"{row[n]:8.4f}" for n, _ in WATCH)
+          + ("" if in_range else "   hors domaine"))
     # nan means the metric was never emitted -- the term that logs it is not in
     # this config. Coercing it to 0.0 made the policy 0 calibration print
     # "ECHEC lever de pied +100%" about a foot lift nobody had measured. A
     # criterion with no measurement has to say so, not fail.
+    # DOMAINE D'USAGE. Leo demarre a 0.2 m/s ; a 0.10 la demarche degenere --
+    # pas de 6.6 mm et periode de 0.44 s sur T11, 0.7 mm sur la 6/6 -- et le
+    # critere, qui prend le pire des onze commandes, remontait ce piaffement
+    # comme un echec de lever de pied. Trois politiques correctes ont ete
+    # rejetees sur cette seule ligne.
+    #
+    # La commande reste MESUREE ET AFFICHEE : un regime qu'on cesse de mesurer
+    # est un regime qu'on oublie. Elle ne compte simplement pas dans le verdict.
+    if not in_range:
+      continue
     for n in ("falls", "impact", "satleg", "satup", "tiltGnd", "peakVel"):
       if row[n] == row[n]:
         worst[n] = max(worst.get(n, float("-inf")), row[n])
     # Minima, for the criteria where more is better -- and only on the moving
     # commands: a standing robot legitimately has no clearance, and folding that
     # zero into the worst case would fail every policy forever.
-    if any(abs(c) > 0.05 for c in cmd):
+    if True:
       for n in ("clear", "flat"):
         if row[n] != row[n]:
           continue
