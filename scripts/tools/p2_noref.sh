@@ -29,11 +29,16 @@ export RHPS1_UPPER_SCALE=0.0007
 export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.03
 export RHPS1_W_DESCENT=-120.0 RHPS1_DESCENT_LIMIT=0.12
 export RHPS1_W_SWINGBONUS=3.0 RHPS1_SWINGBONUS_H=0.05
+# Pied a plat. Retirer la reference n'a PAS suffi : le talon est remonte a 0.80
+# pendant le transitoire de reprise puis redescend, 0.556 a +225 iterations et
+# toujours en baisse. -10 porte flat_support de -0.61 a environ -2.5, au-dessus
+# des penalites de cheville (-0.85 et -1.07) qui l'ecrasaient.
+export RHPS1_W_FLATSUP=${RHPS1_W_FLATSUP:--10.0}
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-05_05-04-55 --agent.load-checkpoint model_12750.pt \
+  --agent.load-run 2026-09-07_11-35-15 --agent.load-checkpoint model_12900.pt \
   --agent.max-iterations 6000

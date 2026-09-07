@@ -204,7 +204,23 @@ def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
   #                          not charged a full deficit at zero command
   #   load_threshold   0  -> `loaded` collapses to `in_contact`
   # What is left is sum(square(deficit) * in_contact): July's line for line.
-  r["flat_support"].weight = -2.4
+  # -2.4 par defaut (valeur de la policy 0), surchargeable. La marche sur la
+  # POINTE, reperee par Leo sur les videos le 2026-09-07 et confirmee par la
+  # mesure, s'aggrave le long de la lignee : contact talon 0.60 sur la 6/6,
+  # 0.42 sur l'index 11, 0.23 sur P1b, et l'inclinaison de semelle a la pose
+  # passe de 0.024 a 0.103 rad. Aucun critere ne la voyait.
+  #
+  # La cause est un rapport de forces, deja ecrit dans env_cfgs : mettre le pied
+  # a plat coute plus en couple de cheville que ce terme ne paie.
+  #
+  #   flat_support        -0.61      ankle_pitch_torque  -0.85
+  #                                  ankle_roll_torque   -1.07
+  #
+  # flat_touchdown ne peut PAS servir de levier : son brut vaut 2.0 -- il voit
+  # tres bien le probleme -- mais son poids de -0.018 l'annule, et le monter
+  # tombe sous C7, cout attache a l'atterrissage, cinq effondrements au journal.
+  # flat_support se paie EN APPUI : planer ne l'evite pas, l'aplatissement si.
+  r["flat_support"].weight = float(os.environ.get("RHPS1_W_FLATSUP", "-2.4"))
   r["flat_support"].params["corner_tolerance"] = 0.0
   r["flat_support"].params["change_gain"] = 0.0
   r["flat_support"].params["standing_threshold"] = -1.0
