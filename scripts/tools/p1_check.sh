@@ -47,6 +47,13 @@ W=[("reward","Train/mean_reward",None,None),
    ("impact","Metrics/landing_vel_mean","<=",0.100),
    ("falls","Episode_Termination/fell_down","<=",0.010),
    ("lift","Metrics/sole_height_p90",">=",0.045),
+   # Marche sur la pointe. Repere par Leo a l'oeil sur les videos, confirme par
+   # la mesure : le contact talon s'effondre le long de la lignee, 0.60 sur la
+   # 6/6, 0.42 sur l'index 11, 0.23 sur P1b, pendant que l'inclinaison de
+   # semelle a la pose est multipliee par quatre (0.024 -> 0.103 rad).
+   # Aucun de mes trois criteres ne le voyait.
+   ("talon","Metrics/contact_heel_frac",">=",0.500),
+   ("tiltPose","Metrics/sole_tilt_touchdown","<=",0.040),
    ("--","",None,None),
    ("refErr","Metrics/bwc_ref_err_rad",".",0.030),
    ("demiPer","Metrics/step_period_mean",".",0.450),
