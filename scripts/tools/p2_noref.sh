@@ -27,7 +27,27 @@ export RHPS1_W_BWCREF=1e-9
 export RHPS1_CLOCK_SLOW=0.9 RHPS1_CLOCK_FAST=0.9
 export RHPS1_UPPER_SCALE=0.0007
 export RHPS1_DEMAND_POWER=1.0 RHPS1_DEMAND_CAP=12.0 RHPS1_W_DEMAND=-0.03
-export RHPS1_W_DESCENT=-120.0 RHPS1_DESCENT_LIMIT=0.12
+# LIMITE DE DESCENTE 0.35 et non 0.12, et c'est de l'arithmetique.
+#
+# A cadence 0.9 s le vol dure 0.32-0.40 s. Descendre 4.5 cm a 0.12 m/s prend
+# 0.375 s -- il faudrait tout le vol rien que pour la descente, sans compter la
+# montee. Le plafond atteignable est donc ~0.12 x 0.2 = 2.4 cm, et on mesure
+# 1.7. Cadence rapide, descente lente et lever haut : on ne peut en avoir que
+# deux.
+#
+#                 index 11      P1b      P2c
+#   air time        0.5483   0.4063   0.3200
+#   lever p90       0.0490   0.0433   0.0169
+#
+# Le BWC s'en sort autrement, et je l'avais mesure sans en tirer la
+# consequence : sa vitesse verticale atteint 0.40 m/s en plein vol et il
+# n'arrive qu'a 0.047-0.185 a la pose. Il TOMBE VITE ET FREINE A LA FIN.
+# descent_speed_cost penalise la descente pendant TOUT le vol, ce qui interdit
+# ce profil.
+#
+# 0.35 laisse tomber librement jusqu'a la vitesse de vol du BWC ; impact_vel
+# garde l'arrivee douce, et c'est lui qui doit porter cette contrainte.
+export RHPS1_W_DESCENT=-120.0 RHPS1_DESCENT_LIMIT=${RHPS1_DESCENT_LIMIT:-0.35}
 export RHPS1_W_SWINGBONUS=3.0 RHPS1_SWINGBONUS_H=0.05
 # Pied a plat. Retirer la reference n'a PAS suffi : le talon est remonte a 0.80
 # pendant le transitoire de reprise puis redescend, 0.556 a +225 iterations et
@@ -45,5 +65,5 @@ exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-07_12-07-19 --agent.load-checkpoint model_13050.pt \
+  --agent.load-run 2026-09-07_12-32-37 --agent.load-checkpoint model_13500.pt \
   --agent.max-iterations 6000
