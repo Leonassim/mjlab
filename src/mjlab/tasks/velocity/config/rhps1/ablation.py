@@ -256,7 +256,25 @@ def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   r["ankle_roll_torque"] = RewardTermCfg(
     func=mdp.joint_effort_l2,
-    weight=-0.002,
+    # -0.0008 par defaut au lieu de -0.002. env_cfgs porte deja l'avertissement,
+    # mais il ne visait que le coefficient ANKLE_R de joint_torques_l2 : "tenir
+    # la semelle a plat contre l'affaissement de cheville demande du couple de
+    # roulis soutenu, et le taxer est ce qui a bloque flat_support". Le vrai
+    # cout est ici, dans le terme dedie.
+    #
+    # Mesure du 2026-09-07, apres avoir porte flat_support de -2.4 a -10 :
+    #
+    #   flat_support        -3.592      mettre le pied a plat
+    #   ankle_roll_torque   -2.672      le couple de roulis que ca demande
+    #   ankle_pitch_torque  -0.835
+    #                       ------
+    #   cheville, total     -3.507   contre  -3.592
+    #
+    # Egalite : la politique paie exactement ce qu'elle gagne a aplatir, donc
+    # elle ne le fait pas. Monter encore flat_support ne ferait que deplacer le
+    # point d'equilibre, puisque le cout de roulis monte AVEC l'aplatissement.
+    # Il faut relacher l'autre moitie.
+    weight=float(os.environ.get("RHPS1_W_ANKLE_ROLL", "-0.0008")),
     params={
       "actuator_pattern": r"^[LR]_ANKLE_R$",
       "asset_cfg": SceneEntityCfg("robot"),

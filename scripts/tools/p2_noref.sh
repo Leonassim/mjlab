@@ -34,11 +34,16 @@ export RHPS1_W_SWINGBONUS=3.0 RHPS1_SWINGBONUS_H=0.05
 # toujours en baisse. -10 porte flat_support de -0.61 a environ -2.5, au-dessus
 # des penalites de cheville (-0.85 et -1.07) qui l'ecrasaient.
 export RHPS1_W_FLATSUP=${RHPS1_W_FLATSUP:--10.0}
+# Les DEUX moities du meme rapport de forces. flat_support a -10 seul a produit
+# une egalite (-3.592 contre -3.507 de cheville) : la politique paie exactement
+# ce qu'elle gagne a aplatir, donc elle ne le fait pas. Relacher le roulis fait
+# basculer.
+export RHPS1_W_ANKLE_ROLL=${RHPS1_W_ANKLE_ROLL:--0.0008}
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-07_11-35-15 --agent.load-checkpoint model_12900.pt \
+  --agent.load-run 2026-09-07_12-07-19 --agent.load-checkpoint model_13050.pt \
   --agent.max-iterations 6000
