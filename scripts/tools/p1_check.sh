@@ -52,7 +52,15 @@ W=[("reward","Train/mean_reward",None,None),
    # 6/6, 0.42 sur l'index 11, 0.23 sur P1b, pendant que l'inclinaison de
    # semelle a la pose est multipliee par quatre (0.024 -> 0.103 rad).
    # Aucun de mes trois criteres ne le voyait.
-   ("talon","Metrics/contact_heel_frac",">=",0.500),
+   # BILATERAL. contact_heel_frac est la PART DE CHARGE sur les boites arriere,
+   # pas un temps de contact : 0.5 = centre, au-dessus = sur les talons, en
+   # dessous = sur les pointes. Ma premiere version demandait ">= 0.50", c'est-a
+   # -dire d'etre sur les TALONS -- exactement le defaut que Leo avait observe
+   # sur le vrai robot, note dans rewards.py:3010. Le critere est l'ECART AU
+   # CENTRE.
+   #   6/6 0.603 (+0.103 talons)   index 11 0.425 (-0.075)
+   #   P1b 0.228 (-0.272, le defaut vu en video)   P2c 0.392 (-0.108)
+   ("|talon-.5|","Metrics/contact_heel_frac","centre",0.500),
    ("tiltPose","Metrics/sole_tilt_touchdown","<=",0.040),
    ("--","",None,None),
    ("refErr","Metrics/bwc_ref_err_rad",".",0.030),
@@ -66,8 +74,11 @@ for n,tag,op,tgt in W:
         print("  --- diagnostics (n'emportent pas le verdict) ---"); continue
     d=S(tag)
     if not d: continue
-    row="".join(f"{d[i]:10.4f}" if i in d else f"{'--':>10s}" for i in show)
-    c="" if op is None else (f"   suivi ~{tgt}" if op=="." else f"   {op} {tgt}")
+    f=(lambda x: abs(x-tgt)) if op=="centre" else (lambda x: x)
+    row="".join(f"{f(d[i]):10.4f}" if i in d else f"{'--':>10s}" for i in show)
+    c=("" if op is None else
+       (f"   suivi ~{tgt}" if op=="." else
+        ("   <= 0.10 (ecart au centre)" if op=="centre" else f"   {op} {tgt}")))
     print(f"{n:9s}{row}{c}")
 # convergence : plateau du reward sur le dernier quart
 r=[S("Train/mean_reward")[i] for i in its]
