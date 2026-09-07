@@ -53,6 +53,11 @@ export RHPS1_W_SWINGBONUS=3.0 RHPS1_SWINGBONUS_H=0.05
 # pendant le transitoire de reprise puis redescend, 0.556 a +225 iterations et
 # toujours en baisse. -10 porte flat_support de -0.61 a environ -2.5, au-dessus
 # des penalites de cheville (-0.85 et -1.07) qui l'ecrasaient.
+# Plancher de hauteur de vol. C'est LUI qui fixe le lever, pas le bonus : la
+# politique satisfait le plancher au millimetre (0.0150 impose, 0.0153 realise)
+# et jamais plus. Porte a la mediane du BWC (3.2 cm), bas de la fourchette de
+# Leo.
+export RHPS1_MIN_FOOT_H=${RHPS1_MIN_FOOT_H:-0.030}
 export RHPS1_W_FLATSUP=${RHPS1_W_FLATSUP:--10.0}
 # Les DEUX moities du meme rapport de forces. flat_support a -10 seul a produit
 # une egalite (-3.592 contre -3.507 de cheville) : la politique paie exactement
@@ -65,5 +70,5 @@ exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-07_12-32-37 --agent.load-checkpoint model_13500.pt \
+  --agent.load-run 2026-09-07_13-42-48 --agent.load-checkpoint model_13800.pt \
   --agent.max-iterations 6000

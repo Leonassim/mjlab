@@ -796,7 +796,19 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     weight=-5.0,
     params={
       # True sole clearance: the foot sites sit in the sole plane.
-      "min_height": 0.015,
+      #
+      # 0.030 et non 0.015. Ce plancher est ce qui FIXE la hauteur de vol : la
+      # politique le satisfait exactement et pas un millimetre de plus --
+      # mesure du 2026-09-07, plancher 0.0150, lever realise 0.0153. Le bonus de
+      # vol, qui paie pourtant jusqu'a 0.05, n'a jamais reussi a pousser
+      # au-dela, et plusieurs runs l'ont monte en vain (3.0), ainsi que la
+      # cadence et la limite de descente.
+      #
+      # 0.030 est la mediane du BWC (3.2 cm) et le bas de la fourchette de Leo
+      # (3 a 5 cm). Ce n'est pas un cout attache a l'atterrissage : le deficit
+      # se paie pendant la phase de vol prescrite par l'horloge, donc ne pas
+      # atterrir ne l'evite pas -- au contraire, ne pas lever le paie plein.
+      "min_height": float(os.environ.get("RHPS1_MIN_FOOT_H", "0.030")),
       "reward_name": "gait_phase",
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),
     },
