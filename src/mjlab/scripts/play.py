@@ -399,6 +399,11 @@ def run_play(task_id: str, cfg: PlayConfig):
     env.unwrapped._debug_impact_force_sensors = _force
     env.unwrapped._debug_impact_vel_sensors = _vel
     env.unwrapped._debug_impact_force_threshold = 50.0
+    # Commande affichee au terminal : la fleche seule ne dit pas si on commande
+    # quelque chose, puisqu'elle est de longueur nulle -- donc invisible -- a
+    # commande nulle.
+    env.unwrapped._debug_log_command = True
+    env.unwrapped._debug_log_command_every = 100
     print("[INFO]: vitesses d'impact affichees a chaque pose de pied.")
   except Exception as _e:
     print(f"[WARN]: affichage des impacts indisponible ({_e}).")

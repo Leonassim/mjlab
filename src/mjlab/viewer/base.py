@@ -292,6 +292,7 @@ class BaseViewer(ABC):
         self._step_count += 1
         self._stats_steps += 1
         self._maybe_log_impact_velocities()
+        self._maybe_log_command()
         return True
     except Exception:
       self._last_error = traceback.format_exc()
@@ -301,6 +302,40 @@ class BaseViewer(ABC):
       )
       self.pause()
       return False
+
+  def _maybe_log_command(self) -> None:
+    """Afficher la commande de vitesse effectivement envoyee a la politique.
+
+    La fleche de debug ne suffit pas a savoir si on commande quelque chose :
+    elle est de LONGUEUR NULLE quand la commande est nulle, donc invisible,
+    et un environnement "standing" tient une commande nulle quoi que demande le
+    curseur -- une chance sur cinq en lecture avant que rel_standing_envs soit
+    force a 0. Impossible alors de distinguer "je ne commande rien" de "la
+    politique n'avance pas".
+
+    Affiche la commande ET la vitesse mesuree, pour que les deux se comparent.
+    """
+    env = self.env.unwrapped
+    if not getattr(env, "_debug_log_command", False):
+      return
+    n = getattr(self, "_cmd_tick", 0)
+    self._cmd_tick = n + 1
+    every = int(getattr(env, "_debug_log_command_every", 100))
+    if n % every:
+      return
+    try:
+      cm = env.command_manager.get_term("twist")
+      c = cm.vel_command_b[0]
+      v = cm.robot.data.root_link_lin_vel_b[0]
+      w = cm.robot.data.root_link_ang_vel_b[0]
+      standing = bool(cm.is_standing_env[0]) if hasattr(cm, "is_standing_env") else False
+      print(
+        f"[cmd] demande vx {float(c[0]):+.3f} vy {float(c[1]):+.3f} yaw {float(c[2]):+.3f}"
+        f"   |   mesure vx {float(v[0]):+.3f} vy {float(v[1]):+.3f} yaw {float(w[2]):+.3f}"
+        + ("   [ENV IMMOBILE : la commande est ignoree]" if standing else "")
+      )
+    except Exception:
+      pass
 
   def _maybe_log_impact_velocities(self) -> None:
     """Print foot impact velocity and peak swing height at each touchdown.

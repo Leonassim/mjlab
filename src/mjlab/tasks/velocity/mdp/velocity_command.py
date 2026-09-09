@@ -328,13 +328,18 @@ class UniformVelocityCommand(CommandTerm):
       ) -> np.ndarray:
         return pos + mat @ vec
 
-      # Command linear velocity arrow (blue).
+      # Commande lineaire : ROUGE VIF ET OPAQUE, et deux fois plus epaisse que
+      # les fleches d'etat. Elle etait en bleu fonce a 60 % d'opacite et large
+      # de 0.015, donc invisible en pratique -- Leo n'arrivait pas a savoir s'il
+      # envoyait une commande, ce qui rend tout test de lecture ininterpretable.
+      # Meme origine et meme echelle que la fleche d'etat, pour que les deux se
+      # comparent directement : longueur = vitesse x 0.5.
       cmd_lin_from = local_to_world(np.array([0, 0, z_offset]) * scale)
       cmd_lin_to = local_to_world(
         (np.array([0, 0, z_offset]) + np.array([cmd[0], cmd[1], 0])) * scale
       )
       visualizer.add_arrow(
-        cmd_lin_from, cmd_lin_to, color=(0.2, 0.2, 0.6, 0.6), width=0.015
+        cmd_lin_from, cmd_lin_to, color=(1.0, 0.1, 0.1, 1.0), width=0.030
       )
 
       # Command angular velocity arrow (green).
@@ -342,8 +347,9 @@ class UniformVelocityCommand(CommandTerm):
       cmd_ang_to = local_to_world(
         (np.array([0, 0, z_offset]) + np.array([0, 0, cmd[2]])) * scale
       )
+      # Commande angulaire : orange, meme epaisseur que la commande lineaire.
       visualizer.add_arrow(
-        cmd_ang_from, cmd_ang_to, color=(0.2, 0.6, 0.2, 0.6), width=0.015
+        cmd_ang_from, cmd_ang_to, color=(1.0, 0.55, 0.0, 1.0), width=0.030
       )
 
       # Actual linear velocity arrow (cyan).

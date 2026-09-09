@@ -43,7 +43,19 @@ print(f"run {sys.argv[1].rstrip('/').split('/')[-1]}   iteration {its[-1]}")
 # N'IMPORTE QUEL pied (landed = first.any(dim=1)), donc un DEMI-cycle. La cible
 # 0.45 correspond au cycle complet de 0.887 s du BWC. Lu comme un cycle complet,
 # il ferait croire a un facteur deux qui n'existe pas.
+# SUIVI DE COMMANDE. Absent de tous mes criteres jusqu'au 2026-09-08, et c'est
+# le plus elementaire : est-ce que le robot va ou on lui dit. L'index 12 a ete
+# propose au test sur mc_mujoco sans avancer du tout, et la metrique le disait.
+#
+#   policy 0   0.1451      6/6  0.4911      index 11  0.4872      index 12  0.3724
+#
+# Toute la lignee depuis la 6/6 suit trois fois moins bien que la policy 0, avec
+# une erreur SUPERIEURE a la plage de commande (+/-0.30). Le piege : je lisais
+# track_linear_velocity, une recompense en exp(-erreur) qui parait bonne, au
+# lieu de l'erreur elle-meme rapportee a l'echelle de la commande.
 W=[("reward","Train/mean_reward",None,None),
+   ("suivi vxy","Metrics/twist/error_vel_xy","<=",0.150),
+   ("suivi yaw","Metrics/twist/error_vel_yaw","<=",0.170),
    ("impact","Metrics/landing_vel_mean","<=",0.100),
    ("falls","Episode_Termination/fell_down","<=",0.010),
    ("lift","Metrics/sole_height_p90",">=",0.045),
@@ -62,6 +74,11 @@ W=[("reward","Train/mean_reward",None,None),
    #   P1b 0.228 (-0.272, le defaut vu en video)   P2c 0.392 (-0.108)
    ("|talon-.5|","Metrics/contact_heel_frac","centre",0.500),
    ("tiltPose","Metrics/sole_tilt_touchdown","<=",0.040),
+   # Posture : le roulis de hanche mesure l'ecartement des jambes, defaut
+   # signale par Leo le 2026-09-09. Pas de metrique existante, on suit le cout
+   # de crotch_proximity : c'est lui qui paie l'ecartement, donc il baisse quand
+   # les jambes se resserrent.
+   ("crotchProx","Episode_Reward/crotch_proximity",">=",-0.200),
    ("--","",None,None),
    ("refErr","Metrics/bwc_ref_err_rad",".",0.030),
    ("demiPer","Metrics/step_period_mean",".",0.450),

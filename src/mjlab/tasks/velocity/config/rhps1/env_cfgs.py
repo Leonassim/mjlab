@@ -612,7 +612,27 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # dont les coques mc_rtc sont plus epaisses que le maillage mujoco, ecart
     # mesure et documente. La meme correction s'applique peut-etre ailleurs mais
     # elle n'y a pas ete mesuree, donc elle n'y est pas appliquee.
-    (crotch_proximity_cfg, 0.06),
+    # 0.04 par defaut au lieu de 0.06. Ce seuil, mesure le 2026-09-09, est ce
+    # qui ECARTE LES JAMBES : le terme coute -0.478 et pousse activement les
+    # cuisses a s'ecarter, pendant que feet_distance, qui devrait tenir
+    # l'ecartement, ne coute que -0.001 parce que les pieds restent dans sa
+    # fenetre et qu'il ne se declenche jamais. Le calcul de la politique est
+    # sans ambiguite : ecarter rapporte, resserrer ne coute rien.
+    #
+    # Mesure a l'arret, politique armee, IDENTIQUE en simulation et au
+    # deploiement -- ce n'est donc ni la masse, ni le glissement, ni le QP :
+    #
+    #                  mjlab    mc_mujoco
+    #   L_CROTCH_R    +4.1 deg    +2.5 deg   ecart au defaut
+    #   R_CROTCH_R    -5.3 deg    -4.6 deg
+    #   R_ANKLE_R     +5.7 deg    +5.0 deg   les chevilles compensent
+    #
+    # La policy 0, dont la posture convient a Leo, n'a PAS ce terme du tout.
+    # Il a ete ajoute pour l'evitement d'auto-collision, ce qui est legitime,
+    # mais son prix n'avait jamais ete mesure : une posture ecartee en
+    # permanence. A 0.04 la marge reste et il cesse de pousser des que les
+    # jambes sont normalement placees.
+    (crotch_proximity_cfg, float(os.environ.get("RHPS1_CROTCH_MINDIST", "0.04"))),
     (leg_proximity_cfg, 0.02),
     (knee_proximity_cfg, 0.035),
     (arm_torso_proximity_cfg, 0.05),
@@ -1445,6 +1465,19 @@ def rhps1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Ablation ladder, no-op unless RHPS1_ABLATION is set. Applied last so it sees
   # the finished configuration and nothing downstream can undo it.
   ablation.apply_env(cfg)
+
+  # AUCUN environnement immobile en lecture, et APRES l'ablation : celle-ci
+  # ecrase la valeur (0.2 en sortie de rung, 0.4 dans la config de base), donc
+  # la poser dans le bloc `if play` plus haut ne sert a rien -- essaye, mesure a
+  # 0.2 quand meme.
+  #
+  # Un env "standing" tient une commande NULLE quoi que demande le curseur. Avec
+  # un seul environnement en lecture, c'est une chance sur cinq de regarder un
+  # robot qui ignore le joystick et d'en conclure que la politique n'avance pas.
+  if play:
+    c = getattr(cfg, "commands", None)
+    if c is not None and "twist" in c:
+      c["twist"].rel_standing_envs = 0.0
 
   # En lecture, retirer ce qui ne sert qu'a l'entrainement. Mesure du
   # 2026-09-02, un environnement sur CPU : config complete 60.6 ms, sans les
