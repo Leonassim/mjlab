@@ -20,11 +20,19 @@ export RHPS1_W_DESCENT=-120.0 RHPS1_DESCENT_LIMIT=0.12
 export RHPS1_W_SWINGBONUS=3.0 RHPS1_SWINGBONUS_H=0.05
 export RHPS1_W_FLATSUP=-10.0 RHPS1_W_ANKLE_ROLL=-0.0008
 export RHPS1_CROTCH_MINDIST=${RHPS1_CROTCH_MINDIST:-0.04}
+# SUIVI DE COMMANDE, x2. Il ne pesait plus que 33 % du budget positif (4.82 sur
+# 14.47) contre 64.5 % pour la policy 0, seule politique qui suit vraiment sa
+# commande. Vingt-six termes de qualite de marche ont noye celui qui compte, et
+# le robot fait un calcul rationnel : il piaffe joliment sur place plutot que
+# d'avancer. Erreur mesuree 0.35 m/s pour une plage de +/-0.30, contre 0.145
+# pour la policy 0.
+export RHPS1_W_TRACK_LIN=${RHPS1_W_TRACK_LIN:-12.0}
+export RHPS1_W_TRACK_ANG=${RHPS1_W_TRACK_ANG:-12.0}
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
   --env.scene.num-envs 4096 --video True \
   --video-interval 6000 --video-length 600 \
   --agent.resume True \
-  --agent.load-run 2026-09-07_14-40-21 --agent.load-checkpoint model_19799.pt \
+  --agent.load-run 2026-09-10_09-47-21 --agent.load-checkpoint model_25950.pt \
   --agent.max-iterations 4000

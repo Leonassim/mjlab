@@ -464,13 +464,20 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if reward_name in cfg.rewards and "asset_cfg" in cfg.rewards[reward_name].params:
       cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
-  cfg.rewards["track_linear_velocity"].weight = 3.5
+  # 3.5 par defaut, surchargeable. Le suivi de commande ne pese plus que 33 %
+  # du budget positif contre 64.5 % pour la policy 0 : on a empile 26 termes de
+  # qualite de marche et la seule chose qui compte -- aller ou on lui dit -- est
+  # devenue minoritaire. Erreur mesuree 0.35 m/s pour une plage de +/-0.30,
+  # contre 0.145 pour la policy 0.
+  cfg.rewards["track_linear_velocity"].weight = float(
+    os.environ.get("RHPS1_W_TRACK_LIN", "3.5"))
   # Policy 0's kernel (2026-08-16). At 0.40 a motionless robot already collects
   # 78% of this term against 43% at 0.20, so the wider kernel barely asks for
   # anything. 0.20 was tried on 2026-08-15 and destabilised that run, but paired
   # with the tightened randomisation this run drops -- so it goes back with it.
   cfg.rewards["track_linear_velocity"].params["std"] = 0.20
-  cfg.rewards["track_angular_velocity"].weight = 3.5
+  cfg.rewards["track_angular_velocity"].weight = float(
+    os.environ.get("RHPS1_W_TRACK_ANG", "3.5"))
   cfg.rewards["track_angular_velocity"].params["std"] = 0.35
 
   # The only term that says which way to move to fix a bad standing posture;
