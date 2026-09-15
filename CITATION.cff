@@ -33,9 +33,9 @@ keywords:
   - reinforcement-learning
   - robotics
 license: Apache-2.0
-commit: 7a09f6e8c03defd789474a92b112a91360d94268
-version: 1.5.2
-date-released: '2026-07-17'
+commit: 0af4087961d6fbe573243951547eb384983aa9c9
+version: 1.6.0
+date-released: '2026-08-08'
 preferred-citation:
   type: article
   title: >-

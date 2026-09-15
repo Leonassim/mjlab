@@ -1,6 +1,7 @@
 """Tests for spec_config.py."""
 
 import math
+from typing import cast
 
 import mujoco
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from mjlab.utils.spec_config import (
   CameraCfg,
   CollisionCfg,
+  GeomCfg,
   LightCfg,
   MaterialCfg,
   MeshCfg,
@@ -76,6 +78,8 @@ def test_collision_regex_matching(multi_geom_spec):
   """CollisionCfg should support regex pattern matching."""
   collision_cfg = CollisionCfg(
     geom_names_expr=(r"^(left|right)_foot\d_collision$",),
+    contype=1,
+    conaffinity=1,
     condim=3,
     priority=1,
     friction=(0.6,),
@@ -99,6 +103,8 @@ def test_collision_dict_field_resolution(multi_geom_spec):
   """CollisionCfg should support dict-based field resolution."""
   collision_cfg = CollisionCfg(
     geom_names_expr=(r".*_foot\d_collision$", "arm_collision"),
+    contype=1,
+    conaffinity=1,
     condim={r".*_foot\d_collision$": 3, "arm_collision": 1},
     priority={r".*_foot\d_collision$": 2, "arm_collision": 0},
   )
@@ -117,6 +123,10 @@ def test_collision_margin_gap_solmix(multi_geom_spec):
   """CollisionCfg should set margin, gap, and solmix on matched geoms."""
   collision_cfg = CollisionCfg(
     geom_names_expr=("arm_collision",),
+    contype=1,
+    conaffinity=1,
+    condim=3,
+    priority=0,
     margin=0.01,
     gap=0.005,
     solmix=0.5,
@@ -134,6 +144,10 @@ def test_collision_margin_gap_solmix_dict(multi_geom_spec):
   """CollisionCfg should support dict-based margin, gap, solmix overrides."""
   collision_cfg = CollisionCfg(
     geom_names_expr=(r".*_foot\d_collision$", "arm_collision"),
+    contype=1,
+    conaffinity=1,
+    condim=3,
+    priority=0,
     margin={r".*_foot\d_collision$": 0.02, "arm_collision": 0.01},
     gap={r".*_foot\d_collision$": 0.01, "arm_collision": 0.0},
     solmix={r".*_foot\d_collision$": 0.8, "arm_collision": 0.2},
@@ -151,10 +165,41 @@ def test_collision_margin_gap_solmix_dict(multi_geom_spec):
   assert arm.solmix == pytest.approx(0.2)
 
 
+def test_collision_structural_dict_requires_coverage(multi_geom_spec):
+  """Dict-valued structural fields must cover every matched geom."""
+  collision_cfg = CollisionCfg(
+    geom_names_expr=(".*_collision",),
+    contype=1,
+    conaffinity=1,
+    condim={r".*_foot\d_collision$": 3},  # Does not cover arm_collision.
+    priority=0,
+  )
+  with pytest.raises(ValueError, match="condim dict does not match geom"):
+    collision_cfg.edit_spec(multi_geom_spec)
+
+
+def test_collision_structural_fields_are_required():
+  """Structural fields cannot be None."""
+  cfg = CollisionCfg(
+    geom_names_expr=(".*",),
+    contype=1,
+    conaffinity=1,
+    condim=cast(int, None),
+    priority=0,
+  )
+  with pytest.raises(ValueError, match="condim is required"):
+    cfg.validate()
+
+
 def test_collision_disable_other_geoms(multi_geom_spec):
   """CollisionCfg should disable non-matching geoms when requested."""
   collision_cfg = CollisionCfg(
-    geom_names_expr=("left_foot1_collision",), contype=2, disable_other_geoms=True
+    geom_names_expr=("left_foot1_collision",),
+    contype=2,
+    conaffinity=1,
+    condim=3,
+    priority=0,
+    disable_other_geoms=True,
   )
   collision_cfg.edit_spec(multi_geom_spec)
 
@@ -322,6 +367,83 @@ def test_texture_cfg():
   assert texture.name == "test_texture"
 
 
+def test_texture_cfg_image_fields():
+  """TextureCfg should set file, grid, nchannel, flip, and random fields."""
+  spec = mujoco.MjSpec()
+  texture_cfg = TextureCfg(
+    name="test_texture",
+    type="cube",
+    mark="random",
+    random=0.25,
+    file="sky.png",
+    gridsize=(3, 4),
+    gridlayout=".U..LFRB.D..",
+    nchannel=4,
+    hflip=True,
+    vflip=True,
+  )
+  texture_cfg.edit_spec(spec)
+
+  texture = spec.texture("test_texture")
+  assert texture.file == "sky.png"
+  assert tuple(texture.gridsize) == (3, 4)
+  assert texture.nchannel == 4
+  assert texture.hflip
+  assert texture.vflip
+  assert texture.random == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+  "param,value,expected_error",
+  [
+    ("width", 0, "width must be positive"),
+    ("width", -1, "width must be positive"),
+    ("height", 0, "height must be positive"),
+    ("height", -1, "height must be positive"),
+  ],
+)
+def test_texture_cfg_validation(param, value, expected_error):
+  """TextureCfg should validate explicitly set width and height."""
+  with pytest.raises(ValueError, match=expected_error):
+    TextureCfg(
+      name="test_texture",
+      type="2d",
+      builtin="checker",
+      width=value if param == "width" else 64,
+      height=value if param == "height" else 64,
+    ).validate()
+
+
+def test_texture_requires_source():
+  """A texture with no builtin, file, or cubefiles has nothing to render."""
+  with pytest.raises(ValueError, match="must specify a builtin pattern"):
+    TextureCfg(name="test_texture", type="2d").validate()
+
+
+@pytest.mark.parametrize("gridsize", [None, (1, 1)])
+def test_texture_single_file_skybox_validation(gridsize):
+  """A single-image skybox cannot be sampled as six faces by the Warp renderer."""
+  with pytest.raises(ValueError, match="must declare a gridsize"):
+    TextureCfg(
+      name="sky", type="skybox", file="sky.png", gridsize=gridsize
+    ).validate()
+
+
+def test_texture_skybox_allows_grid_and_cubefiles():
+  """A larger grid or explicit cubefiles cover all six faces."""
+  TextureCfg(name="sky", type="skybox", file="sky.png", gridsize=(6, 1)).validate()
+  TextureCfg(
+    name="sky", type="skybox", cubefiles=("a", "b", "c", "d", "e", "f")
+  ).validate()
+
+
+def test_texture_skybox_builtin_overrides_single_file():
+  """A builtin pattern takes precedence over the file, so the grid is irrelevant."""
+  TextureCfg(
+    name="sky", type="skybox", builtin="gradient", file="sky.png"
+  ).validate()
+
+
 def test_material_cfg():
   """MaterialCfg should add materials to spec."""
   spec = mujoco.MjSpec()
@@ -351,6 +473,27 @@ def test_light_cfg():
 
   light = spec.light("test_light")
   assert light.name == "test_light"
+
+
+def test_light_cfg_color_and_attenuation():
+  """LightCfg should set diffuse, specular, ambient, active, attenuation."""
+  spec = mujoco.MjSpec()
+  light_cfg = LightCfg(
+    name="test_light",
+    diffuse=(1.0, 0.0, 0.0),
+    specular=(0.0, 1.0, 0.0),
+    ambient=(0.0, 0.0, 1.0),
+    active=False,
+    attenuation=(1.0, 0.5, 0.25),
+  )
+  light_cfg.edit_spec(spec)
+
+  light = spec.light("test_light")
+  assert tuple(light.diffuse) == pytest.approx((1.0, 0.0, 0.0))
+  assert tuple(light.specular) == pytest.approx((0.0, 1.0, 0.0))
+  assert tuple(light.ambient) == pytest.approx((0.0, 0.0, 1.0))
+  assert not light.active
+  assert tuple(light.attenuation) == pytest.approx((1.0, 0.5, 0.25))
 
 
 def test_camera_cfg():
@@ -396,3 +539,84 @@ def test_material_cfg_geom_assignment():
   assert spec.geom("link1_visual").material == "my_mat"
   assert spec.geom("link2_visual").material == "my_mat"
   assert spec.geom("arm_collision").material == ""
+
+
+def test_geom_group_basic(multi_geom_spec):
+  """GeomCfg should set the group of matching geoms."""
+  group_cfg = GeomCfg(
+    geom_names_expr=(r"^(left|right)_foot\d_collision$",), group=3
+  )
+  group_cfg.edit_spec(multi_geom_spec)
+
+  assert multi_geom_spec.geom("left_foot1_collision").group == 3
+  assert multi_geom_spec.geom("right_foot3_collision").group == 3
+
+  arm = multi_geom_spec.geom("arm_collision")
+  assert arm.group == 0  # Default unchanged.
+
+
+def test_geom_group_none_is_noop(multi_geom_spec):
+  """GeomCfg should leave the group alone when it is None."""
+  multi_geom_spec.geom("arm_collision").group = 2
+  GeomCfg(geom_names_expr=(".*",)).edit_spec(multi_geom_spec)
+
+  assert multi_geom_spec.geom("arm_collision").group == 2
+
+
+def test_geom_group_dict_field_resolution(multi_geom_spec):
+  """GeomCfg should support dict-based field resolution."""
+  group_cfg = GeomCfg(
+    geom_names_expr=(r".*_foot\d_collision$", "arm_collision"),
+    group={r".*_foot\d_collision$": 3, "arm_collision": 4},
+  )
+  group_cfg.edit_spec(multi_geom_spec)
+
+  assert multi_geom_spec.geom("left_foot1_collision").group == 3
+  assert multi_geom_spec.geom("arm_collision").group == 4
+
+
+def test_geom_group_unnamed_geoms():
+  """GeomCfg should update every matching geom, including unnamed ones."""
+  spec = mujoco.MjSpec()
+  body = spec.worldbody.add_body(name="test_body")
+  for _ in range(3):
+    body.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.1, 0.1, 0.1])
+
+  group_cfg = GeomCfg(geom_names_expr=(".*",), group=3)
+  group_cfg.edit_spec(spec)
+
+  assert [g.group for g in spec.geoms] == [3, 3, 3]
+
+
+@pytest.mark.parametrize("value", [-1, mujoco.mjNGROUP, {"arm_collision": -1}])
+def test_geom_group_validation(value):
+  """GeomCfg should validate the group."""
+  with pytest.raises(ValueError, match="group must be in"):
+    cfg = GeomCfg(geom_names_expr=("test",), group=value)
+    cfg.validate()
+
+
+def test_geom_patches_collision_attrs(multi_geom_spec):
+  """GeomCfg should patch collision attributes, leaving unset ones alone."""
+  multi_geom_spec.geom("left_foot1_collision").contype = 2
+  GeomCfg(
+    geom_names_expr=(r"^(left|right)_foot\d_collision$",),
+    condim=6,
+    friction=(1.0, 5e-3, 5e-4),
+  ).edit_spec(multi_geom_spec)
+
+  left_foot = multi_geom_spec.geom("left_foot1_collision")
+  assert left_foot.condim == 6
+  assert left_foot.friction[0] == pytest.approx(1.0)
+  assert left_foot.contype == 2  # Unset attribute untouched.
+
+  arm = multi_geom_spec.geom("arm_collision")
+  assert arm.condim == 3  # Unmatched geom untouched.
+
+
+def test_geom_collision_attr_validation():
+  """GeomCfg should validate collision attributes like CollisionCfg does."""
+  with pytest.raises(ValueError, match="condim must be one of"):
+    GeomCfg(geom_names_expr=("test",), condim=2).validate()
+  with pytest.raises(ValueError, match="solmix must be in"):
+    GeomCfg(geom_names_expr=("test",), solmix=1.5).validate()

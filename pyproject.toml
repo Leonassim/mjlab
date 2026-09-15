@@ -1,10 +1,10 @@
 [build-system]
-requires = ["uv_build>=0.8.19,<0.9.0"]
+requires = ["uv_build>=0.12.1,<0.13.0"]
 build-backend = "uv_build"
 
 [project]
 name = "mjlab"
-version = "1.5.2"
+version = "1.6.0"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 readme = { file = "README.md", content-type = "text/markdown" }
@@ -16,7 +16,6 @@ classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -34,26 +33,32 @@ dependencies = [
   "prettytable",
   "tqdm",
   "tyro>=1.0.1",
-  "torch>=2.7.0",
+  # Fige a 2.9.x : la fusion amont du 2026-09-15 a fait remonter le verrou a
+  # torch 2.11, et `uv run` synchronise l'environnement tout seul -- la mise a
+  # jour se serait produite en pleine session, avec un entrainement en cours et
+  # un pipeline d'export ONNX valide sur 2.9. A relever deliberement, pas par
+  # effet de bord.
+  "torch>=2.9.0,<2.10",
   "torchrunx>=0.3.4",
   "warp-lang>=1.14.0",
-  "mujoco-warp>=3.10.0.2,~=3.10.0",
-  "mujoco~=3.10.0",
+  "mujoco-warp~=3.11.0",
+  "mujoco~=3.11.0",
   "trimesh>=4.8.3",
   "scipy>=1.15",
   "viser>=1.0.27",
   "mjviser>=0.0.14",
-  "mediapy>=1.2.6",
-  # mediapy 1.2.6 subclasses npt.NDArray at import, which numpy>=2.5 rejects.
-  # The upstream fix (google/mediapy#66) is unmerged, so cap numpy until it lands.
-  "numpy<2.5",
+  "mediapy>=1.2.7",
+  "numpy",
   "imageio-ffmpeg",
   "tensordict",
-  "rsl-rl-lib==5.4.0",
+  # Epingle a 5.4.0 volontairement : l'amont est passe a 5.5.0 le 2026-09-15,
+   # mais les points de sauvegarde en cours et le pipeline d'export ONNX ont ete
+   # valides sur 5.4.0, et l'API bouge entre versions (act_inference, obs_groups).
+   # A relever une fois le run en cours termine et l'export reverifie.
+   "rsl-rl-lib==5.4.0",
   "tensorboard>=2.20.0",
   "onnxscript>=0.5.4",
-  "wandb>=0.22.3",
-  "inputs>=0.5",
+  "wandb>=0.22.3,<0.29",
 ]
 
 [project.urls]
@@ -75,7 +80,7 @@ dev = [
   "pyright>=1.1.408",
   "onnxruntime>=1.19.0; python_version >= '3.11'",
   "pytest>=v9.0.3",
-  "ruff>=v0.14.14",
+  "ruff>=0.16.1",
   "ty>=v0.0.14",
 ]
 docs = [
@@ -103,7 +108,7 @@ conflicts = [
   [{extra = "cu128"}, {extra = "cpu"}],
 ]
 constraint-dependencies = [
-  "GitPython>=3.1.49",
+  "GitPython>=3.1.57",
   "lxml>=6.1.0",
 ]
 required-environments = [
@@ -167,3 +172,10 @@ markers = [
   "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
 addopts = "--strict-markers"
+filterwarnings = [
+  # MuJoCo Warp warns that MULTICCD (enabled by default) generates at most one
+  # contact for CCD pairs it lacks multicontact support for (e.g. cylinder-box,
+  # hfield-capsule). Test fixtures aren't validating contact fidelity for these
+  # pairs, so silence the expected noise.
+  "ignore:MULTICCD is enabled, but the scene contains CCD pairs:UserWarning",
+]

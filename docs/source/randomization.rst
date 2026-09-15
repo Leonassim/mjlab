@@ -219,6 +219,30 @@ and ``dr.body_ipos`` are the same function).
      - ``light_dir``
      - Light direction vector
      -
+   * - ``dr.light_diffuse``
+     - ``light_diffuse``
+     - Diffuse RGB color
+     -
+   * - ``dr.light_specular``
+     - ``light_specular``
+     - Specular RGB color
+     -
+   * - ``dr.light_ambient``
+     - ``light_ambient``
+     - Ambient RGB color
+     -
+   * - ``dr.light_attenuation``
+     - ``light_attenuation``
+     - Constant, linear, and quadratic attenuation coefficients
+     -
+   * - ``dr.light_cutoff``
+     - ``light_cutoff``
+     - Spot light half-cone angle in degrees
+     - Ignored for directional lights
+   * - ``dr.light_exponent``
+     - ``light_exponent``
+     - Spot light angular falloff exponent
+     - Ignored for directional lights
 
 .. rubric:: Material fields
 
@@ -250,6 +274,12 @@ and ``dr.body_ipos`` are the same function).
      - ``mat_texrepeat``
      - Texture repeat in the S/T directions
      - Only affects textured materials; values should stay positive
+   * - ``dr.mat_texid``
+     - ``mat_texid``
+     - Texture assigned to a material's ``mjtTextureRole`` slot (RGB by
+       default)
+     - Samples uniformly from ``asset_cfg.texture_names``. Use ``role`` to
+       target a different texture role.
 
 .. rubric:: Contact pair fields
 
@@ -821,11 +851,6 @@ per-environment values.
    * - Category
      - Field(s)
      - Notes
-   * - Texture-role swapping
-     - ``mat_texid``
-     - Not implemented for now because mujoco's viewer doesn't reread
-       ``mat_texid`` after context creation; use ``geom_matid`` with one baked
-       material per texture to randomize textures instead.
    * - Mesh
      - ``mesh_vert``, ``mesh_normal``, ``mesh_face``, etc.
      - Shape variation for manipulation objects. These fields
@@ -895,16 +920,23 @@ bounds:
     truncated_normal = dr.Distribution(
         name="truncated_normal",
         sample=lambda lo, hi, shape, device: torch.clamp(
-            torch.normal(
-                mean=(lo + hi) / 2,
-                std=(hi - lo) / 4,  # 95% of samples within bounds
-            ).expand(shape),
+            (lo + hi) / 2
+            + (hi - lo) / 4  # 95% of samples within bounds
+            * torch.randn(shape, device=device),
             min=lo,
             max=hi,
         ),
     )
 
     params={"distribution": truncated_normal, "ranges": (0.3, 1.2)}
+
+.. warning::
+
+   ``sample`` receives ``lower``/``upper`` as tensors, so the sampled tensor must be
+   built from ``shape`` (for example via ``torch.randn(shape, device=device)``). Passing
+   tensor bounds straight to a sampler such as ``torch.normal`` yields a tensor shaped
+   like the bounds, not like ``shape``, which silently gives every environment the same
+   value.
 
 Operation
 ^^^^^^^^^
@@ -1051,9 +1083,11 @@ Friction (reset)
 
     robot_collision = CollisionCfg(
         geom_names_expr=[".*_foot.*"],
+        contype=1,
+        conaffinity=1,
+        condim=3,
         priority=1,
         friction=(0.6,),
-        condim=3,
     )
 
 
@@ -1337,14 +1371,16 @@ toggles then work correctly against the randomized model:
 - Geom appearance (``geom_rgba``, ``geom_size``, ``geom_pos``, ``geom_quat``,
   ``geom_matid``)
 - Material appearance (``mat_rgba``, ``mat_emission``, ``mat_specular``,
-  ``mat_shininess``, ``mat_texrepeat``)
+  ``mat_shininess``, ``mat_texrepeat``, ``mat_texid``)
 - Body and site poses (``body_pos``, ``body_quat``, ``body_ipos``,
   ``site_pos``, ``site_quat``)
 - Inertia (``body_inertia``, ``body_iquat``, ``body_mass``): press ``I``
   to toggle inertia boxes
 - Camera parameters (``cam_pos``, ``cam_quat``, ``cam_fovy``,
   ``cam_intrinsic``): press ``Q`` to toggle camera frustums
-- Lights (``light_pos``, ``light_dir``)
+- Lights (``light_pos``, ``light_dir``, ``light_diffuse``, ``light_specular``,
+  ``light_ambient``, ``light_attenuation``, ``light_cutoff``,
+  ``light_exponent``)
 
 .. grid:: 2
 
@@ -1387,12 +1423,13 @@ world-space positions directly from GPU simulation data (``cam_xpos``,
 
 .. note::
 
-   ``geom_rgba`` and ``geom_size`` DR are **not** reflected in viser. Geom
-   colors and sizes are baked into the scene's GLB meshes at construction
-   time. The underlying viser API (``add_batched_meshes_simple``) supports
-   per-instance color updates via ``batched_colors``, but this requires
-   routing color-only geoms through a different handle type than the current
-   ``add_batched_meshes_trimesh`` path. Deferred for a future update.
+   ``geom_rgba``, ``geom_size`` and ``mat_texid`` DR are **not** reflected
+   in viser. Geom colors, sizes and textures are baked into the scene's
+   GLB meshes at construction time. The underlying viser API
+   (``add_batched_meshes_simple``) supports per-instance color updates via
+   ``batched_colors``, but this requires routing color-only geoms through
+   a different handle type than the current ``add_batched_meshes_trimesh``
+   path. Deferred for a future update.
 
 
 Migrating from Isaac Lab
