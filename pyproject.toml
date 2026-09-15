@@ -51,11 +51,7 @@ dependencies = [
   "numpy",
   "imageio-ffmpeg",
   "tensordict",
-  # Epingle a 5.4.0 volontairement : l'amont est passe a 5.5.0 le 2026-09-15,
-   # mais les points de sauvegarde en cours et le pipeline d'export ONNX ont ete
-   # valides sur 5.4.0, et l'API bouge entre versions (act_inference, obs_groups).
-   # A relever une fois le run en cours termine et l'export reverifie.
-   "rsl-rl-lib==5.4.0",
+  "rsl-rl-lib==5.5.0",
   "tensorboard>=2.20.0",
   "onnxscript>=0.5.4",
   "wandb>=0.22.3,<0.29",

@@ -853,6 +853,13 @@ _RHPS1_ALL_COLLISION_EXPR = r"^((left|right)_foot([1-4])_collision|rhps1_collisi
 # Feet-ground contacts only.
 RHPS1_FEET_ONLY_COLLISION = CollisionCfg(
   geom_names_expr=(_RHPS1_FOOT_COLLISION_EXPR,),
+  # contype/conaffinity sont devenus obligatoires avec la fusion amont du
+  # 2026-09-15 (spec_config.py: "contype, conaffinity, condim et priority sont
+  # requis et toujours remplaces"). Auparavant ils prenaient le defaut MuJoCo.
+  # 1/1 = le bit de collision avec le monde, la meme valeur que RHPS1_FULL_COLLISION
+  # donne aux pieds : ce sont les seuls geoms actifs ici, ils doivent toucher le sol.
+  contype=1,
+  conaffinity=1,
   condim=3,
   priority=1,
   friction=(0.5,),
@@ -880,7 +887,11 @@ _RHPS1_LEG_PROXIMITY_GAP = 0.025
 RHPS1_FULL_COLLISION = CollisionCfg(
   geom_names_expr=(_RHPS1_ALL_COLLISION_EXPR,),
   condim={_RHPS1_FOOT_COLLISION_EXPR: 3, r"^rhps1_collision_.*$": 1},
-  priority={_RHPS1_FOOT_COLLISION_EXPR: 1},
+  # ".*" obligatoire depuis la fusion amont du 2026-09-15 : les champs
+  # STRUCTURELS (contype, conaffinity, condim, priority) doivent couvrir tous
+  # les geoms apparies, sinon ValueError. 0 est le defaut MuJoCo et le XML
+  # RHPS1 ne definit aucune priority -- le plant est donc inchange.
+  priority={_RHPS1_FOOT_COLLISION_EXPR: 1, ".*": 0},
   friction={_RHPS1_FOOT_COLLISION_EXPR: (0.5,)},
   # Feet keep the default world-collision bit (1). Body geoms use a separate
   # bit (2) so they can self-collide without taking over terrain contacts.
@@ -896,7 +907,11 @@ RHPS1_FULL_COLLISION_WITHOUT_SELF = CollisionCfg(
   contype=0,
   conaffinity=1,
   condim={_RHPS1_FOOT_COLLISION_EXPR: 3, r"^rhps1_collision_.*$": 1},
-  priority={_RHPS1_FOOT_COLLISION_EXPR: 1},
+  # ".*" obligatoire depuis la fusion amont du 2026-09-15 : les champs
+  # STRUCTURELS (contype, conaffinity, condim, priority) doivent couvrir tous
+  # les geoms apparies, sinon ValueError. 0 est le defaut MuJoCo et le XML
+  # RHPS1 ne definit aucune priority -- le plant est donc inchange.
+  priority={_RHPS1_FOOT_COLLISION_EXPR: 1, ".*": 0},
   friction={_RHPS1_FOOT_COLLISION_EXPR: (0.5,)},
   disable_other_geoms=False,
 )
@@ -1181,7 +1196,20 @@ for name in (
 # started by raising the scale 4.67x. Taking the small scale means the torque
 # problem is much smaller to begin with, and raw_torque_peak is not needed with
 # it.
-_LEG_SCALE_MULTIPLIER = 1.5
+# Mesure du 2026-09-11 (scripts/tools/action_reach.py, run 2026-09-10_23-05-44,
+# model_1500) : a 1.5 le reseau commande 2.7 deg de hanche et 2.0 de genou,
+# quand le BWC en fait 19.5 et 16.1. Atteindre 19.5 deg demanderait une action
+# de 32 unites ; le reseau n'a jamais depasse 8.8. L'espace d'action est 4 a 6x
+# trop petit pour exprimer la demarche visee -- aucun reglage de recompense ne
+# pouvait faire lever ce pied, ce qui explique 26000 iterations sans lever sur
+# l'ancienne lignee et 1500 sur deux reprises a zero.
+#
+# 7.0 est la valeur du seul run jamais observe en train de marcher
+# (2026-07-29_01-13-36) : 0.049 rad/unite au genou, donc 19.5 deg = 7 unites,
+# dans la plage que le reseau emet deja. Pilotable pour pouvoir revenir a 1.5
+# (policy 0) sans rien reediter.
+import os as _os
+_LEG_SCALE_MULTIPLIER = float(_os.environ.get("RHPS1_LEG_SCALE", "1.5"))
 for k in list(RHPS1_ACTION_SCALE):
   if not any(
     tok in k for tok in ("CHEST", "SHOULDER", "ELBOW", "WRIST", "HAND", "HEAD")
