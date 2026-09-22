@@ -26,6 +26,11 @@ class FiniteDifferencePdActuatorCfg(IdealPdActuatorCfg):
   """
 
   posture_task_stiffness: float | None = None
+  # With the posture filter on, the damping target is the FILTER's velocity, as
+  # mc_mujoco's PD uses mc_rtc's alpha_ref (mj_sim.cpp:830) -- not a finite
+  # difference of the target smoothed by velocity_target_filter_alpha, which is
+  # hidden state the deployed chain does not have (Leo, 2026-09-18).
+  posture_velocity_target: bool = True
   """mc_rtc PostureTask stiffness to reproduce, ``None`` to disable.
 
   On the robot the policy output does not reach the PD directly: it goes through
@@ -145,6 +150,7 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     # PostureTask second order state. The substep dt is only known in
     # update(dt); until then the filter passes through.
     self._posture_q: torch.Tensor | None = None
+    self._posture_velocity: torch.Tensor | None = None
     self._posture_qd: torch.Tensor | None = None
     # Per environment rather than the cfg scalar, so it can be randomised.
     self.posture_stiffness: torch.Tensor | None = None
@@ -318,6 +324,10 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
       self._posture_qd = self._posture_qd + acc * dt
       self._posture_q = self._posture_q + self._posture_qd * dt
       cmd = replace(cmd, position_target=self._posture_q)
+      if self.cfg.posture_velocity_target:
+        self._posture_velocity = self._posture_qd.clone()
+      else:
+        self._posture_velocity = None
 
     filtered_position_target = cmd.position_target
     pos_alpha = float(self.cfg.position_target_filter_alpha)
@@ -359,6 +369,9 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
         torch.zeros_like(self._elapsed_since_target_update),
         self._elapsed_since_target_update,
       )
+
+    if getattr(self, "_posture_velocity", None) is not None:
+      self._desired_velocity_target = self._posture_velocity
 
     # Captured BEFORE the damper and the feasibility projection. Everything below
     # this line bends the target back inside the actuator's budget, so a torque
