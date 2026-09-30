@@ -63,7 +63,17 @@ class StandingStartMotionCommand(MotionCommand):
     hold_steps = torch.randint(
       0, max(int(hmax / self._env.step_dt), 1), (len(pick),), device=self.device
     )
-    self.time_steps[pick] = (w0 - hold_steps).clamp(min=0)
+    # Free stand: the policy holds the robot at command 0 for a random time
+    # after the hold, then the command flips where the reference's does. The
+    # operator's joystick push on the robot, which training never showed in
+    # control (a jolt at the flip, 2026-09-30).
+    free = [float(x) for x in os.environ.get("RHPS1_STAND_FREE_S", "0,0").split(",")]
+    if free[1] > 0.0:
+      lo, hi = int(free[0] / self._env.step_dt), int(free[1] / self._env.step_dt)
+      free_steps = torch.randint(lo, max(hi, lo + 1), (len(pick),), device=self.device)
+      self.time_steps[pick] = (self._command_flip() - free_steps - hold_steps).clamp(min=0)
+    else:
+      self.time_steps[pick] = (w0 - hold_steps).clamp(min=0)
 
     # Racine et posture prises sur la reference a la trame choisie, vitesses
     # nulles : le robot EST la reference a l'arret, juste avant son depart.
@@ -100,6 +110,19 @@ class StandingStartMotionCommand(MotionCommand):
     self._write_reference_state_to_sim(
       pick, root_pos, root_ori, zeros3, zeros3, q, torch.zeros_like(q)
     )
+
+  def _command_flip(self) -> int:
+    """First frame of the command that the walk after the prologue carries."""
+    if not hasattr(self, "_command_flip_cache"):
+      from mjlab.tasks.tracking.config.rhps1.env_cfgs import _reference_velocity_command
+
+      _reference_velocity_command(self._env, "motion")  # builds self._dir_cmd
+      on = (self._dir_cmd != 0).any(dim=1)
+      f = self._standing_end()
+      while f > 0 and on[f - 1]:
+        f -= 1
+      self._command_flip_cache = f
+    return self._command_flip_cache
 
   def _standing_end(self) -> int:
     """Derniere trame du prologue debout, calculee une fois sur le mouvement."""

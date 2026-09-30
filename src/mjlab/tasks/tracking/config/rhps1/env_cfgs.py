@@ -510,6 +510,22 @@ def _reference_velocity_command(env, command_name: str) -> "torch.Tensor":
     cmd._dir_cmd = (
       torch.stack([torch.sign(dx), torch.sign(dy), torch.sign(dw)], dim=1) * actif
     )
+    # Transitions: the 4 s window reads the BWC's weight shift as a mode of its
+    # own ([0,-1,0] for 0.76 s before the first forward walk), so 0 -> forward,
+    # the joystick push, never occurred at rest. Segments shorter than 1 s take
+    # the label of the long segment they lead into.
+    if os.environ.get("RHPS1_CMD_PREAMBLE", "0") == "1":
+      D = cmd._dir_cmd
+      change = torch.ones(D.shape[0], dtype=torch.bool, device=D.device)
+      change[1:] = (D[1:] != D[:-1]).any(dim=1)
+      starts = change.nonzero().flatten().tolist() + [D.shape[0]]
+      short = int(1.0 / env.step_dt)
+      nxt = None
+      for a, b in reversed(list(zip(starts[:-1], starts[1:]))):
+        if b - a >= short:
+          nxt = D[a].clone()
+        elif nxt is not None:
+          D[a:b] = nxt
   return cmd._dir_cmd[cmd.time_steps]
 
 
@@ -673,6 +689,18 @@ def rhps1_flat_tracking_env_cfg(
   # and the policy learned to terminate early (run 2026-09-17_23-01-05). The
   # base -0.1 keeps ideal BWC tracking at ~-0.005/step with the x10 scale.
   cfg.rewards["action_rate_l2"].weight = float(os.environ.get("RHPS1_ACTION_RATE_W", "-0.1"))
+
+  # Actuator latency, uniform in [0, max] ms, drawn per episode and per actuator
+  # group, held 20 s. The real robot lags the target by 30-35 ms more than the
+  # posture filter models; without it slot 4 oscillated on its first inference.
+  _delay_ms = float(os.environ.get("RHPS1_ACTION_DELAY_MS", "0"))
+  if _delay_ms > 0:
+    _lag = int(round(_delay_ms / 1000.0 / cfg.sim.mujoco.timestep))
+    for _act in cfg.scene.entities["robot"].articulation.actuators:
+      _act.delay_min_lag = 0
+      _act.delay_max_lag = _lag
+      _act.delay_update_period = 8000
+      _act.delay_per_env_phase = False
 
   motion_cmd = cfg.commands["motion"]
   assert isinstance(motion_cmd, MotionCommandCfg)
