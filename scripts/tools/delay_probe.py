@@ -21,7 +21,8 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 TASK = "Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start"
 run, ck = sys.argv[1], sys.argv[2]
 lags_ms = [float(x) for x in sys.argv[3:]] or [0, 10, 20, 30, 45, 60]
-N = 4
+N = 16
+torch.manual_seed(0)
 
 for lag_ms in lags_ms:
   cfg = load_env_cfg(TASK, play=True)
@@ -47,9 +48,12 @@ for lag_ms in lags_ms:
   dt = u.step_dt
   obs, _ = env.reset()
   q0 = robot.data.default_joint_pos.clone()
+  # Envs start apart (+-0.03 rad, +-0.1 m/s), otherwise they are one sample repeated.
+  q0 = q0 + (torch.rand_like(q0) * 2 - 1) * 0.03
   robot.write_joint_state_to_sim(q0, torch.zeros_like(q0))
   root = robot.data.default_root_state.clone()
   root[:, :3] += u.scene.env_origins
+  root[:, 7:9] = (torch.rand(N, 2) * 2 - 1) * 0.1
   robot.write_root_state_to_sim(root)
   with torch.no_grad():
     for _ in range(int(3.0 / dt)):
@@ -61,8 +65,9 @@ for lag_ms in lags_ms:
       Z.append(robot.data.root_link_pos_w[:, 2].numpy().copy())
   T, Z = np.stack(T), np.stack(Z)
   n = int(1.0 / dt)
-  rms = [np.degrees(np.sqrt((np.diff(T[i * n:(i + 1) * n], axis=0) ** 2).mean())) for i in range(6)]
+  up = Z.min(0) >= 0.6
+  rms = [np.degrees(np.sqrt((np.diff(T[i * n:(i + 1) * n][:, up], axis=0) ** 2).mean())) if up.any() else float('nan') for i in range(6)]
   fell = int((Z.min(0) < 0.6).sum())
   print(f"lag {lag_ms:4.0f} ms ({lag:2d} steps): rms dq_target/step per second "
-        + " ".join(f"{r:6.3f}" for r in rms) + f"  | fell {fell}/{N}", flush=True)
+        + " ".join(f"{r:6.3f}" for r in rms) + f"  | fell {fell}/{N} (rms over standing envs)", flush=True)
   env.close()

@@ -1,9 +1,9 @@
 """Command onset while standing in control: the operator's joystick push.
 
-Settle 3 s with actions held, policy in control at command 0 for 4 s, then the
-command flips to forward. Reports the jolt in the 0.3 s after the flip and the
-delay to the first step. Arming via the controller now starts the policy at its
-own stance, so the 4 s at command 0 stand in for that.
+Settle 3 s with actions held, then the policy stands at command 0 for 2-5 s
+(drawn per env) before the command flips to forward. Reports pelvis and
+upper-body rates in three windows after the flip, against the BWC reference,
+which stays still for 1 s. FLIP_DELAY_MS adds a fixed actuator delay.
 
   uv run python scripts/tools/flip_probe.py <run> <model.pt>
 """
@@ -21,7 +21,8 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 TASK = "Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start"
 run, ck = sys.argv[1], sys.argv[2]
-N = 8
+N = 16
+torch.manual_seed(0)
 cfg = load_env_cfg(TASK, play=True)
 cfg.scene.num_envs = N
 for k in ("anchor_pos", "anchor_ori", "ee_body_pos"):
@@ -33,9 +34,9 @@ _lag = int(round(float(__import__("os").environ.get("FLIP_DELAY_MS", "0")) / 100
 for _a in cfg.scene.entities["robot"].articulation.actuators:
   _a.delay_min_lag = _lag
   _a.delay_max_lag = _lag
-CMD = torch.zeros(3)
+CMD = torch.zeros(N, 3)
 cfg.observations["actor"].terms["velocity_command"].func = (
-  lambda env, command_name: CMD.to(env.device).repeat(env.num_envs, 1)
+  lambda env, command_name: CMD.to(env.device)
 )
 env = RslRlVecEnvWrapper(ManagerBasedRlEnv(cfg, device="cpu"))
 u = env.unwrapped
@@ -51,32 +52,46 @@ dt = u.step_dt
 
 obs, _ = env.reset()
 q0 = robot.data.default_joint_pos.clone()
-robot.write_joint_state_to_sim(q0, torch.zeros_like(q0))
+# Envs start apart (+-0.03 rad, +-0.1 m/s), otherwise they are one sample repeated.
+robot.write_joint_state_to_sim(q0 + (torch.rand_like(q0) * 2 - 1) * 0.03, torch.zeros_like(q0))
 root = robot.data.default_root_state.clone()
 root[:, :3] += u.scene.env_origins
+root[:, 7:9] = (torch.rand(N, 2) * 2 - 1) * 0.1
 robot.write_root_state_to_sim(root)
-W, F, QU, AIR = [], [], [], []
+W, F, QU, X = [], [], [], []
+# Each env flips after its own 2-5 s of standing, so the flips land on different
+# states; a settled stance otherwise makes every env the same sample.
+flip = (torch.rand(N) * 3.0 + 2.0) / dt
+flip = flip.long().numpy()
 with torch.no_grad():
   for _ in range(int(3.0 / dt)):
     obs, _, _, _ = env.step(torch.zeros(N, env.num_actions))
-  for _ in range(int(4.0 / dt)):
-    obs, _, _, _ = env.step(pol(obs))
-  CMD[0] = 1.0
-  for _ in range(int(3.0 / dt)):
+  for k in range(int(10.0 / dt)):
+    CMD[:, 0] = torch.as_tensor(k >= flip, dtype=torch.float32)
     obs, _, _, _ = env.step(pol(obs))
     W.append(robot.data.root_link_ang_vel_b.norm(dim=-1).numpy().copy())
-    f = sens.data.force.norm(dim=-1).squeeze(-1).numpy().copy()
-    F.append(f)
+    F.append(sens.data.force.norm(dim=-1).squeeze(-1).numpy().copy())
     QU.append(robot.data.joint_vel[:, upper].abs().max(dim=-1).values.numpy().copy())
-W, F, QU = np.stack(W), np.stack(F), np.stack(QU)
-n3 = int(0.3 / dt)
-share = F / np.clip(F.sum(-1, keepdims=True), 1e-6, None)
-dshare = np.abs(np.diff(share[: n3 + 1, :, 0], axis=0)).max(0) / dt  # load transfer rate
-first_step = [(np.argmax(F[:, e].min(-1) < 5.0) * dt) if (F[:, e].min(-1) < 5.0).any() else np.nan
-              for e in range(N)]
+    X.append(robot.data.root_link_pos_w[:, 0].numpy().copy())
+W, F, QU, X = np.stack(W), np.stack(F), np.stack(QU), np.stack(X)
 D = np.degrees
-print(f"{run} {ck}  retard {_lag * cfg.sim.mujoco.timestep * 1000:.0f} ms, bascule 0 -> avant, 0.3 s qui suivent :")
-print(f"  rotation bassin max   {D(W[:n3].max(0)).mean():5.1f} deg/s (median sur {N})")
-print(f"  haut du corps max     {D(QU[:n3].max(0)).mean():5.1f} deg/s")
-print(f"  transfert de charge   {np.median(dshare) * 100:5.0f} %/s du poids")
-print(f"  premier pied decharge {np.nanmedian(first_step):5.2f} s apres la bascule")
+
+
+def win(x, a, b):
+  """Per-env max over [a, b) s after that env's flip."""
+  return np.array([x[flip[e] + int(a / dt):flip[e] + int(b / dt), e].max() for e in range(N)])
+
+
+unload = []
+for e in range(N):
+  off = F[flip[e]:, e].min(-1) < 5.0
+  unload.append(np.argmax(off) * dt if off.any() else np.nan)
+print(f"{run} {ck}  retard {_lag * cfg.sim.mujoco.timestep * 1000:.0f} ms, bascule 0 -> avant ({N} departs, median / p90)")
+print("  (reference BWC : immobile 0-1 s, bassin 8 deg/s a 1-2.3 s, pied leve a 2.3 s)")
+for a, b in ((0.0, 0.3), (0.3, 1.0), (1.0, 2.3)):
+  w, q = D(win(W, a, b)), D(win(QU, a, b))
+  print(f"  {a:.1f}-{b:.1f} s  bassin {np.median(w):5.1f} / {np.percentile(w, 90):5.1f} deg/s"
+        f"   haut du corps {np.median(q):5.1f} / {np.percentile(q, 90):5.1f} deg/s")
+print(f"  premier pied decharge {np.nanmedian(unload):5.2f} s apres la bascule (median)")
+dx = np.array([X[min(flip[e] + int(5.0 / dt), len(X) - 1), e] - X[flip[e], e] for e in range(N)])
+print(f"  avance 5 s apres la bascule {np.median(dx):5.2f} m (median ; BWC 0.42 m)")

@@ -456,6 +456,25 @@ def _heading_hold(env, command_name: str) -> "torch.Tensor":
   return torch.where(no_rot, k, torch.zeros_like(k))
 
 
+def _still_when_reference_still(
+  env, command_name: str, std: float, gate: float
+) -> "torch.Tensor":
+  """Body angular-velocity tracking at a tight kernel, only while the reference is still.
+
+  The BWC stays still for 1 s after the command flips. At motion_body_ang_vel's
+  std 0.70 the jolt there (mean |w|^2 0.057, pelvis 18 deg/s) kept 89 % of the
+  term; at std 0.2 it keeps 24 % while standing keeps 99 %. Gated on the
+  reference's own rms body rate below `gate` (rad/s): at 0.02 that is the four
+  standing segments of the clip (40 %) and 1.6 s after the flip, and under 1 %
+  of walking frames, where errors (~0.4 rad/s) would leave the kernel flat.
+  """
+  cmd = env.command_manager.get_term(command_name)
+  ref = cmd.body_ang_vel_w
+  still = (ref**2).sum(-1).mean(-1) < gate**2
+  err = ((ref - cmd.robot_body_ang_vel_w) ** 2).sum(-1).mean(-1)
+  return torch.where(still, torch.exp(-err / std**2), torch.zeros_like(err))
+
+
 def _reference_velocity_command(env, command_name: str) -> "torch.Tensor":
   """La DIRECTION du mouvement, pas sa vitesse : signe(vx), signe(vy), signe(wz).
 
@@ -651,6 +670,18 @@ def rhps1_flat_tracking_env_cfg(
   if _heading_w:
     cfg.rewards["heading_hold"] = RewardTermCfg(
       func=_heading_hold, weight=_heading_w, params={"command_name": "motion"}
+    )
+
+  _still_w = float(os.environ.get("RHPS1_STILL_W", "0"))
+  if _still_w:
+    cfg.rewards["still_when_reference_still"] = RewardTermCfg(
+      func=_still_when_reference_still,
+      weight=_still_w,
+      params={
+        "command_name": "motion",
+        "std": float(os.environ.get("RHPS1_STILL_STD", "0.2")),
+        "gate": float(os.environ.get("RHPS1_STILL_GATE", "0.02")),
+      },
     )
 
   for name, _, _, min_dist in _PROXIMITY:
