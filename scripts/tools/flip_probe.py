@@ -35,9 +35,22 @@ for _a in cfg.scene.entities["robot"].articulation.actuators:
   _a.delay_min_lag = _lag
   _a.delay_max_lag = _lag
 CMD = torch.zeros(N, 3)
-cfg.observations["actor"].terms["velocity_command"].func = (
-  lambda env, command_name: CMD.to(env.device)
-)
+# RHPS1_CMD_TAU: the policy sees the command through the controller's filter.
+TAU = float(__import__("os").environ.get("RHPS1_CMD_TAU", "0"))
+_filt = {"y": torch.zeros(N, 3), "step": -1}
+
+
+def _cmd(env, command_name, tau=0.0):
+  if TAU <= 0:
+    return CMD.to(env.device)
+  step = int(env.common_step_counter)
+  if _filt["step"] != step:
+    _filt["y"] = _filt["y"] + (env.step_dt / TAU) * (CMD - _filt["y"])
+    _filt["step"] = step
+  return _filt["y"].to(env.device)
+
+
+cfg.observations["actor"].terms["velocity_command"].func = _cmd
 env = RslRlVecEnvWrapper(ManagerBasedRlEnv(cfg, device="cpu"))
 u = env.unwrapped
 runner = load_runner_cls(TASK)(env, asdict(load_rl_cfg(TASK)), device="cpu")

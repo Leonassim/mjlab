@@ -457,7 +457,7 @@ def _heading_hold(env, command_name: str) -> "torch.Tensor":
 
 
 def _still_when_reference_still(
-  env, command_name: str, std: float, gate: float
+  env, command_name: str, std: float, gate: float, joint_std: float = 0.0
 ) -> "torch.Tensor":
   """Body angular-velocity tracking at a tight kernel, only while the reference is still.
 
@@ -467,12 +467,41 @@ def _still_when_reference_still(
   reference's own rms body rate below `gate` (rad/s): at 0.02 that is the four
   standing segments of the clip (40 %) and 1.6 s after the flip, and under 1 %
   of walking frames, where errors (~0.4 rad/s) would leave the kernel flat.
+
+  joint_std > 0 adds joint-velocity tracking over all joints to the exponent.
+  The head is not a tracked body and each arm is diluted in the body mean: with
+  the body part alone (model_57500) the pelvis fell to 11 deg/s while HEAD_Y
+  still peaked at 33 deg/s, CHEST_Y at 22 and the arms at 15-21.
   """
   cmd = env.command_manager.get_term(command_name)
   ref = cmd.body_ang_vel_w
   still = (ref**2).sum(-1).mean(-1) < gate**2
-  err = ((ref - cmd.robot_body_ang_vel_w) ** 2).sum(-1).mean(-1)
-  return torch.where(still, torch.exp(-err / std**2), torch.zeros_like(err))
+  expo = ((ref - cmd.robot_body_ang_vel_w) ** 2).sum(-1).mean(-1) / std**2
+  if joint_std > 0.0:
+    expo = expo + ((cmd.joint_vel - cmd.robot_joint_vel) ** 2).mean(-1) / joint_std**2
+  return torch.where(still, torch.exp(-expo), torch.zeros_like(expo))
+
+
+def _filtered_velocity_command(env, command_name: str, tau: float) -> "torch.Tensor":
+  """The direction command through a first-order filter, as the controller applies it.
+
+  A 0 -> 1 step drives the policy's reflex: every checkpoint jolts in the 0.3 s
+  after the flip (pelvis 11-24 deg/s, upper body 30-50) while the BWC stays
+  still, and rewards alone did not remove it. y += (dt / tau) * (u - y) at the
+  policy rate, reset to the raw command at episode start so mid-walk starts get
+  no artificial ramp. NewRLQPController's command_filter_tau must match.
+  """
+  u = _reference_velocity_command(env, command_name)
+  step = int(env.common_step_counter)
+  if not hasattr(env, "_cmd_filt") or env._cmd_filt.shape != u.shape:
+    env._cmd_filt = u.clone()
+    env._cmd_filt_step = step
+  if env._cmd_filt_step != step:
+    env._cmd_filt = env._cmd_filt + (env.step_dt / tau) * (u - env._cmd_filt)
+    env._cmd_filt_step = step
+  fresh = env.episode_length_buf == 0
+  env._cmd_filt = torch.where(fresh[:, None], u, env._cmd_filt)
+  return env._cmd_filt
 
 
 def _reference_velocity_command(env, command_name: str) -> "torch.Tensor":
@@ -681,6 +710,7 @@ def rhps1_flat_tracking_env_cfg(
         "command_name": "motion",
         "std": float(os.environ.get("RHPS1_STILL_STD", "0.2")),
         "gate": float(os.environ.get("RHPS1_STILL_GATE", "0.02")),
+        "joint_std": float(os.environ.get("RHPS1_STILL_JOINT_STD", "0")),
       },
     )
 
@@ -967,6 +997,15 @@ def rhps1_flat_tracking_env_cfg(
       _v3[_k] = _base[_k]
     _v3["base_lin_vel"].history_length = 5
     _v3["velocity_command"].history_length = 5
+    _tau = float(os.environ.get("RHPS1_CMD_TAU", "0"))
+    if _tau > 0:
+      from dataclasses import replace as _crep
+
+      _v3["velocity_command"] = _crep(
+        _v3["velocity_command"],
+        func=_filtered_velocity_command,
+        params={"command_name": "motion", "tau": _tau},
+      )
     # Noise sized on mc_mujoco's estimator error vs sim truth (p99: lin vel
     # 0.036 m/s, ang vel 0.030 rad/s, joint vel < 0.01). The inherited +-0.5 m/s
     # on base_lin_vel was the kick out of standstill: noise-free the policy froze.
