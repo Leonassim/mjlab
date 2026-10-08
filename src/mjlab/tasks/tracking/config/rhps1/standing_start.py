@@ -63,6 +63,13 @@ class StandingStartMotionCommand(MotionCommand):
     hold_steps = torch.randint(
       0, max(int(hmax / self._env.step_dt), 1), (len(pick),), device=self.device
     )
+    # RHPS1_STAND_SEGMENTS=1: start before every walk of the clip (lateral, yaw),
+    # not only the first, forward one. Hold clamped to the stillness before it.
+    if os.environ.get("RHPS1_STAND_SEGMENTS", "0") == "1":
+      starts, still = self._segment_starts()
+      k = torch.randint(0, len(starts), (len(pick),), device=self.device)
+      w0 = starts[k]
+      hold_steps = torch.minimum(hold_steps, still[k])
     # Free stand: the policy holds the robot at command 0 for a random time
     # after the hold, then the command flips where the reference's does. The
     # operator's joystick push on the robot, which training never showed in
@@ -123,6 +130,25 @@ class StandingStartMotionCommand(MotionCommand):
         f -= 1
       self._command_flip_cache = f
     return self._command_flip_cache
+
+  def _segment_starts(self) -> tuple[torch.Tensor, torch.Tensor]:
+    """First foot-lift frame of each walk after >= 1.5 s of standing, and that
+    standing duration in steps (capped at 3 s)."""
+    if not hasattr(self, "_segment_starts_cache"):
+      idx = [self.cfg.body_names.index(n) for n in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")]
+      moving = (self.motion.body_pos_w[:, idx, 2].max(dim=1).values > 0.11).cpu()
+      min_still = int(1.5 / self._env.step_dt)
+      starts, still, run = [], [], 0
+      for f, m in enumerate(moving.tolist()):
+        if m and run >= min_still:
+          starts.append(f)
+          still.append(min(run, int(3.0 / self._env.step_dt)) - 1)
+        run = 0 if m else run + 1
+      self._segment_starts_cache = (
+        torch.tensor(starts, device=self.device),
+        torch.tensor(still, device=self.device),
+      )
+    return self._segment_starts_cache
 
   def _standing_end(self) -> int:
     """Derniere trame du prologue debout, calculee une fois sur le mouvement."""
