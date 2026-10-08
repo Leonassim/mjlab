@@ -58,6 +58,17 @@ class MotionLoader:
     self.body_lin_vel_w = self._body_lin_vel_w[:, self._body_indexes]
     self.body_ang_vel_w = self._body_ang_vel_w[:, self._body_indexes]
     self.time_step_total = self.joint_pos.shape[0]
+    # Several clips in one file: "clip_starts" holds each clip's first frame.
+    # clip_start/clip_end give, per frame, its clip's bounds (end exclusive).
+    starts = (
+      [int(s) for s in data["clip_starts"]] if "clip_starts" in data.files else [0]
+    )
+    bounds = starts + [self.time_step_total]
+    self.clip_start = torch.empty(self.time_step_total, dtype=torch.long, device=device)
+    self.clip_end = torch.empty(self.time_step_total, dtype=torch.long, device=device)
+    for a, b in zip(bounds[:-1], bounds[1:]):
+      self.clip_start[a:b] = a
+      self.clip_end[a:b] = b
 
 
 class MotionCommand(CommandTerm):
@@ -418,7 +429,8 @@ class MotionCommand(CommandTerm):
       self.time_steps += 1
     else:
       self.time_steps[env_ids] += 1
-    wrap_ids = torch.where(self.time_steps >= self.motion.time_step_total)[0]
+    prev = (self.time_steps - 1).clamp(0, self.motion.time_step_total - 1)
+    wrap_ids = torch.where(self.time_steps >= self.motion.clip_end[prev])[0]
     if wrap_ids.numel() > 0:
       self._resample_command(wrap_ids)
 

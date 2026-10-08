@@ -538,8 +538,11 @@ def _reference_velocity_command(env, command_name: str) -> "torch.Tensor":
     yaw = torch.atan2(rot[:, 1, 0], rot[:, 0, 0])
     T = pos.shape[0]
     W = int(4.0 / env.step_dt)  # 4 s : voir le docstring
-    i0 = torch.clamp(torch.arange(T, device=pos.device) - W // 2, 0, T - 1)
-    i1 = torch.clamp(torch.arange(T, device=pos.device) + W // 2, 0, T - 1)
+    # Window kept inside each frame's own clip (several clips per file).
+    t = torch.arange(T, device=pos.device)
+    cs, ce = cmd.motion.clip_start.to(pos.device), cmd.motion.clip_end.to(pos.device)
+    i0 = torch.maximum(t - W // 2, cs)
+    i1 = torch.minimum(t + W // 2, ce - 1)
     d = pos[i1] - pos[i0]
     c, sn = torch.cos(yaw), torch.sin(yaw)
     dx = d[:, 0] * c + d[:, 1] * sn
@@ -558,6 +561,22 @@ def _reference_velocity_command(env, command_name: str) -> "torch.Tensor":
     cmd._dir_cmd = (
       torch.stack([torch.sign(dx), torch.sign(dy), torch.sign(dw)], dim=1) * actif
     )
+    # RHPS1_CLEAN_LABELS=1: a label lasting < 1 s with no foot lift within 0.3 s
+    # is a weight shift read as a walk (-y before every start), not a command: 0.
+    # While turning, the lateral sign flickers step to step: the BWC turns in
+    # place, so yaw-active frames keep yaw only.
+    if os.environ.get("RHPS1_CLEAN_LABELS", "0") == "1":
+      D = cmd._dir_cmd
+      D[D[:, 2] != 0, 1] = 0
+      idx = [cmd.cfg.body_names.index(n) for n in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")]
+      lifted = cmd.motion.body_pos_w[:, idx, 2].max(dim=1).values > 0.11
+      m = int(0.3 / env.step_dt)
+      change = torch.ones(D.shape[0], dtype=torch.bool, device=D.device)
+      change[1:] = (D[1:] != D[:-1]).any(dim=1)
+      starts = change.nonzero().flatten().tolist() + [D.shape[0]]
+      for a, b in zip(starts[:-1], starts[1:]):
+        if b - a < int(1.0 / env.step_dt) and not bool(lifted[max(a - m, 0):b + m].any()):
+          D[a:b] = 0
     # Transitions: the 4 s window reads the BWC's weight shift as a mode of its
     # own ([0,-1,0] for 0.76 s before the first forward walk), so 0 -> forward,
     # the joystick push, never occurred at rest. Segments shorter than 1 s take

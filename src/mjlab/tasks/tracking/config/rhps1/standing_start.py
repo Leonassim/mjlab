@@ -139,7 +139,10 @@ class StandingStartMotionCommand(MotionCommand):
       moving = (self.motion.body_pos_w[:, idx, 2].max(dim=1).values > 0.11).cpu()
       min_still = int(1.5 / self._env.step_dt)
       starts, still, run = [], [], 0
+      clip_start = self.motion.clip_start.cpu()
       for f, m in enumerate(moving.tolist()):
+        if clip_start[f] == f:
+          run = 0
         if m and run >= min_still:
           starts.append(f)
           still.append(min(run, int(3.0 / self._env.step_dt)) - 1)
