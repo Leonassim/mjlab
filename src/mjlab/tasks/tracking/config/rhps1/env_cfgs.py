@@ -1056,6 +1056,9 @@ def rhps1_flat_tracking_env_cfg(
       enable_corruption=True,
     )
 
+  _rand_events = {
+    k: cfg.events.get(k) for k in ("push_robot", "base_com", "encoder_bias", "foot_friction")
+  }
   if not randomize:
     for name in ("push_robot", "base_com", "encoder_bias", "foot_friction"):
       cfg.events.pop(name, None)
@@ -1067,6 +1070,38 @@ def rhps1_flat_tracking_env_cfg(
       k: (v[0] * 0.25, v[1] * 0.25) for k, v in m.velocity_range.items()
     }
     m.joint_position_range = (-0.025, 0.025)
+
+  # RHPS1_ROBUST: perturbations put back on the copy task one at a time,
+  # comma-separated: obs (actor sensor noise + encoder bias), friction
+  # (RHPS1_FRICTION_RANGE, default 0.5,1.2), com, push (velocity range scaled by
+  # RHPS1_PUSH_SCALE, default 0.4).
+  _rob = {s for s in os.environ.get("RHPS1_ROBUST", "").split(",") if s}
+  if "obs" in _rob:
+    cfg.observations["actor"].enable_corruption = not play
+    cfg.events["encoder_bias"] = _rand_events["encoder_bias"]
+    # IMU tilt error, ~3 deg: the V3 group left gravity noise-free.
+    _at = cfg.observations["actor"].terms
+    if "projected_gravity" in _at:
+      from dataclasses import replace as _grep
+
+      from mjlab.utils.noise import UniformNoiseCfg as _GUnoise
+
+      _at["projected_gravity"] = _grep(
+        _at["projected_gravity"], noise=_GUnoise(n_min=-0.05, n_max=0.05)
+      )
+  if "friction" in _rob:
+    _f = [float(x) for x in os.environ.get("RHPS1_FRICTION_RANGE", "0.5,1.2").split(",")]
+    cfg.events["foot_friction"] = _rand_events["foot_friction"]
+    cfg.events["foot_friction"].params["ranges"] = (_f[0], _f[1])
+  if "com" in _rob:
+    cfg.events["base_com"] = _rand_events["base_com"]
+  if "push" in _rob:
+    _ps = float(os.environ.get("RHPS1_PUSH_SCALE", "0.4"))
+    cfg.events["push_robot"] = _rand_events["push_robot"]
+    _vr = cfg.events["push_robot"].params["velocity_range"]
+    cfg.events["push_robot"].params["velocity_range"] = {
+      k: (v[0] * _ps, v[1] * _ps) for k, v in _vr.items()
+    }
 
   if play:
     cfg.episode_length_s = int(1e9)
