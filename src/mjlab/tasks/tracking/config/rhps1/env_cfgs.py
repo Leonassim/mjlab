@@ -482,6 +482,25 @@ def _still_when_reference_still(
   return torch.where(still, torch.exp(-expo), torch.zeros_like(expo))
 
 
+def _biased_obs(func, attr: str):
+  """Observation plus a per-env offset stored on the env (see _sample_obs_bias)."""
+
+  def f(env, **kwargs):
+    v = func(env, **kwargs)
+    b = getattr(env, attr, None)
+    return v if b is None else v + b
+
+  return f
+
+
+def _sample_obs_bias(env, env_ids, lin: float, grav: float) -> None:
+  """Draw the estimator offsets held for the episode."""
+  for attr, r in (("_rhps1_lin_bias", lin), ("_rhps1_grav_bias", grav)):
+    if not hasattr(env, attr):
+      setattr(env, attr, torch.zeros(env.num_envs, 3, device=env.device))
+    getattr(env, attr)[env_ids] = (torch.rand(len(env_ids), 3, device=env.device) * 2 - 1) * r
+
+
 def _filtered_velocity_command(env, command_name: str, tau: float) -> "torch.Tensor":
   """The direction command through a first-order filter, as the controller applies it.
 
@@ -1095,6 +1114,33 @@ def rhps1_flat_tracking_env_cfg(
     cfg.events["foot_friction"].params["ranges"] = (_f[0], _f[1])
   if "com" in _rob:
     cfg.events["base_com"] = _rand_events["base_com"]
+  if "bias" in _rob:
+    # Estimator offsets held for a whole episode: MCWaiko's velocity drifts
+    # instead of being white noise, and the IMU sits slightly off level.
+    _bl = float(os.environ.get("RHPS1_LINVEL_BIAS", "0.1"))
+    _bg = float(os.environ.get("RHPS1_GRAVITY_BIAS", "0.03"))
+    from dataclasses import replace as _brep
+
+    _at = cfg.observations["actor"].terms
+    for _k, _attr in (("base_lin_vel", "_rhps1_lin_bias"), ("projected_gravity", "_rhps1_grav_bias")):
+      if _k in _at:
+        _at[_k] = _brep(_at[_k], func=_biased_obs(_at[_k].func, _attr))
+    from mjlab.managers.event_manager import EventTermCfg as _BEv
+
+    cfg.events["obs_bias"] = _BEv(
+      func=_sample_obs_bias, mode="reset", params={"lin": _bl, "grav": _bg}
+    )
+  if "gains" in _rob:
+    from mjlab.envs.mdp import dr as _dr
+    from mjlab.managers.event_manager import EventTermCfg as _GEv
+    from mjlab.managers.scene_entity_config import SceneEntityCfg as _GSc
+
+    _g = float(os.environ.get("RHPS1_GAIN_RANGE", "0.2"))
+    cfg.events["pd_gains"] = _GEv(
+      func=_dr.pd_gains, mode="reset",
+      params={"asset_cfg": _GSc("robot"), "kp_range": (1 - _g, 1 + _g),
+              "kd_range": (1 - _g, 1 + _g)},
+    )
   if "push" in _rob:
     _ps = float(os.environ.get("RHPS1_PUSH_SCALE", "0.4"))
     cfg.events["push_robot"] = _rand_events["push_robot"]
