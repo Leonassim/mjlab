@@ -46,6 +46,10 @@ hits = []
 for p in pairs:
   dist = np.asarray(d[f"CollisionMonitor_{p}_distance"])[a:b]
   di = np.asarray(d[f"CollisionMonitor_{p}_di"])[a:b]
+  if p in ("L_CROTCH_P_LINK::R_CROTCH_P_LINK", "R_CROTCH_P_LINK::L_CROTCH_P_LINK"):
+    # The controller edits this pair to iDist 0.025 at start ("Thigh self-collision
+    # iDist corrected"), but the monitor keeps logging the module's 0.06.
+    di = np.full_like(di, 0.025)
   ds = np.asarray(d[f"CollisionMonitor_{p}_ds"])[a:b]
   inz = np.mean(dist < di) * 100
   if inz > 0:
