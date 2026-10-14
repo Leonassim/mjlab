@@ -61,6 +61,23 @@ def _bid(name):
 ROOT, HEAD, CHEST = _bid("BODY"), _bid("HEAD_P_LINK"), _bid("CHEST_P_LINK")
 
 
+def _gid(name):
+  for i in range(M.ngeom):
+    n = mujoco.mj_id2name(M, mujoco.mjtObj.mjOBJ_GEOM, i)
+    if n and (n == name or n.endswith("/" + name)):
+      return i
+  return None
+
+
+# Arm against body: the pairs the QP and the proximity terms watch.
+_ARM = [f"rhps1_collision_{s}_{l}_LINK" for s in "LR" for l in ("ELBOW_Y", "WRIST_Y", "SHOULDER_Y")]
+_BODY = ["rhps1_collision_CHEST_P_LINK", "rhps1_collision_BODY"] + [
+  f"rhps1_collision_{s}_CROTCH_P_LINK" for s in "LR"]
+ARM_PAIRS = [(_gid(a), _gid(b)) for a in _ARM for b in _BODY
+             if _gid(a) is not None and _gid(b) is not None
+             and not ("SHOULDER" in a and "CROTCH" in b)]
+
+
 def _quat_rotate_inv(q, v):
   """World vector v into the frame of quaternion q (w, x, y, z)."""
   w, x, y, z = q
@@ -76,6 +93,8 @@ def kinematics(root_pos, root_quat, root_linvel_w, root_angvel_w, qj, dqj, joint
   vadr = [M.jnt_dofadr[_jid(n)] for n in joint_names]
   T = len(root_pos)
   com, L, head_w, chest_rp = np.zeros((T, 3)), np.zeros((T, 3)), np.zeros((T, 3)), np.zeros((T, 2))
+  clear = np.full(T, np.inf)
+  ft = np.zeros(6)
   vel6 = np.zeros(6)
   for t in range(T):
     D.qpos[FREE_Q:FREE_Q + 3] = root_pos[t]
@@ -94,6 +113,13 @@ def kinematics(root_pos, root_quat, root_linvel_w, root_angvel_w, qj, dqj, joint
     w, x, y, z = xq
     chest_rp[t] = [np.arctan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)),
                    np.arcsin(np.clip(2 * (w * y - z * x), -1, 1))]
+    if t % 4 == 0:
+      # Mesh-mesh distance sometimes returns exactly 0 with no approach: not a
+      # contact, an artefact (the same pairs sit >5 cm on either side). Skipped.
+      ds = [mujoco.mj_geomDistance(M, D, a, b, 0.2, ft) for a, b in ARM_PAIRS]
+      ds = [x for x in ds if x != 0.0]
+      clear[t] = min(ds) if ds else np.inf
+  kinematics.clearance = clear[np.isfinite(clear)]
   return com, L, head_w, chest_rp
 
 
@@ -119,6 +145,10 @@ def metrics(dt, com, L, head_w, chest_rp, qj, joint_names, heading, forces=None,
   v = np.gradient(_smooth(com[:, :2], 9), dt, axis=0)
   a = np.gradient(_smooth(v, 9), dt, axis=0)
   out["CdM_acc_horiz"] = np.sqrt(np.mean((a ** 2).sum(1)))
+  c = getattr(kinematics, "clearance", None)
+  if c is not None and len(c):
+    out["bras_corps_min_cm"] = float(np.min(c) * 100)
+    out["bras_corps_p5_cm"] = float(np.percentile(c, 5) * 100)
   out["tete_degps"] = np.degrees(np.sqrt(np.mean((head_w ** 2).sum(1))))
   out["tronc_roulis_deg"] = np.degrees(np.std(chest_rp[:, 0]))
   out["tronc_tangage_deg"] = np.degrees(np.std(chest_rp[:, 1]))
@@ -200,7 +230,8 @@ def rollout(run, ck):
   robot = u.scene["robot"]
   sens = u.scene["feet_ground_contact"]
   dt = u.step_dt
-  rec = {k: [] for k in ("pos", "quat", "lv", "av", "q", "dq", "f", "tau")}
+  rec = {k: [] for k in ("pos", "quat", "lv", "av", "q", "dq", "f", "tau", "coll")}
+  coll = u.scene["self_collision"] if "self_collision" in u.scene.sensors else None
   obs, _ = env.reset()
   with torch.no_grad():
     for k in range(int(20.0 / dt)):
@@ -217,6 +248,8 @@ def rollout(run, ck):
       rec["dq"].append(d.joint_vel.numpy().copy())
       rec["f"].append(sens.data.force.norm(dim=-1).reshape(N, -1).numpy().copy())
       rec["tau"].append(d.qfrc_actuator.numpy().copy())
+      rec["coll"].append(coll.data.found.reshape(N, -1).sum(-1).numpy().copy() if coll is not None
+                         else np.zeros(N))
   rec = {k: np.stack(v, 1) for k, v in rec.items()}
   return rec, dt, list(robot.joint_names)
 
@@ -248,4 +281,4 @@ if __name__ == "__main__":
     print(f"== {name}")
     for k in keys:
       r = ref[name].get(k, np.nan)
-      print(f"  {k:22s} {pol[name][k]:8.3f} | {r:8.3f}" if not np.isnan(r) else f"  {k:22s} {pol[name][k]:8.3f} |        -")
+      print(f"  {k:22s} {pol[name][k]:8.3f}   BWC {r:8.3f}")

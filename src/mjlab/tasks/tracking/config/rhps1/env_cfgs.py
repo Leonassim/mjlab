@@ -524,15 +524,32 @@ def _arm_swing(env, k: float, std: float) -> "torch.Tensor":
   return torch.exp(-(err * err).mean(-1) / (std * std))
 
 
-def _head_stable(env, std: float) -> "torch.Tensor":
-  """Low head angular velocity in the world frame: a steady gaze."""
+def _head_id(env) -> int:
   robot = env.scene["robot"]
   i = getattr(env, "_head_body_id", None)
   if i is None:
     i = list(robot.body_names).index("HEAD_P_LINK")
     env._head_body_id = i
-  w = robot.data.body_link_ang_vel_w[:, i]
+  return i
+
+
+def _head_stable(env, std: float, tilt_only: bool = False) -> "torch.Tensor":
+  """Low head angular velocity in the world frame: a steady gaze. tilt_only
+  keeps the horizontal components (roll and pitch rates), so turning is free."""
+  w = env.scene["robot"].data.body_link_ang_vel_w[:, _head_id(env)]
+  if tilt_only:
+    w = w[:, :2]
   return torch.exp(-(w * w).sum(-1) / (std * std))
+
+
+def _head_level(env, std: float) -> "torch.Tensor":
+  """Head kept level: gravity along the head's own vertical axis."""
+  from mjlab.utils.lab_api.math import quat_apply_inverse
+
+  robot = env.scene["robot"]
+  q = robot.data.body_link_quat_w[:, _head_id(env)]
+  g = quat_apply_inverse(q, torch.tensor([0.0, 0.0, -1.0], device=q.device).expand(q.shape[0], 3))
+  return torch.exp(-(g[:, :2] ** 2).sum(-1) / (std * std))
 
 
 def _filtered_velocity_command(env, command_name: str, tau: float) -> "torch.Tensor":
@@ -903,8 +920,18 @@ def rhps1_flat_tracking_env_cfg(
       if _k in cfg.rewards:
         cfg.rewards[_k].params["body_names"] = _kept
     cfg.terminations["ee_body_pos"].params["body_names"] = ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")
+    # RHPS1_FREE_HEAD=1: the head leaves the BWC too; only its tilt rates and
+    # its level are rewarded, its yaw is free (turning toward the step).
+    _free_head = os.environ.get("RHPS1_FREE_HEAD", "0") == "1"
     if "motion_joint_pos_upper" in cfg.rewards:
-      cfg.rewards["motion_joint_pos_upper"].params["skip"] = _arm
+      cfg.rewards["motion_joint_pos_upper"].params["skip"] = _arm + (("HEAD",) if _free_head else ())
+    # Arm proximity weight: the swing brought the shoulder into the QP's 2 cm
+    # shoulder-chest damper zone ~20 % of the time at -2.
+    _apw = float(os.environ.get("RHPS1_ARM_PROX_W", "-2"))
+    for _k in ("arm_torso_proximity", "shoulder_chest_proximity", "shoulder_body_proximity",
+               "wrist_thigh_proximity"):
+      if _k in cfg.rewards:
+        cfg.rewards[_k].weight = _apw
     cfg.rewards["arm_swing"] = RewardTermCfg(
       func=_arm_swing,
       weight=float(os.environ.get("RHPS1_ARM_SWING_W", "1.0")),
@@ -914,8 +941,14 @@ def rhps1_flat_tracking_env_cfg(
     cfg.rewards["head_stable"] = RewardTermCfg(
       func=_head_stable,
       weight=float(os.environ.get("RHPS1_HEAD_STAB_W", "1.0")),
-      params={"std": float(os.environ.get("RHPS1_HEAD_STAB_STD", "0.2"))},
+      params={"std": float(os.environ.get("RHPS1_HEAD_STAB_STD", "0.2")), "tilt_only": _free_head},
     )
+    if _free_head:
+      cfg.rewards["head_level"] = RewardTermCfg(
+        func=_head_level,
+        weight=float(os.environ.get("RHPS1_HEAD_LEVEL_W", "1.0")),
+        params={"std": float(os.environ.get("RHPS1_HEAD_LEVEL_STD", "0.1"))},
+      )
 
   # RHPS1_FEET_HEIGHT_W: ankle HEIGHT tracking on its own. Slot 9 lifts 60-70 %
   # of the BWC in every direction (yaw 3 cm against 5): motion_feet_pos is mostly
