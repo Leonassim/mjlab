@@ -411,7 +411,9 @@ def _no_slip(env, sensor_name: str, body_names: tuple[str, ...], std: float) -> 
 _LEG_TOKENS = ("CROTCH", "KNEE", "ANKLE")
 
 
-def _joint_pos_track(env, command_name: str, std: float, upper: bool) -> "torch.Tensor":
+def _joint_pos_track(
+  env, command_name: str, std: float, upper: bool, skip: tuple[str, ...] = ()
+) -> "torch.Tensor":
   """Imitate the reference joint angles. Body-pose terms leave them free.
 
   Two groups because a single mean over 30 joints is dominated by the legs
@@ -426,7 +428,9 @@ def _joint_pos_track(env, command_name: str, std: float, upper: bool) -> "torch.
     names = list(robot.joint_names)
     is_leg = [any(t in n for t in _LEG_TOKENS) for n in names]
     ids = torch.tensor(
-      [i for i, leg in enumerate(is_leg) if leg != upper], device=robot.data.joint_pos.device
+      [i for i, leg in enumerate(is_leg)
+       if leg != upper and not any(t in names[i] for t in skip)],
+      device=robot.data.joint_pos.device,
     )
     setattr(env, key, ids)
   err = robot.data.joint_pos[:, ids] - cmd.joint_pos[:, ids]
@@ -499,6 +503,36 @@ def _sample_obs_bias(env, env_ids, lin: float, grav: float) -> None:
     if not hasattr(env, attr):
       setattr(env, attr, torch.zeros(env.num_envs, 3, device=env.device))
     getattr(env, attr)[env_ids] = (torch.rand(len(env_ids), 3, device=env.device) * 2 - 1) * r
+
+
+def _arm_swing(env, k: float, std: float) -> "torch.Tensor":
+  """Each arm swings against the leg on its own side, as in human walking.
+
+  Shoulder and hip pitch share their sign (positive sends the limb back), so
+  the target is shoulder - rest = -k (hip - rest), rest being the default pose.
+  """
+  robot = env.scene["robot"]
+  ids = getattr(env, "_arm_swing_ids", None)
+  if ids is None:
+    n = list(robot.joint_names)
+    ids = [(n.index(f"{s}_SHOULDER_P"), n.index(f"{s}_CROTCH_P")) for s in "LR"]
+    env._arm_swing_ids = ids
+  q, q0 = robot.data.joint_pos, robot.data.default_joint_pos
+  err = torch.stack(
+    [(q[:, sh] - q0[:, sh]) + k * (q[:, hp] - q0[:, hp]) for sh, hp in ids], dim=-1
+  )
+  return torch.exp(-(err * err).mean(-1) / (std * std))
+
+
+def _head_stable(env, std: float) -> "torch.Tensor":
+  """Low head angular velocity in the world frame: a steady gaze."""
+  robot = env.scene["robot"]
+  i = getattr(env, "_head_body_id", None)
+  if i is None:
+    i = list(robot.body_names).index("HEAD_P_LINK")
+    env._head_body_id = i
+  w = robot.data.body_link_ang_vel_w[:, i]
+  return torch.exp(-(w * w).sum(-1) / (std * std))
 
 
 def _filtered_velocity_command(env, command_name: str, tau: float) -> "torch.Tensor":
@@ -857,6 +891,31 @@ def rhps1_flat_tracking_env_cfg(
       "body_names": ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK"),
     },
   )
+
+  # RHPS1_FREE_ARMS=1: the arms leave the BWC (which holds them still) and swing
+  # against the legs; trunk and head stay tracked, the head is also steadied.
+  # Body terms keep their tracked-body list, so the critic input and the
+  # checkpoints are unchanged.
+  if os.environ.get("RHPS1_FREE_ARMS", "0") == "1":
+    _arm = ("SHOULDER", "ELBOW", "WRIST")
+    _kept = tuple(b for b in _TRACKED_BODIES if not any(t in b for t in _arm))
+    for _k in ("motion_body_pos", "motion_body_ori", "motion_body_lin_vel", "motion_body_ang_vel"):
+      if _k in cfg.rewards:
+        cfg.rewards[_k].params["body_names"] = _kept
+    cfg.terminations["ee_body_pos"].params["body_names"] = ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")
+    if "motion_joint_pos_upper" in cfg.rewards:
+      cfg.rewards["motion_joint_pos_upper"].params["skip"] = _arm
+    cfg.rewards["arm_swing"] = RewardTermCfg(
+      func=_arm_swing,
+      weight=float(os.environ.get("RHPS1_ARM_SWING_W", "1.0")),
+      params={"k": float(os.environ.get("RHPS1_ARM_SWING_K", "0.6")),
+              "std": float(os.environ.get("RHPS1_ARM_SWING_STD", "0.1"))},
+    )
+    cfg.rewards["head_stable"] = RewardTermCfg(
+      func=_head_stable,
+      weight=float(os.environ.get("RHPS1_HEAD_STAB_W", "1.0")),
+      params={"std": float(os.environ.get("RHPS1_HEAD_STAB_STD", "0.2"))},
+    )
 
   # RHPS1_FEET_HEIGHT_W: ankle HEIGHT tracking on its own. Slot 9 lifts 60-70 %
   # of the BWC in every direction (yaw 3 cm against 5): motion_feet_pos is mostly
