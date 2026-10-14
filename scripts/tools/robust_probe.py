@@ -24,7 +24,7 @@ run, ck = sys.argv[1], sys.argv[2]
 CMDS = {"debout": (0, 0, 0), "avant": (1, 0, 0), "gauche": (0, 1, 0), "rot+": (0, 0, 1), "arriere": (-1, 0, 0)}
 PER = 16
 N = PER * len(CMDS)
-torch.manual_seed(0)
+torch.manual_seed(int(os.environ.get("PROBE_SEED", "0")))
 cfg = load_env_cfg(TASK)
 cfg.scene.num_envs = N
 cfg.terminations = {}
