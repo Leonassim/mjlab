@@ -542,6 +542,17 @@ def _head_stable(env, std: float, tilt_only: bool = False) -> "torch.Tensor":
   return torch.exp(-(w * w).sum(-1) / (std * std))
 
 
+def _head_yaw_still(env, std: float) -> "torch.Tensor":
+  """Low HEAD_Y joint velocity: no yaw jitter, a slow turn toward the step stays free."""
+  robot = env.scene["robot"]
+  i = getattr(env, "_head_yaw_joint", None)
+  if i is None:
+    i = list(robot.joint_names).index("HEAD_Y")
+    env._head_yaw_joint = i
+  w = robot.data.joint_vel[:, i]
+  return torch.exp(-(w * w) / (std * std))
+
+
 def _head_level(env, std: float) -> "torch.Tensor":
   """Head kept level: gravity along the head's own vertical axis."""
   from mjlab.utils.lab_api.math import quat_apply_inverse
@@ -949,6 +960,14 @@ def rhps1_flat_tracking_env_cfg(
         weight=float(os.environ.get("RHPS1_HEAD_LEVEL_W", "1.0")),
         params={"std": float(os.environ.get("RHPS1_HEAD_LEVEL_STD", "0.1"))},
       )
+      # RHPS1_HEAD_YAW_W: pushes doubled the HEAD_Y velocity (6 -> 10 deg/s rms)
+      # while the tilt stayed at 3: the free yaw had no cost at all.
+      _hy = float(os.environ.get("RHPS1_HEAD_YAW_W", "0"))
+      if _hy > 0:
+        cfg.rewards["head_yaw_still"] = RewardTermCfg(
+          func=_head_yaw_still, weight=_hy,
+          params={"std": float(os.environ.get("RHPS1_HEAD_YAW_STD", "0.15"))},
+        )
 
   # RHPS1_FEET_HEIGHT_W: ankle HEIGHT tracking on its own. Slot 9 lifts 60-70 %
   # of the BWC in every direction (yaw 3 cm against 5): motion_feet_pos is mostly
