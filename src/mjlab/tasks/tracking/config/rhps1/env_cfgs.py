@@ -858,6 +858,21 @@ def rhps1_flat_tracking_env_cfg(
     },
   )
 
+  # RHPS1_FEET_HEIGHT_W: ankle HEIGHT tracking on its own. Slot 9 lifts 60-70 %
+  # of the BWC in every direction (yaw 3 cm against 5): motion_feet_pos is mostly
+  # fore-aft and lateral placement, see _feet_height_error_exp.
+  _fh = float(os.environ.get("RHPS1_FEET_HEIGHT_W", "0"))
+  if _fh > 0:
+    cfg.rewards["motion_feet_height"] = RewardTermCfg(
+      func=_feet_height_error_exp,
+      weight=_fh,
+      params={
+        "command_name": "motion",
+        "std": float(os.environ.get("RHPS1_FEET_HEIGHT_STD", "0.02")),
+        "body_names": ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK"),
+      },
+    )
+
   # NOYAUX RECALES SUR LES ERREURS MESUREES. Les valeurs heritees du G1 (std 0.3
   # a 3.14) etaient trois a trente fois plus larges que nos erreurs residuelles :
   # a l'iteration 19997, TOUS les termes de suivi rendaient 89 a 95 % de leur
