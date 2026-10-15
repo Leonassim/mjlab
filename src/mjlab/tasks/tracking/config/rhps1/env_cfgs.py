@@ -553,6 +553,47 @@ def _head_yaw_still(env, std: float) -> "torch.Tensor":
   return torch.exp(-(w * w) / (std * std))
 
 
+def _centroidal_ang_mom(env) -> "torch.Tensor":
+  """Angular momentum about the whole-body CoM, world frame (= mj_subtreeVel)."""
+  from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse
+
+  robot = env.scene["robot"]
+  d = robot.data
+  ids = robot.indexing.body_ids
+  m = env.sim.model.body_mass
+  inertia = env.sim.model.body_inertia
+  m = (m if m.dim() == 2 else m.unsqueeze(0))[:, ids]
+  inertia = (inertia if inertia.dim() == 3 else inertia.unsqueeze(0))[:, ids]
+  x, v = d.body_com_pos_w, d.body_com_lin_vel_w
+  q, w = d.body_com_quat_w, d.body_com_ang_vel_w
+  mt = m.sum(-1, keepdim=True)
+  c = (m.unsqueeze(-1) * x).sum(1) / mt
+  vc = (m.unsqueeze(-1) * v).sum(1) / mt
+  orb = (m.unsqueeze(-1) * torch.cross(x - c.unsqueeze(1), v - vc.unsqueeze(1), dim=-1)).sum(1)
+  spin = quat_apply(q, inertia.expand_as(w) * quat_apply_inverse(q, w)).sum(1)
+  return orb + spin
+
+
+def _yaw_momentum_still(env, std: float, tau: float) -> "torch.Tensor":
+  """Low oscillation of the centroidal angular momentum about the vertical.
+
+  L_z minus its low-pass at tau, so a steady turn costs nothing: only the
+  per-step swing is penalised. The arms are free, so they swing only if that
+  cancels the legs' yaw.
+  """
+  lz = _centroidal_ang_mom(env)[:, 2]
+  step = int(env.common_step_counter)
+  if not hasattr(env, "_lz_lp") or env._lz_lp.shape != lz.shape:
+    env._lz_lp = lz.clone()
+    env._lz_step = step
+  if env._lz_step != step:
+    env._lz_lp = env._lz_lp + (env.step_dt / tau) * (lz - env._lz_lp)
+    env._lz_step = step
+  env._lz_lp = torch.where(env.episode_length_buf == 0, lz, env._lz_lp)
+  e = lz - env._lz_lp
+  return torch.exp(-(e * e) / (std * std))
+
+
 def _head_level(env, std: float) -> "torch.Tensor":
   """Head kept level: gravity along the head's own vertical axis."""
   from mjlab.utils.lab_api.math import quat_apply_inverse
@@ -968,6 +1009,16 @@ def rhps1_flat_tracking_env_cfg(
           func=_head_yaw_still, weight=_hy,
           params={"std": float(os.environ.get("RHPS1_HEAD_YAW_STD", "0.15"))},
         )
+
+  # RHPS1_YAW_MOM_W: replaces the imposed arm swing (k 0.9 raised L_z rms from
+  # 0.26 to 0.36-0.48: style, not dynamics). Pair with RHPS1_ARM_SWING_W=0.
+  _ym = float(os.environ.get("RHPS1_YAW_MOM_W", "0"))
+  if _ym > 0:
+    cfg.rewards["yaw_momentum_still"] = RewardTermCfg(
+      func=_yaw_momentum_still, weight=_ym,
+      params={"std": float(os.environ.get("RHPS1_YAW_MOM_STD", "0.3")),
+              "tau": float(os.environ.get("RHPS1_YAW_MOM_TAU", "1.0"))},
+    )
 
   # RHPS1_FEET_HEIGHT_W: ankle HEIGHT tracking on its own. Slot 9 lifts 60-70 %
   # of the BWC in every direction (yaw 3 cm against 5): motion_feet_pos is mostly
