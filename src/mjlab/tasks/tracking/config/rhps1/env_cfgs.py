@@ -984,6 +984,19 @@ def rhps1_flat_tracking_env_cfg(
                "wrist_thigh_proximity"):
       if _k in cfg.rewards:
         cfg.rewards[_k].weight = _apw
+    # RHPS1_ARM_PROX_MARGIN (m): the penalty starts that far before the QP zone.
+    # S5 sat at 5.5 cm elbow-body in mjlab and 4.5 in mc_mujoco (QP braking
+    # 61-68 %). Capped by the BWC's own posture: shoulder-chest 2.17 cm (1 mm
+    # at most), wrist-thigh 0 (MuJoCo's hulls are already 1.5-2.7 cm wider).
+    # Detection reaches 2 * RHPS1_PROX_GAP, raise it to cover the margin.
+    _am = float(os.environ.get("RHPS1_ARM_PROX_MARGIN", "0"))
+    if _am > 0:
+      for _k, _cap in (("arm_torso_proximity", _am), ("shoulder_body_proximity", _am),
+                       ("shoulder_chest_proximity", min(_am, 0.001))):
+        _p = cfg.rewards[_k].params
+        _p["min_dist"] = _p["min_dist"] + _cap
+        assert _p["min_dist"] < 2 * float(os.environ.get("RHPS1_PROX_GAP", "0.025")), \
+          f"{_k}: min_dist {_p['min_dist']} beyond detection, raise RHPS1_PROX_GAP"
     cfg.rewards["arm_swing"] = RewardTermCfg(
       func=_arm_swing,
       weight=float(os.environ.get("RHPS1_ARM_SWING_W", "1.0")),

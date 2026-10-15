@@ -881,7 +881,7 @@ _RHPS1_QP_PAIR_COLLISION_EXPR = (
 # without altering the physics. Pair detection range ~= sum of both geoms'
 # gaps (~5 cm), comfortably beyond the 2 cm penalty threshold that keeps the
 # gait outside the deployment QP's self-collision damper zone.
-_RHPS1_LEG_PROXIMITY_GAP = 0.025
+_RHPS1_LEG_PROXIMITY_GAP = float(os.environ.get("RHPS1_PROX_GAP", "0.025"))
 
 # Enable all named collision geoms, including self-collisions.
 RHPS1_FULL_COLLISION = CollisionCfg(
