@@ -93,7 +93,7 @@ def kinematics(root_pos, root_quat, root_linvel_w, root_angvel_w, qj, dqj, joint
   vadr = [M.jnt_dofadr[_jid(n)] for n in joint_names]
   T = len(root_pos)
   com, L, head_w, chest_rp = np.zeros((T, 3)), np.zeros((T, 3)), np.zeros((T, 3)), np.zeros((T, 2))
-  clear = np.full(T, np.inf)
+  pd = np.full(((T + 3) // 4, len(ARM_PAIRS)), np.nan)
   ft = np.zeros(6)
   vel6 = np.zeros(6)
   for t in range(T):
@@ -114,12 +114,14 @@ def kinematics(root_pos, root_quat, root_linvel_w, root_angvel_w, qj, dqj, joint
     chest_rp[t] = [np.arctan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)),
                    np.arcsin(np.clip(2 * (w * y - z * x), -1, 1))]
     if t % 4 == 0:
-      # Mesh-mesh distance sometimes returns exactly 0 with no approach: not a
-      # contact, an artefact (the same pairs sit >5 cm on either side). Skipped.
-      ds = [mujoco.mj_geomDistance(M, D, a, b, 0.2, ft) for a, b in ARM_PAIRS]
-      ds = [x for x in ds if x != 0.0]
-      clear[t] = min(ds) if ds else np.inf
-  kinematics.clearance = clear[np.isfinite(clear)]
+      pd[t // 4] = [mujoco.mj_geomDistance(M, D, a, b, 0.2, ft) for a, b in ARM_PAIRS]
+  # Mesh-mesh distance has two artefacts: an exact 0 with no approach, and a
+  # one-sample sign flip (6.24, -6.23, 6.22 cm). Both are dropped.
+  pd[pd == 0.0] = np.nan
+  flip = (pd[1:-1] < 0) & (np.abs(pd[1:-1] + pd[:-2]) < 0.01) & (np.abs(pd[1:-1] + pd[2:]) < 0.01)
+  pd[1:-1][flip] = np.nan
+  ok = ~np.isnan(pd).all(1)
+  kinematics.clearance = np.nanmin(pd[ok], axis=1)
   return com, L, head_w, chest_rp
 
 
