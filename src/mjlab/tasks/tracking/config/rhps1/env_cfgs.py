@@ -904,6 +904,21 @@ def rhps1_flat_tracking_env_cfg(
       _act.delay_update_period = 8000
       _act.delay_per_env_phase = False
 
+  # RHPS1_LOWLEVEL_LAG=1: the real joints' low-pass (2026-10-15 logs, qOut -> qIn,
+  # each joint ~ first order + 8-16 ms). The delay above was sized as a pure delay
+  # standing in for both; with the low-pass on, its pure part is ~20 ms at most.
+  if os.environ.get("RHPS1_LOWLEVEL_LAG", "0") == "1":
+    _hz = {"CROTCH_Y": 5.75, "CROTCH_R": 4.9, "CROTCH_P": 4.75, "KNEE": 7.25,
+           "ANKLE_P": 7.6, "ANKLE_R": 6.0, "CHEST": 6.4, "SHOULDER": 6.25,
+           "ELBOW": 9.0, "WRIST": 9.0, "HAND": 9.0, "HEAD": 7.0}
+    _rng = tuple(float(x) for x in os.environ.get("RHPS1_LOWLEVEL_LAG_RANGE", "0.75,1.25").split(","))
+    for _act in cfg.scene.entities["robot"].articulation.actuators:
+      _expr = " ".join(_act.target_names_expr)
+      _f = next((v for k, v in _hz.items() if k in _expr), None)
+      assert _f is not None and hasattr(_act, "lowlevel_lag_hz"), _expr
+      _act.lowlevel_lag_hz = _f
+      _act.lowlevel_lag_scale_range = _rng
+
   motion_cmd = cfg.commands["motion"]
   assert isinstance(motion_cmd, MotionCommandCfg)
   # Le flottant comme ancre : c'est la pose que le CSV donne directement, donc

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+import math
+
 import torch
 
 from mjlab.actuator.actuator import ActuatorCmd
@@ -24,6 +26,21 @@ class FiniteDifferencePdActuatorCfg(IdealPdActuatorCfg):
   Higher values keep more of the previous filtered target and reduce abrupt
   setpoint jumps seen by the PD loop. ``0.0`` means no position filtering.
   """
+
+  lowlevel_lag_hz: float = 0.0
+  """Cutoff of a first-order low-pass on the PD's position and velocity targets,
+  applied last, after the damper and the projection. ``0.0`` disables it.
+
+  The real RHPS1 joints do not follow the drive command instantly: identified on
+  the 2026-10-15 walking logs (qOut -> qIn), each joint is a 4-8 Hz first-order
+  low-pass plus 8-16 ms delay (hips ~5 Hz, knees and ankle pitch ~7.5 Hz),
+  linear-actuator joints included. mc_mujoco and this PD follow within one step.
+  The delay part is already ``delay_*_lag``; this is the low-pass part.
+  """
+
+  lowlevel_lag_scale_range: tuple[float, float] = (1.0, 1.0)
+  """Per environment and joint, the cutoff is scaled by a factor drawn uniformly
+  in this range at every reset."""
 
   posture_task_stiffness: float | None = None
   # With the posture filter on, the damping target is the FILTER's velocity, as
@@ -156,6 +173,9 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     self.posture_stiffness: torch.Tensor | None = None
     self.default_posture_stiffness: torch.Tensor | None = None
     self._substep_dt: float | None = None
+    self._lag_q: torch.Tensor | None = None
+    self._lag_qd: torch.Tensor | None = None
+    self._lag_scale: torch.Tensor | None = None
     self._desired_velocity_target: torch.Tensor | None = None
     self._elapsed_since_target_update: torch.Tensor | None = None
     self._initialized: torch.Tensor | None = None
@@ -274,6 +294,11 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
       shape, device=device, dtype=torch.float
     )
     self._initialized = torch.zeros(shape, device=device, dtype=torch.bool)
+    if self.cfg.lowlevel_lag_hz > 0.0:
+      self._lag_q = torch.zeros(shape, device=device, dtype=torch.float)
+      self._lag_qd = torch.zeros(shape, device=device, dtype=torch.float)
+      self._lag_scale = torch.ones(shape, device=device, dtype=torch.float)
+      self._sample_lag_scale(slice(None))
 
   def compute(self, cmd: ActuatorCmd) -> torch.Tensor:
     assert self._last_position_target is not None
@@ -401,9 +426,21 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
       changed | uninitialized, filtered_position_target, self._executed_position_target
     )
 
+    pd_pos, pd_vel = filtered_position_target, self._desired_velocity_target
+    if self._lag_q is not None and self._substep_dt is not None:
+      assert self._lag_qd is not None and self._lag_scale is not None
+      self._lag_q = torch.where(uninitialized, pd_pos, self._lag_q)
+      self._lag_qd = torch.where(uninitialized, pd_vel, self._lag_qd)
+      a = 1.0 - torch.exp(
+        -2.0 * math.pi * self.cfg.lowlevel_lag_hz * self._lag_scale * self._substep_dt
+      )
+      self._lag_q = self._lag_q + a * (pd_pos - self._lag_q)
+      self._lag_qd = self._lag_qd + a * (pd_vel - self._lag_qd)
+      pd_pos, pd_vel = self._lag_q, self._lag_qd
+
     pd_cmd = ActuatorCmd(
-      position_target=filtered_position_target,
-      velocity_target=self._desired_velocity_target,
+      position_target=pd_pos,
+      velocity_target=pd_vel,
       effort_target=cmd.effort_target,
       pos=cmd.pos,
       vel=cmd.vel,
@@ -568,3 +605,11 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     self._desired_velocity_target[env_ids] = 0.0
     self._elapsed_since_target_update[env_ids] = 0.0
     self._initialized[env_ids] = False
+    if self._lag_scale is not None:
+      self._sample_lag_scale(env_ids)
+
+  def _sample_lag_scale(self, env_ids: torch.Tensor | slice) -> None:
+    assert self._lag_scale is not None
+    lo, hi = self.cfg.lowlevel_lag_scale_range
+    n = self._lag_scale[env_ids].shape
+    self._lag_scale[env_ids] = lo + (hi - lo) * torch.rand(n, device=self._lag_scale.device)
