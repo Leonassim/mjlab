@@ -97,3 +97,94 @@ def rhps1_tracking_mirror(env, obs: TensorDict | None = None, actions: torch.Ten
     perm, sign = sp["actions"]
     actions_out = torch.cat([actions, actions[..., perm] * sign], dim=0)
   return obs_out, actions_out
+
+
+# ---------------------------------------------------------------------------
+# Lipschitz gradient penalty (RHPS1_LIPSCHITZ_W), after Chen et al., "Learning
+# Smooth Humanoid Locomotion through Lipschitz-Constrained Policies".
+#
+# The real robot holds a 5.5 Hz limit cycle at rest after walking (2026-10-15):
+# the drives follow their commands normally, the body twists ~0.5 deg in yaw
+# (8x what the hip yaw encoders see, a compliance the sim does not have) and the
+# policy, reacting to the gyro and the estimated velocity, keeps it going.
+# Bounding how much the actions move per unit of observation lowers that loop
+# gain whatever the unmodelled mode is.
+#
+# The gradient is taken w.r.t. the NORMALISED actor input, so one input std
+# weighs the same in every unit, and only on the inputs that close the loop
+# (RHPS1_LIPSCHITZ_OBS, actor-obs index ranges; default: base lin vel history,
+# base ang vel, joint pos, joint vel -- not gravity, command or last action).
+# ||J||_F^2 is estimated with one random projection per sample (Hutchinson).
+# ---------------------------------------------------------------------------
+
+import os as _os
+
+from rsl_rl.algorithms import PPO as _PPO
+
+
+class _MirrorAndLipschitz:
+  """Stands in for rsl-rl's Symmetry object: mirror loss (if any) + gradient penalty."""
+
+  use_data_augmentation = False
+  use_mirror_loss = True
+  mirror_loss_coeff = 1.0
+
+  def __init__(self, inner, coeff: float, ranges: list[tuple[int, int]], samples: int):
+    self.inner = inner
+    self.coeff = coeff
+    self.ranges = ranges
+    self.samples = samples
+    self.use_data_augmentation = bool(inner and inner.use_data_augmentation)
+    self.gp_sum = 0.0
+    self.gp_n = 0
+
+  def augment_batch(self, batch, original_batch_size):
+    if self.inner:
+      self.inner.augment_batch(batch, original_batch_size)
+
+  def compute_loss(self, actor, batch, original_batch_size):
+    loss = torch.zeros((), device=batch.actions.device)
+    if self.inner:
+      m = self.inner.compute_loss(actor, batch, original_batch_size)
+      if self.inner.use_mirror_loss:
+        loss = loss + self.inner.mirror_loss_coeff * m
+    n = min(original_batch_size, self.samples)
+    obs = batch.observations[:n]
+    group = actor.obs_groups[0]
+    assert len(actor.obs_groups) == 1, "gradient penalty expects a single actor obs group"
+    x = obs[group].detach().clone().requires_grad_(True)
+    td = obs.clone()
+    td[group] = x
+    mu = actor(td)
+    v = torch.randn_like(mu)
+    (g,) = torch.autograd.grad((mu * v).sum(), x, create_graph=True)
+    norm = actor.obs_normalizer
+    if hasattr(norm, "_std"):
+      g = g * (norm._std + norm.eps)
+    mask = torch.zeros(g.shape[-1], dtype=torch.bool, device=g.device)
+    for a, b in self.ranges:
+      mask[a:b] = True
+    gp = (g[:, mask] ** 2).sum(-1).mean()
+    self.gp_sum += float(gp.detach())
+    self.gp_n += 1
+    return loss + self.coeff * gp
+
+
+class RHPS1PPO(_PPO):
+  """PPO with the optional Lipschitz gradient penalty above."""
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    coeff = float(_os.environ.get("RHPS1_LIPSCHITZ_W", "0"))
+    if coeff > 0:
+      spec = _os.environ.get("RHPS1_LIPSCHITZ_OBS", "0:18,21:81")
+      ranges = [tuple(int(v) for v in r.split(":")) for r in spec.split(",")]
+      samples = int(_os.environ.get("RHPS1_LIPSCHITZ_SAMPLES", "4096"))
+      self.symmetry = _MirrorAndLipschitz(self.symmetry, coeff, ranges, samples)
+
+  def update(self):
+    loss = super().update()
+    if isinstance(self.symmetry, _MirrorAndLipschitz) and self.symmetry.gp_n:
+      loss["lipschitz_gp"] = self.symmetry.gp_sum / self.symmetry.gp_n
+      self.symmetry.gp_sum, self.symmetry.gp_n = 0.0, 0
+    return loss

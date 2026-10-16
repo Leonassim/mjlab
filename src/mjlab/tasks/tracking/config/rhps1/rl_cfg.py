@@ -53,6 +53,12 @@ def rhps1_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         if os.environ.get("RHPS1_MIRROR", "0") == "1"
         else None
       ),
+      # RHPS1_LIPSCHITZ_W > 0: gradient penalty on the actor (see rl_ext.RHPS1PPO).
+      class_name=(
+        "mjlab.tasks.tracking.config.rhps1.rl_ext:RHPS1PPO"
+        if float(os.environ.get("RHPS1_LIPSCHITZ_W", "0")) > 0
+        else "PPO"
+      ),
     ),
     experiment_name="rhps1_tracking",
     save_interval=500,
