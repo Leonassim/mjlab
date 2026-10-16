@@ -505,6 +505,54 @@ def _sample_obs_bias(env, env_ids, lin: float, grav: float) -> None:
     getattr(env, attr)[env_ids] = (torch.rand(len(env_ids), 3, device=env.device) * 2 - 1) * r
 
 
+def _ou_obs(func):
+  """Observation plus a slowly varying error (Ornstein-Uhlenbeck, see _sample_ou)."""
+
+  def f(env, **kwargs):
+    v = func(env, **kwargs)
+    n = getattr(env, "_rhps1_ou", None)
+    if n is None:
+      return v
+    step = int(env.common_step_counter)
+    if getattr(env, "_rhps1_ou_step", None) != step:
+      a = torch.exp(-env.step_dt / env._rhps1_ou_tau)
+      xi = torch.randn_like(n)
+      env._rhps1_ou = n * a + env._rhps1_ou_sigma * torch.sqrt(1.0 - a * a) * xi
+      env._rhps1_ou_step = step
+    return v + env._rhps1_ou
+
+  return f
+
+
+def _sample_ou(env, env_ids, sigma: float, tau_min: float, tau_max: float) -> None:
+  """Per episode: error amplitude in [0, sigma] (x, y; z a third) and time constant."""
+  if not hasattr(env, "_rhps1_ou"):
+    for attr in ("_rhps1_ou", "_rhps1_ou_sigma"):
+      setattr(env, attr, torch.zeros(env.num_envs, 3, device=env.device))
+    env._rhps1_ou_tau = torch.ones(env.num_envs, 1, device=env.device)
+  k = len(env_ids)
+  sig = torch.rand(k, 1, device=env.device) * sigma * torch.tensor([[1.0, 1.0, 1.0 / 3.0]], device=env.device)
+  env._rhps1_ou_sigma[env_ids] = sig
+  env._rhps1_ou_tau[env_ids] = tau_min + (tau_max - tau_min) * torch.rand(k, 1, device=env.device)
+  env._rhps1_ou[env_ids] = sig * torch.randn(k, 3, device=env.device)
+
+
+def _with_deflection(func, attr: str):
+  """Joint observation plus the hidden transmission deflection (series compliance)."""
+
+  def f(env, **kwargs):
+    v = func(env, **kwargs)
+    asset_cfg = kwargs.get("asset_cfg")
+    ent = env.scene[asset_cfg.name if asset_cfg is not None else "robot"]
+    d = getattr(ent, attr, None)
+    if d is None:
+      return v
+    ids = asset_cfg.joint_ids if asset_cfg is not None else slice(None)
+    return v + d[:, ids]
+
+  return f
+
+
 def _arm_swing(env, k: float, std: float) -> "torch.Tensor":
   """Each arm swings against the leg on its own side, as in human walking.
 
@@ -904,6 +952,24 @@ def rhps1_flat_tracking_env_cfg(
       _act.delay_update_period = 8000
       _act.delay_per_env_phase = False
 
+  # RHPS1_SERIES_K="lo,hi" [N.m/rad]: hidden transmission compliance on the leg
+  # joints, log-uniform per env and joint, the deflection added to the observed
+  # joint position and velocity (see FiniteDifferencePdActuatorCfg).
+  _sk = os.environ.get("RHPS1_SERIES_K")
+  if _sk:
+    _skr = tuple(float(x) for x in _sk.split(","))
+    _legs = ("CROTCH", "KNEE", "ANKLE")
+    for _act in cfg.scene.entities["robot"].articulation.actuators:
+      if any(t in " ".join(_act.target_names_expr) for t in _legs):
+        assert hasattr(_act, "series_stiffness_range")
+        _act.series_stiffness_range = _skr
+    from dataclasses import replace as _srep
+
+    _at = cfg.observations["actor"].terms
+    for _k, _attr in (("joint_pos", "_rhps1_deflection"), ("joint_vel", "_rhps1_deflection_rate")):
+      if _k in _at:
+        _at[_k] = _srep(_at[_k], func=_with_deflection(_at[_k].func, _attr))
+
   # RHPS1_LOWLEVEL_LAG=1: the real joints' low-pass (2026-10-15 logs, qOut -> qIn,
   # each joint ~ first order + 8-16 ms). The delay above was sized as a pure delay
   # standing in for both; with the low-pass on, its pure part is ~20 ms at most.
@@ -1180,6 +1246,20 @@ def rhps1_flat_tracking_env_cfg(
     else c
     for c in _ent.collisions
   )
+  # RHPS1_FOOT_SOLREF="timeconst,dampratio": softer foot-ground contact. On the
+  # robot the pelvis tilts 0.5-2 deg during single support beyond what the
+  # encoders explain (IMU vs flat-foot kinematics, 2026-10-16), against 0.03-0.25
+  # in mc_mujoco: soles, foot rocking or hidden joint compliance. MuJoCo's
+  # default is 0.02 s.
+  _sr = os.environ.get("RHPS1_FOOT_SOLREF")
+  if _sr:
+    _srv = tuple(float(x) for x in _sr.split(","))
+    _ent.collisions = tuple(
+      _replace(c, solref={k: _srv for k in c.friction})
+      if isinstance(c.friction, dict)
+      else c
+      for c in _ent.collisions
+    )
 
   _art = cfg.scene.entities["robot"].articulation
   _art.actuators = tuple(
@@ -1335,6 +1415,24 @@ def rhps1_flat_tracking_env_cfg(
     cfg.events["obs_bias"] = _BEv(
       func=_sample_obs_bias, mode="reset", params={"lin": _bl, "grav": _bg}
     )
+  if "vel_ou" in _rob:
+    # Slowly varying velocity-estimate error. On the robot, turning in place,
+    # MCWaiko's forward velocity fluctuates 8x more than in mc_mujoco at the step
+    # rate (1-2 Hz: 0.092 vs 0.011 m/s, 2026-10-16 slot 11 log), most likely the
+    # stance foot pivoting under the leg odometry. A constant bias ("bias") is not
+    # that; slot 12, trained with it, still shrank its steps on the robot.
+    from dataclasses import replace as _orep
+
+    from mjlab.managers.event_manager import EventTermCfg as _OEv
+
+    _at = cfg.observations["actor"].terms
+    if "base_lin_vel" in _at:
+      _at["base_lin_vel"] = _orep(_at["base_lin_vel"], func=_ou_obs(_at["base_lin_vel"].func))
+    cfg.events["vel_ou"] = _OEv(func=_sample_ou, mode="reset", params={
+      "sigma": float(os.environ.get("RHPS1_VEL_OU_SIGMA", "0.12")),
+      "tau_min": float(os.environ.get("RHPS1_VEL_OU_TAU_MIN", "0.1")),
+      "tau_max": float(os.environ.get("RHPS1_VEL_OU_TAU_MAX", "0.5")),
+    })
   if "gains" in _rob:
     from mjlab.envs.mdp import dr as _dr
     from mjlab.managers.event_manager import EventTermCfg as _GEv

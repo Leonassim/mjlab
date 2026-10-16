@@ -42,6 +42,24 @@ class FiniteDifferencePdActuatorCfg(IdealPdActuatorCfg):
   """Per environment and joint, the cutoff is scaled by a factor drawn uniformly
   in this range at every reset."""
 
+  series_stiffness_range: tuple[float, float] | None = None
+  """Hidden transmission compliance [N.m/rad], drawn log-uniform per env and joint
+  at each reset; ``None`` disables it.
+
+  Two stages, as on the robot: the motor (and its encoder) follows the target
+  with the low-level response (``lowlevel_lag_hz`` + delay, identified on
+  qOut -> qIn), and the link hangs on it through a spring-damper of stiffness k
+  and damping ``series_damping_ratio * damping``. The policy observes the motor
+  side (``Entity._rhps1_deflection`` = motor - link, read by the tracking task's
+  joint observations). On the robot the pelvis tilts 1.2-2 deg in pitch and yaws
+  8x more than the hip encoders explain (2026-10-16 logs); mc_mujoco shows none.
+  A quasi-static version (deflection = tau / k) closed an instantaneous loop
+  through the observation and chattered at 100 Hz.
+  """
+
+  series_damping_ratio: tuple[float, float] = (0.3, 1.0)
+  """Spring damping as a fraction of the PD damping, uniform per env and joint."""
+
   posture_task_stiffness: float | None = None
   # With the posture filter on, the damping target is the FILTER's velocity, as
   # mc_mujoco's PD uses mc_rtc's alpha_ref (mj_sim.cpp:830) -- not a finite
@@ -176,6 +194,8 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     self._lag_q: torch.Tensor | None = None
     self._lag_qd: torch.Tensor | None = None
     self._lag_scale: torch.Tensor | None = None
+    self._series_k: torch.Tensor | None = None
+    self._series_c: torch.Tensor | None = None
     self._desired_velocity_target: torch.Tensor | None = None
     self._elapsed_since_target_update: torch.Tensor | None = None
     self._initialized: torch.Tensor | None = None
@@ -294,6 +314,15 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
       shape, device=device, dtype=torch.float
     )
     self._initialized = torch.zeros(shape, device=device, dtype=torch.bool)
+    if self.cfg.series_stiffness_range is not None:
+      self._series_k = torch.ones(shape, device=device, dtype=torch.float)
+      self._series_c = torch.ones(shape, device=device, dtype=torch.float)
+      self._sample_series_k(slice(None))
+      ent = self.entity
+      if not hasattr(ent, "_rhps1_deflection"):
+        nj = len(ent.joint_names)
+        ent._rhps1_deflection = torch.zeros(shape[0], nj, device=device, dtype=torch.float)
+        ent._rhps1_deflection_rate = torch.zeros(shape[0], nj, device=device, dtype=torch.float)
     if self.cfg.lowlevel_lag_hz > 0.0:
       self._lag_q = torch.zeros(shape, device=device, dtype=torch.float)
       self._lag_qd = torch.zeros(shape, device=device, dtype=torch.float)
@@ -483,7 +512,28 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
       start, kd_ratio, torch.maximum(self._raw_torque_peak_kd, kd_ratio)
     )
 
-    return super().compute(pd_cmd)
+    if self._series_k is None:
+      return super().compute(pd_cmd)
+    # Motor at pd_pos / pd_vel (the target through the low-level response), link
+    # on a spring-damper behind it; the encoder reads the motor.
+    assert self._series_c is not None and self.damping is not None and self.force_limit is not None
+    c = self._series_c * self.damping
+    tau = self._series_k * (pd_pos - cmd.pos) + c * (pd_vel - cmd.vel)
+    tau = torch.clamp(tau, -self.force_limit, self.force_limit)
+    ent = self.entity
+    ent._rhps1_deflection[:, self._target_ids_list] = pd_pos - cmd.pos
+    ent._rhps1_deflection_rate[:, self._target_ids_list] = pd_vel - cmd.vel
+    return tau
+
+  def _sample_series_k(self, env_ids: torch.Tensor | slice) -> None:
+    assert self._series_k is not None and self.cfg.series_stiffness_range is not None
+    lo, hi = self.cfg.series_stiffness_range
+    n = self._series_k[env_ids].shape
+    u = torch.rand(n, device=self._series_k.device)
+    self._series_k[env_ids] = torch.exp(math.log(lo) + (math.log(hi) - math.log(lo)) * u)
+    assert self._series_c is not None
+    clo, chi = self.cfg.series_damping_ratio
+    self._series_c[env_ids] = clo + (chi - clo) * torch.rand(n, device=self._series_c.device)
 
   def _apply_torque_feasibility(
     self,
@@ -607,6 +657,8 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     self._initialized[env_ids] = False
     if self._lag_scale is not None:
       self._sample_lag_scale(env_ids)
+    if self._series_k is not None:
+      self._sample_series_k(env_ids)
 
   def _sample_lag_scale(self, env_ids: torch.Tensor | slice) -> None:
     assert self._lag_scale is not None
