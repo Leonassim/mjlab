@@ -11,6 +11,7 @@ normal force in the 60 ms after touchdown, p99) and stance slip (foot speed whil
 loaded above 100 N, p90).
 """
 
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -99,6 +100,17 @@ def rollout(run_dir, ck):
       slip.extend(v[e, on, s])
   out["impact"] = np.percentile(imp, 99) if imp else np.nan
   out["slip"] = np.percentile(slip, 90) if slip else np.nan
+  if os.environ.get("DYN_PER_CMD") == "1":  # where the peaks come from
+    for ci, c in enumerate(CMDS):
+      es = slice(ci * PER, (ci + 1) * PER)
+      row = []
+      for gname in ("KNEE", "CROTCH_R", "CROTCH_P", "ANKLE_R", "ANKLE_P"):
+        cols = [i for i, n in enumerate(jn) if gname in n]
+        t = np.abs(r["tau"][es][:, :, cols])
+        row.append(f"{gname} p99 {np.percentile(t, 99):5.1f} max {t.max():5.1f}")
+      fi = [f[e, t0:t0 + w, s].max() for e in range(es.start, es.stop) for s in range(2)
+            for t0 in np.where(np.diff((f[e, :, s] > 100).astype(int)) == 1)[0]]
+      print(f"  cmd {str(c):12s} " + " | ".join(row) + f" | impact p99 {np.percentile(fi, 99) if fi else np.nan:4.0f} N")
   return out
 
 

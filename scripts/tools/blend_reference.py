@@ -81,6 +81,9 @@ def human_cycle(src: str, lat_sign: int, jn):
 
 def main():
   alpha, out = float(sys.argv[1]), sys.argv[2]
+  # BLEND_ALPHA_CLIP="1:0,2:0.5,3:0": per BWC clip (0 fwd, 1 left, 2 back, 3 right)
+  clip_alpha = {int(k): float(v) for k, v in (kv.split(":") for kv in
+                os.environ.get("BLEND_ALPHA_CLIP", "").split(",") if kv)}
   m = rt.model()
   jn = [m.joint(j).name for j in range(1, m.njnt)]
   z = dict(np.load("docs/bwc_motion_v3.npz"))
@@ -93,6 +96,7 @@ def main():
     if k not in CLIP_DIR:
       continue
     src, sgn = CLIP_DIR[k]
+    a_k = clip_alpha.get(k, alpha)
     cyc, n = human_cycle(src, sgn, jn)
     zl = z["body_pos_w"][a:b, iL, 2]
     base = min(zl.min(), z["body_pos_w"][a:b, iR, 2].min())
@@ -111,10 +115,10 @@ def main():
     i0 = np.floor(x).astype(int) % BINS
     fr = (x - np.floor(x))[:, None]
     val = (1 - fr) * cyc[i0] + fr * cyc[(i0 + 1) % BINS]
-    q[a:b, 7 + np.array(ju)] += alpha * w[:, None] * val
+    q[a:b, 7 + np.array(ju)] += a_k * w[:, None] * val
     amp = np.degrees(np.ptp(cyc, 0))
     print(f"clip {k} ({src}{'+' if sgn > 0 else '-'}, {n} foulees humaines): ajout crete a crete "
-          + ", ".join(f"{u} {alpha * x:.0f}" for u, x in zip(UPPER, amp)) + " deg")
+          + ", ".join(f"{u} {a_k * x:.0f}" for u, x in zip(UPPER, amp)) + " deg")
   # limits, then FK and velocities
   lo, hi = m.jnt_range[1:, 0], m.jnt_range[1:, 1]
   q[:, 7:] = np.clip(q[:, 7:], lo, hi)
