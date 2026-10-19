@@ -73,7 +73,7 @@ def rollout(run_dir, ck):
         d = robot.data
         rec["tau"].append(d.qfrc_actuator.numpy().copy())
         rec["qd"].append(d.joint_vel.numpy().copy())
-        rec["f"].append(sens.data.force[..., 2].reshape(N, -1).numpy().copy())
+        rec["f"].append(sens.data.force.norm(dim=-1).reshape(N, -1).numpy().copy())
         rec["v"].append(d.body_link_lin_vel_w[:, ia, :2].norm(dim=-1).numpy().copy())
   r = {k: np.stack(v, 1) for k, v in rec.items()}  # (N, T, ...)
   jn = list(robot.joint_names)
