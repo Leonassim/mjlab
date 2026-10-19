@@ -63,7 +63,7 @@ def main():
   robot = u.scene["robot"]
   sens = u.scene["feet_ground_contact"]
   jidx = [list(robot.joint_names).index(n) for n in J]
-  rec = {k: [] for k in ("q", "grav", "f", "cmd", "quat")}
+  rec = {k: [] for k in ("q", "grav", "f", "cmd", "quat", "gyro")}
   obs, _ = env.reset()
   dt = u.step_dt
   with torch.no_grad():
@@ -76,13 +76,14 @@ def main():
           qq = qq + robot._rhps1_deflection  # encoder side, as on the robot
         rec["q"].append(qq[:, jidx].numpy().copy())
         rec["grav"].append(robot.data.projected_gravity_b.numpy().copy())
+        rec["gyro"].append(robot.data.root_link_ang_vel_b.numpy().copy())
         rec["f"].append(sens.data.force.norm(dim=-1).reshape(N, -1).numpy().copy())
         rec["cmd"].append(target.numpy().astype(int))
         qq = robot.data.root_link_quat_w.numpy().copy()
         rec["quat"].append(qq * np.array([1.0, -1.0, -1.0, -1.0]))  # stored inverted, as mc_rtc logs it
   rec = {k: np.stack(v, 1) for k, v in rec.items()}  # (N, T, ...)
   for i, name in enumerate(CMDS):
-    blocks = {k: [] for k in ("q", "grav", "forces", "cmd", "armed", "quat")}
+    blocks = {k: [] for k in ("q", "grav", "forces", "cmd", "armed", "quat", "gyro")}
     for e in range(i * PER, (i + 1) * PER):
       T = rec["q"].shape[1]
       blocks["q"] += [rec["q"][e], np.zeros((1, 30))]
@@ -91,6 +92,7 @@ def main():
       blocks["cmd"] += [rec["cmd"][e], np.zeros((1, 3), dtype=int)]
       blocks["armed"] += [np.ones(T, dtype=bool), np.zeros(1, dtype=bool)]
       blocks["quat"] += [rec["quat"][e], np.array([[1.0, 0, 0, 0]])]
+      blocks["gyro"] += [rec["gyro"][e], np.zeros((1, 3))]
     np.savez_compressed(f"{out}_{name}.npz", **{k: np.concatenate(v) for k, v in blocks.items()})
 
 

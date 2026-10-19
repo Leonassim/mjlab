@@ -553,6 +553,27 @@ def _with_deflection(func, attr: str):
   return f
 
 
+def _sway_torque(env, env_ids, amp: tuple[float, float, float], tau: float) -> None:
+  """Slowly varying random torque on the pelvis (OU, time constant tau), amplitude
+  per axis drawn in [0, amp] at each episode start. Every env step."""
+  robot = env.scene["robot"]
+  n_env = env.num_envs
+  if not hasattr(env, "_rhps1_sway"):
+    env._rhps1_sway = torch.zeros(n_env, 3, device=env.device)
+    env._rhps1_sway_sig = torch.zeros(n_env, 3, device=env.device)
+    env._rhps1_sway_body = [list(robot.body_names).index("BODY")]
+  fresh = env.episode_length_buf <= 1
+  if torch.any(fresh):
+    k = int(fresh.sum())
+    a = torch.tensor(amp, device=env.device)
+    env._rhps1_sway_sig[fresh] = torch.rand(k, 3, device=env.device) * a
+    env._rhps1_sway[fresh] = 0.0
+  c = math.exp(-env.step_dt / tau)
+  env._rhps1_sway = env._rhps1_sway * c + env._rhps1_sway_sig * math.sqrt(1.0 - c * c) * torch.randn_like(env._rhps1_sway)
+  tq = env._rhps1_sway.unsqueeze(1)
+  robot.write_external_wrench_to_sim(torch.zeros_like(tq), tq, body_ids=env._rhps1_sway_body)
+
+
 def _arm_swing(env, k: float, std: float) -> "torch.Tensor":
   """Each arm swings against the leg on its own side, as in human walking.
 
@@ -955,14 +976,20 @@ def rhps1_flat_tracking_env_cfg(
   # RHPS1_SERIES_K="lo,hi" [N.m/rad]: hidden transmission compliance on the leg
   # joints, log-uniform per env and joint, the deflection added to the observed
   # joint position and velocity (see FiniteDifferencePdActuatorCfg).
+  # RHPS1_SERIES_K_<GROUP> sets one group (ANKLE_P, ANKLE_R, KNEE, CROTCH_P...) and
+  # wins over the legs-wide value. Measured on the robot (2026-10-16, hidden stance
+  # tilt vs foot moment, r = -0.95/-0.91): ankle pitch ~1500-1700, roll ~800-1000.
   _sk = os.environ.get("RHPS1_SERIES_K")
-  if _sk:
-    _skr = tuple(float(x) for x in _sk.split(","))
-    _legs = ("CROTCH", "KNEE", "ANKLE")
+  _groups = ("CROTCH_Y", "CROTCH_R", "CROTCH_P", "KNEE", "ANKLE_P", "ANKLE_R")
+  _per = {gname: os.environ.get(f"RHPS1_SERIES_K_{gname}") for gname in _groups}
+  if _sk or any(_per.values()):
     for _act in cfg.scene.entities["robot"].articulation.actuators:
-      if any(t in " ".join(_act.target_names_expr) for t in _legs):
+      _expr = " ".join(_act.target_names_expr)
+      _gname = next((gn for gn in _groups if gn in _expr), None)
+      _val = (_per.get(_gname) if _gname else None) or (_sk if _gname else None)
+      if _val:
         assert hasattr(_act, "series_stiffness_range")
-        _act.series_stiffness_range = _skr
+        _act.series_stiffness_range = tuple(float(x) for x in _val.split(","))
     from dataclasses import replace as _srep
 
     _at = cfg.observations["actor"].terms
@@ -1415,6 +1442,16 @@ def rhps1_flat_tracking_env_cfg(
     cfg.events["obs_bias"] = _BEv(
       func=_sample_obs_bias, mode="reset", params={"lin": _bl, "grav": _bg}
     )
+  if "sway" in _rob:
+    # Continuous random pelvis torque. On the robot the body sways 2-3x more than
+    # in sim for the same policy (gravity-y std 0.029 vs 0.013, gyro 2-3x,
+    # 2026-10-16). Tested on slot 11 (2026-10-18): it raises sim sway but does not
+    # shorten the steps, so it is not what shortens them on the robot.
+    from mjlab.managers.event_manager import EventTermCfg as _SwEv
+
+    _amp = tuple(float(x) for x in os.environ.get("RHPS1_SWAY_AMP", "20,20,10").split(","))
+    cfg.events["sway_torque"] = _SwEv(func=_sway_torque, mode="step", params={
+      "amp": _amp, "tau": float(os.environ.get("RHPS1_SWAY_TAU", "0.1"))})
   if "vel_ou" in _rob:
     # Slowly varying velocity-estimate error. On the robot, turning in place,
     # MCWaiko's forward velocity fluctuates 8x more than in mc_mujoco at the step
