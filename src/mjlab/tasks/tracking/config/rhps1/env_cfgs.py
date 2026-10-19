@@ -574,6 +574,24 @@ def _sway_torque(env, env_ids, amp: tuple[float, float, float], tau: float) -> N
   robot.write_external_wrench_to_sim(torch.zeros_like(tq), tq, body_ids=env._rhps1_sway_body)
 
 
+def _torque_envelope(env, limits: dict[str, float]) -> "torch.Tensor":
+  """Squared relative excess of |actuator torque| over a per-group ceiling.
+
+  Ceilings = the slot 13 (BWC copy) p99 measured by dyn_envelope.py: what the
+  robot already does. Below them the term is exactly zero.
+  """
+  robot = env.scene["robot"]
+  if not hasattr(env, "_tenv_lim"):
+    lim = torch.full((len(robot.joint_names),), float("inf"), device=env.device)
+    for i, n in enumerate(robot.joint_names):
+      for g, v in limits.items():
+        if g in n:
+          lim[i] = v
+    env._tenv_lim = lim
+  tau = robot.data.qfrc_actuator.abs()
+  return ((torch.relu(tau - env._tenv_lim) / env._tenv_lim) ** 2).sum(-1)
+
+
 def _arm_swing(env, k: float, std: float) -> "torch.Tensor":
   """Each arm swings against the leg on its own side, as in human walking.
 
@@ -1130,6 +1148,16 @@ def rhps1_flat_tracking_env_cfg(
           func=_head_yaw_still, weight=_hy,
           params={"std": float(os.environ.get("RHPS1_HEAD_YAW_STD", "0.15"))},
         )
+
+  # RHPS1_TORQUE_ENV="KNEE:78,CROTCH_P:48,ANKLE_P:62": stay inside the slot 13
+  # torque envelope (p99 + 10 %, dyn_envelope.py) while the reference changes.
+  _te = os.environ.get("RHPS1_TORQUE_ENV")
+  if _te:
+    _tl = {k: float(v) for k, v in (kv.split(":") for kv in _te.split(","))}
+    cfg.rewards["torque_envelope"] = RewardTermCfg(
+      func=_torque_envelope, weight=float(os.environ.get("RHPS1_TORQUE_ENV_W", "-20")),
+      params={"limits": _tl},
+    )
 
   # RHPS1_YAW_MOM_W: replaces the imposed arm swing (k 0.9 raised L_z rms from
   # 0.26 to 0.36-0.48: style, not dynamics). Pair with RHPS1_ARM_SWING_W=0.
