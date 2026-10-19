@@ -1,6 +1,10 @@
 """Build the AMP expert set from LAFAN1 walking, retargeted to RHPS1.
 
-  uv run python scripts/tools/amp_dataset.py <out.npz> <clip.bvh> [<clip.bvh> ...]
+  uv run python scripts/tools/amp_dataset.py <out.npz> <clip.bvh|clip.amc> [...]
+
+RHPS1_AMP_STRETCH=K plays every clip K times slower (100STYLE Neutral at K=2 walks
+at the robot's speeds; Leo found the slowed walk natural enough, 2026-10-19).
+100STYLE clips are cut to Frame_Cuts.csv.
 
 Each clip is retargeted whole (retarget_lafan.retarget), mirrored, cut to the
 frames that look like plain walking or standing at RHPS1 scale (speed below
@@ -23,6 +27,22 @@ import retarget_lafan as rt  # noqa: E402
 from mjlab.tasks.tracking.config.rhps1 import amp  # noqa: E402
 
 VMAX = float(os.environ.get("RHPS1_AMP_VMAX", "0.8"))
+STRETCH = float(os.environ.get("RHPS1_AMP_STRETCH", "1"))
+
+
+def cut(path):
+  """(t0, t1) in seconds: 100STYLE Frame_Cuts.csv, else the whole clip."""
+  import csv
+
+  d, name = os.path.dirname(path), os.path.basename(path)[:-4]
+  fc = os.path.join(d, "..", "Frame_Cuts.csv")
+  if "_" not in name or not os.path.exists(fc):
+    return 0.0, 1e9
+  style, kind = name.rsplit("_", 1)
+  for row in csv.DictReader(open(fc)):
+    if row["STYLE_NAME"] == style and row.get(f"{kind}_START", "N/A") != "N/A":
+      return int(row[f"{kind}_START"]) / 60.0, int(row[f"{kind}_STOP"]) / 60.0
+  return 0.0, 1e9
 
 
 def keep_mask(qs, dt, jn):
@@ -76,7 +96,7 @@ def main():
   jn = [m.joint(j).name for j in range(1, m.njnt)]
   feats, ends, off, total, kept = [], [], 0, 0, 0
   for c in clips:
-    qs, h, *_ = rt.retarget(m, c, 0.0, 1e9)
+    qs, h, *_ = rt.retarget(m, c, *cut(c))
     dt = h["dt"]
     for mirrored in (False, True):
       q = amp._mirror_qpos(qs, jn) if mirrored else qs
@@ -84,7 +104,7 @@ def main():
       total += len(q)
       for a, b in runs(mask, int(1.0 / dt)):
         kept += b - a
-        q2, li, an = resample(q[a:b], dt)
+        q2, li, an = resample(q[a:b], dt * STRETCH)
         f = amp.offline_features(m, q2, li, an)
         feats.append(f)
         ends.append(off + np.arange(amp.PAIR_STEPS, len(f)))

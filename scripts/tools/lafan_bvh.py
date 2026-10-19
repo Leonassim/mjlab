@@ -47,8 +47,100 @@ def read(path: str):
   return names, np.array(parents), np.array(offsets), chans, motion, dt
 
 
+def _euler_sxyz(a):
+  """ASF/AMC convention: static XYZ, R = Rz Ry Rx; a (..., 3) in degrees."""
+  return Rot.from_euler("xyz", a, degrees=True).as_matrix()
+
+
+def fk_amc(path: str):
+  """CMU ASF/AMC (the .asf next to the .amc, named after the subject), 120 Hz."""
+  import glob
+  import os
+
+  asf = glob.glob(os.path.join(os.path.dirname(path), "*.asf"))[0]
+  bones, children, unit = {}, {}, 1.0
+  lines = open(asf).read().split("\n")
+  i, section, cur = 0, None, None
+  for ln in lines:
+    t = ln.split()
+    if not t or t[0].startswith("#"):
+      continue
+    if t[0].startswith(":"):
+      section = t[0]
+      continue
+    if section == ":units" and t[0] == "length":
+      unit = float(t[1])
+    elif section == ":bonedata":
+      if t[0] == "begin":
+        cur = {"dof": []}
+      elif t[0] == "end":
+        bones[cur["name"]] = cur
+      elif t[0] == "name":
+        cur["name"] = t[1]
+      elif t[0] == "direction":
+        cur["dir"] = np.array([float(x) for x in t[1:4]])
+      elif t[0] == "length":
+        cur["len"] = float(t[1])
+      elif t[0] == "axis":
+        cur["axis"] = np.array([float(x) for x in t[1:4]])
+      elif t[0] == "dof":
+        cur["dof"] = t[1:]
+    elif section == ":hierarchy" and t[0] not in ("begin", "end"):
+      children[t[0]] = t[1:]
+  frames, cur = [], None
+  for ln in open(path).read().split("\n"):
+    t = ln.split()
+    if not t or t[0].startswith(("#", ":")):
+      continue
+    if len(t) == 1 and t[0].isdigit():
+      cur = {}
+      frames.append(cur)
+    elif cur is not None:
+      cur[t[0]] = np.array([float(x) for x in t[1:]])
+  T = len(frames)
+  m = 0.0254 / unit  # ASF length unit is 1/unit inch
+  pos, rot = {}, {}
+  root = np.array([f["root"] for f in frames])
+  pos["root"] = root[:, :3] * m
+  rot["root"] = _euler_sxyz(root[:, 3:6])
+  stack = ["root"]
+  while stack:
+    b = stack.pop()
+    for c in children.get(b, []):
+      bd = bones[c]
+      C = _euler_sxyz(bd["axis"])
+      a = np.zeros((T, 3))
+      if bd["dof"]:
+        v = np.array([f.get(c, np.zeros(len(bd["dof"]))) for f in frames])
+        for k, dname in enumerate(bd["dof"]):
+          a[:, "xyz".index(dname[1])] = v[:, k]
+      R = rot[b] @ C @ _euler_sxyz(a) @ C.T
+      rot[c] = R
+      pos[c] = pos[b] + bd["len"] * m * np.einsum("tij,j->ti", R, bd["dir"])
+      stack.append(c)
+  # joint = end of the named bone
+  ends = {"Hips": "root", "LeftUpLeg": "lhipjoint", "LeftLeg": "lfemur", "LeftFoot": "ltibia",
+          "LeftToe": "lfoot", "RightUpLeg": "rhipjoint", "RightLeg": "rfemur",
+          "RightFoot": "rtibia", "RightToe": "rfoot", "Spine": "lowerback", "Spine1": "upperback",
+          "Spine2": "thorax", "Neck": "lowerneck", "Head": "upperneck",
+          "LeftShoulder": "thorax", "LeftArm": "lclavicle", "LeftForeArm": "lhumerus",
+          "LeftHand": "lradius", "RightShoulder": "thorax", "RightArm": "rclavicle",
+          "RightForeArm": "rhumerus", "RightHand": "rradius"}
+  # rotation of the segment below the joint (the foot for LeftFoot, as in BVH)
+  below = {"LeftFoot": "lfoot", "RightFoot": "rfoot", "LeftUpLeg": "lfemur", "RightUpLeg": "rfemur",
+           "LeftLeg": "ltibia", "RightLeg": "rtibia"}
+  names = list(ends)
+  P = np.stack([pos[ends[n]] for n in names], 1)
+  Rm = np.stack([rot[below.get(n, ends[n])] for n in names], 1)
+  P = np.einsum("ij,tkj->tki", _M, P)
+  Rm = _M @ Rm @ _M.T
+  return names, P, Rm, 1.0 / 120.0
+
+
 def fk(path: str):
   """Returns (names, pos (T, J, 3), rot (T, J, 3, 3), dt) for the named joints."""
+  if path.endswith(".amc"):
+    return fk_amc(path)
   names, parents, offsets, chans, mot, dt = read(path)
   T, J = len(mot), len(names)
   pos = np.zeros((T, J, 3))
@@ -67,16 +159,45 @@ def fk(path: str):
       local = np.broadcast_to(np.eye(3), (T, 3, 3))
       lp = None
     p = parents[j]
+    # position channels, when present, replace the offset (Bandai Namco has them on
+    # every joint, LAFAN1 on the root only)
+    t = lp if lp is not None and lp.shape[1] == 3 else np.broadcast_to(offsets[j], (T, 3))
     if p < 0:
-      pos[:, j] = lp
+      pos[:, j] = t
       rot[:, j] = local
     else:
-      pos[:, j] = pos[:, p] + np.einsum("tij,j->ti", rot[:, p], offsets[j])
+      pos[:, j] = pos[:, p] + np.einsum("tij,tj->ti", rot[:, p], t)
       rot[:, j] = rot[:, p] @ local
   keep = [j for j, n in enumerate(names) if n]
   pos = np.einsum("ij,tkj->tki", _M, pos[:, keep]) / 100.0
   rot = _M @ rot[:, keep] @ _M.T
-  return [names[j] for j in keep], pos, rot, dt
+  out = [names[j] for j in keep]
+  if "UpperLeg_L" in out:  # Bandai Namco -> LAFAN1 names
+    k = [i for i, n in enumerate(out) if n != "joint_Root"]  # Hips first, as in LAFAN1
+    out = [_BANDAI.get(out[i], out[i]) for i in k]
+    pos, rot = pos[:, k], rot[:, k]
+    i = out.index("Spine")  # no Spine1: use Spine
+    pos = np.concatenate([pos, pos[:, [i]]], 1)
+    rot = np.concatenate([rot, rot[:, [i]]], 1)
+    out = out + ["Spine1"]
+  elif "LeftCollar" in out:  # 100STYLE -> LAFAN1 names
+    out = [_100STYLE.get(n, n) for n in out]
+  return out, pos, rot, dt
+
+
+_100STYLE = {"Chest": "Spine", "Chest2": "Spine1", "Chest4": "Spine2",
+             "LeftCollar": "LeftShoulder", "LeftShoulder": "LeftArm", "LeftElbow": "LeftForeArm",
+             "LeftWrist": "LeftHand", "LeftHip": "LeftUpLeg", "LeftKnee": "LeftLeg",
+             "LeftAnkle": "LeftFoot", "RightCollar": "RightShoulder", "RightShoulder": "RightArm",
+             "RightElbow": "RightForeArm", "RightWrist": "RightHand", "RightHip": "RightUpLeg",
+             "RightKnee": "RightLeg", "RightAnkle": "RightFoot"}
+
+_BANDAI = {"Chest": "Spine2", "UpperLeg_L": "LeftUpLeg", "LowerLeg_L": "LeftLeg",
+           "Foot_L": "LeftFoot", "Toes_L": "LeftToe", "UpperLeg_R": "RightUpLeg",
+           "LowerLeg_R": "RightLeg", "Foot_R": "RightFoot", "Toes_R": "RightToe",
+           "Shoulder_L": "LeftShoulder", "UpperArm_L": "LeftArm", "LowerArm_L": "LeftForeArm",
+           "Hand_L": "LeftHand", "Shoulder_R": "RightShoulder", "UpperArm_R": "RightArm",
+           "LowerArm_R": "RightForeArm", "Hand_R": "RightHand"}
 
 
 def frame(x, y_hint):

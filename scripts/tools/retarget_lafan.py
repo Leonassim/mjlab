@@ -11,6 +11,7 @@ Writes <out>.csv (csv_to_npz format: base pos, quat xyzw, 30 joints in model ord
 robot and the scaled human, after a docs/bwc_motion_v3.npz clip if one is given.
 """
 
+import os
 import sys
 
 import mediapy
@@ -82,7 +83,9 @@ def human_targets(path, t0, t1):
     ankle_h.append(np.median(ft[st, 2]))
     # lateral axis of the BVH foot frame: the local column most horizontal in stance
     cols = [rot[:, ix[side + "Foot"], :, k] for k in range(3)]
-    k = int(np.argmin([np.median(np.abs(c[st, 2])) for c in cols[1:]])) + 1
+    xf = (toe - ft) / np.linalg.norm(toe - ft, axis=-1, keepdims=True)
+    k = int(np.argmin([np.median(np.abs(c[st, 2])) + np.median(np.abs(np.sum(c[st] * xf[st], -1)))
+                       for c in cols]))
     lat = cols[k] * np.sign(np.median(np.sum(cols[k] * np.cross([0, 0, 1.0], toe - ft), -1)))
     Rf = bvh.frame(toe - ft, lat)
     out[side + "_foot_R"] = _level_pitch(Rf, st)
@@ -96,6 +99,23 @@ def human_targets(path, t0, t1):
   out["chest_R"] = _level_pitch(bvh.frame(np.cross(P("LeftArm") - P("RightArm"),
                                                    P("Neck") - P("Spine1")),
                                           P("LeftArm") - P("RightArm")))
+  # RT_DAMP / RT_ARM < 1 calm the human style: pelvis and chest oscillations around
+  # the walking heading (and the hip line with them), arm swing around hanging.
+  damp = float(os.environ.get("RT_DAMP", "1"))
+  if damp < 1:
+    fx = out["pelvis_R"][:, :, 0].copy()
+    fx[:, 2] = 0
+    k = max(1, int(1.0 / dt))
+    fx = np.stack([np.convolve(fx[:, i], np.ones(k) / k, "same") for i in range(3)], -1)
+    H = bvh.frame(fx, np.cross([0, 0, 1.0], fx))
+    for key in ("pelvis_R", "chest_R"):
+      rel = Rot.from_matrix(np.einsum("tji,tjk->tik", H, out[key])).as_rotvec()
+      out[key] = H @ Rot.from_rotvec(damp * rel).as_matrix()
+    mid = 0.5 * (out["LeftUpLeg"] + out["RightUpLeg"])
+    half = 0.5 * np.linalg.norm(out["LeftUpLeg"] - out["RightUpLeg"], axis=-1, keepdims=True)
+    out["LeftUpLeg"] = mid + half * out["pelvis_R"][:, :, 1]
+    out["RightUpLeg"] = mid - half * out["pelvis_R"][:, :, 1]
+  out["arm_scale"] = float(os.environ.get("RT_ARM", "1"))
   head_x = out["chest_R"][:, :, 0].copy()
   head_x[:, 2] = 0
   out["head_R"] = bvh.frame(head_x, np.cross([0, 0, 1.0], head_x))
@@ -108,8 +128,11 @@ class IK:
     self.b = {n: m.body(n).id for n in [m.body(i).name for i in range(m.nbody)]}
     self.lo = m.jnt_range[1:, 0].copy()
     self.hi = m.jnt_range[1:, 1].copy()
+    # shoulder yaw too: with the elbow near straight the targets leave the arm's
+    # twist free, and it drifted up to 180 deg (arm spinning on itself)
     self.reg = [m.joint(n).dofadr[0] for n in (
-      "L_ELBOW_Y", "R_ELBOW_Y", "L_WRIST_R", "L_WRIST_Y", "R_WRIST_R", "R_WRIST_Y")]
+      "L_SHOULDER_Y", "R_SHOULDER_Y", "L_ELBOW_Y", "R_ELBOW_Y", "L_WRIST_R", "L_WRIST_Y",
+      "R_WRIST_R", "R_WRIST_Y")]
 
   def _pos(self, body, target, w, J, e):
     jp = np.zeros((3, self.m.nv))
@@ -139,6 +162,11 @@ class IK:
         sh = d.xpos[self.b[f"{S}_SHOULDER_R_LINK"]]
         u = h[s + "ForeArm"][i] - h[s + "Arm"][i]
         f = h[s + "Hand"][i] - h[s + "ForeArm"][i]
+        if h["arm_scale"] < 1:  # swing around the hanging arm, in the chest frame
+          C = h["chest_R"][i]
+          hang = C @ np.array([0.1, 0, -1.0])
+          u = hang + h["arm_scale"] * (u / np.linalg.norm(u) - hang)
+          f = hang + h["arm_scale"] * (f / np.linalg.norm(f) - hang)
         el = sh + 0.261 * u / np.linalg.norm(u)
         self._pos(f"{S}_ELBOW_P_LINK", el, 1.0, J, e)
         self._pos(f"{S}_WRIST_R_LINK", el + 0.23 * f / np.linalg.norm(f), 0.7, J, e)
@@ -256,7 +284,7 @@ def main():
   near = [(n, np.degrees(qs[:, 7 + j].min()), np.degrees(qs[:, 7 + j].max()))
           for j, n in enumerate(jn) if np.any(qs[:, 7 + j] <= ik.lo[j] + 1e-3) or np.any(qs[:, 7 + j] >= ik.hi[j] - 1e-3)]
   print("butees atteintes:", near if near else "aucune")
-  for n in ("L_CROTCH_R", "L_CROTCH_P", "L_KNEE_P", "L_ANKLE_R", "R_ANKLE_R", "L_ANKLE_P", "CHEST_Y", "CHEST_P", "L_SHOULDER_P", "L_ELBOW_P"):
+  for n in ("L_CROTCH_R", "L_CROTCH_P", "L_KNEE_P", "L_ANKLE_R", "R_ANKLE_R", "L_ANKLE_P", "CHEST_Y", "CHEST_P", "L_SHOULDER_P", "L_SHOULDER_Y", "R_SHOULDER_Y", "L_ELBOW_P", "R_ELBOW_Y"):
     j = jn.index(n)
     print(f"  {n:13s} [{np.degrees(qs[:, 7 + j].min()):+6.1f}, {np.degrees(qs[:, 7 + j].max()):+6.1f}] deg, |qd| p99 {np.percentile(np.abs(qd[:, j]), 99):.1f} rad/s")
   zs = np.array(zmin) + dz
@@ -270,7 +298,7 @@ def main():
   fps = round(1 / h["dt"])
   hum = {k: v for k, v in h.items() if isinstance(v, np.ndarray) and v.ndim == 2 and v.shape[1] == 3}
   cols = [panel(m, qs, "RHPS1, marche humaine"),
-          panel(m, qs, "humain (LAFAN1, x%.2f)" % h["scale"], human=hum, robot=False)]
+          panel(m, qs, "humain (x%.2f)" % h["scale"], human=hum, robot=False)]
   if len(sys.argv) > 6:
     bq = bwc_qpos(int(sys.argv[5]), float(sys.argv[6]), len(qs), fps)
     cols.insert(0, panel(m, bq, "RHPS1, BWC actuel"))
