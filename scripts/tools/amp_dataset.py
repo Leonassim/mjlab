@@ -47,10 +47,10 @@ def cut(path):
 
 def keep_mask(qs, dt, jn):
   j = {n: 7 + k for k, n in enumerate(jn)}
-  n = max(1, int(1.0 / dt))
+  n = max(1, round(1.0 / dt))
   p = qs[:, :2]
   v = np.zeros(len(qs))
-  v[n // 2: len(qs) - n // 2] = np.linalg.norm(p[n:] - p[:-n], axis=-1)[: len(qs) - 2 * (n // 2)] / (n * dt)
+  v[n // 2: n // 2 + len(qs) - n] = np.linalg.norm(p[n:] - p[:-n], axis=-1) / (n * dt)
   ok = (v < VMAX) & (qs[:, 2] > 0.78)
   for s in ("L", "R"):
     ok &= qs[:, j[f"{s}_ELBOW_P"]] > -np.radians(60)
@@ -102,7 +102,7 @@ def main():
       q = amp._mirror_qpos(qs, jn) if mirrored else qs
       mask = keep_mask(q, dt, jn)
       total += len(q)
-      for a, b in runs(mask, int(1.0 / dt)):
+      for a, b in runs(mask, round(1.0 / dt)):
         kept += b - a
         q2, li, an = resample(q[a:b], dt * STRETCH)
         f = amp.offline_features(m, q2, li, an)
