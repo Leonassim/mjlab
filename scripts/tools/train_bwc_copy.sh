@@ -15,8 +15,10 @@ export CUDA_VISIBLE_DEVICES=0 \
   RHPS1_FEET_HEIGHT_W=5 RHPS1_FEET_HEIGHT_STD=0.015 \
   MJLAB_MOTION_FILE=docs/bwc_motion_v3.npz
 for kv in "$@"; do export "$kv"; done
+# MJLAB_MOTION_FILE=docs/... as an extra swaps the reference (e.g. the BWC with
+# the human upper-body swing, blend_reference.py).
 nohup uv run train Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start --env.scene.num-envs 4096 \
-  --env.commands.motion.motion-file "$PWD/docs/bwc_motion_v3.npz" \
+  --env.commands.motion.motion-file "$PWD/$MJLAB_MOTION_FILE" \
   --video True --video-interval 6000 --video-length 600 \
   --agent.resume True --agent.load-run "$RUN" --agent.load-checkpoint "$CK" \
   --agent.max-iterations "$ITERS" > "$LOG" 2>&1 &
