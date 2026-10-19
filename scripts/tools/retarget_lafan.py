@@ -209,9 +209,9 @@ def bwc_qpos(k, t0, n, fps_out):
   return np.concatenate([z["body_pos_w"][idx, 0], z["body_quat_w"][idx, 0], z["joint_pos"][idx]], 1)
 
 
-def main():
-  m = model()
-  path, t0, t1, out = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4]
+def retarget(m, path, t0, t1):
+  """IK over a segment; returns (qpos (T, 37), human targets, sole heights (T, 2),
+  ankle positions (T, 2, 3), IK residuals), sole on z = 0 in stance."""
   h = human_targets(path, t0, t1)
   T = len(h["Hips"])
   ik = IK(m)
@@ -239,6 +239,16 @@ def main():
   qs[:, 2] += dz
   for n in [k for k in h if isinstance(h[k], np.ndarray) and h[k].shape[-1:] == (3,) and h[k].ndim == 2]:
     h[n] = h[n] + np.array([0, 0, dz])
+  return qs, h, zf, ank, np.array(err), dz
+
+
+def main():
+  m = model()
+  path, t0, t1, out = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4]
+  qs, h, zf, ank, err, dz = retarget(m, path, t0, t1)
+  T = len(qs)
+  ik = IK(m)
+  zmin = zf.min(1) - dz
   # report
   jn = [m.joint(j).name for j in range(1, m.njnt)]
   qd = np.gradient(qs[:, 7:], h["dt"], axis=0)

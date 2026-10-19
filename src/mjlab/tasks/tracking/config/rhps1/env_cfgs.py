@@ -1489,6 +1489,30 @@ def rhps1_flat_tracking_env_cfg(
       k: (v[0] * _ps, v[1] * _ps) for k, v in _vr.items()
     }
 
+  # RHPS1_AMP=1: human style from a discriminator on retargeted LAFAN1 walking
+  # (amp.py). The BWC stays the command schedule, reset states and z-only
+  # terminations; its imitation terms give way to velocity tracking of the
+  # direction command at RHPS1_AMP_SPEED (vx, vy, wz).
+  if os.environ.get("RHPS1_AMP", "0") == "1":
+    from . import amp as _amp
+
+    for _k in [k for k in cfg.rewards if k.startswith("motion_")] + [
+      "contact_schedule", "double_support"
+    ]:
+      cfg.rewards.pop(_k, None)
+    cfg.rewards["track_lin_vel"] = RewardTermCfg(
+      func=_amp.track_lin_vel, weight=float(os.environ.get("RHPS1_AMP_VEL_W", "2.0")),
+      params={"command_name": "motion", "std": float(os.environ.get("RHPS1_AMP_VEL_STD", "0.15"))},
+    )
+    cfg.rewards["track_yaw_rate"] = RewardTermCfg(
+      func=_amp.track_yaw_rate, weight=float(os.environ.get("RHPS1_AMP_YAW_W", "1.0")),
+      params={"command_name": "motion", "std": float(os.environ.get("RHPS1_AMP_YAW_STD", "0.25"))},
+    )
+    cfg.observations["amp"] = ObservationGroupCfg(
+      terms={"amp": ObservationTermCfg(func=_amp.env_features)},
+      concatenate_terms=True, enable_corruption=False,
+    )
+
   if play:
     cfg.episode_length_s = int(1e9)
     cfg.observations["actor"].enable_corruption = False

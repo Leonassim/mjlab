@@ -54,8 +54,11 @@ def rhps1_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         else None
       ),
       # RHPS1_LIPSCHITZ_W > 0: gradient penalty on the actor (see rl_ext.RHPS1PPO).
+      # RHPS1_AMP=1: discriminator style reward (see amp.RHPS1AMPPPO).
       class_name=(
-        "mjlab.tasks.tracking.config.rhps1.rl_ext:RHPS1PPO"
+        "mjlab.tasks.tracking.config.rhps1.amp:RHPS1AMPPPO"
+        if os.environ.get("RHPS1_AMP", "0") == "1"
+        else "mjlab.tasks.tracking.config.rhps1.rl_ext:RHPS1PPO"
         if float(os.environ.get("RHPS1_LIPSCHITZ_W", "0")) > 0
         else "PPO"
       ),
