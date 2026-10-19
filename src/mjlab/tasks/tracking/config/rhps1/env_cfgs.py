@@ -1445,7 +1445,7 @@ def rhps1_flat_tracking_env_cfg(
   if "sway" in _rob:
     # Continuous random pelvis torque. On the robot the body sways 2-3x more than
     # in sim for the same policy (gravity-y std 0.029 vs 0.013, gyro 2-3x,
-    # 2026-10-16). Tested on slot 11 (2026-10-18): it raises sim sway but does not
+    # 2026-10-16). Tested on slot 11 (2026-10-19): it raises sim sway but does not
     # shorten the steps, so it is not what shortens them on the robot.
     from mjlab.managers.event_manager import EventTermCfg as _SwEv
 
