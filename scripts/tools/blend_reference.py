@@ -79,11 +79,64 @@ def human_cycle(src: str, lat_sign: int, jn):
   return c - c.mean(0), len(cycles)
 
 
+def pelvis_cycle(src: str, lat_sign: int):
+  """Mean 100STYLE stride of the pelvis height, zero-mean, periodic, 4 harmonics."""
+  z = np.load(f"{CACHE}/Neutral_{src}.npz")
+  q, dt, sole = z["qpos"], float(z["dt"]), z["sole_z"]
+  yaw = np.unwrap(Rot.from_quat(q[:, 3:7], scalar_first=True).as_euler("ZYX")[:, 0])
+  td = touchdowns(sole[:, 0] > 0.01)
+  cycles = []
+  for a, b in zip(td[:-1], td[1:]):
+    T = (b - a) * dt
+    if not 0.7 < T < 1.6:
+      continue
+    d = q[b, :2] - q[a, :2]
+    c, s = np.cos(yaw[a]), np.sin(yaw[a])
+    vx, vy = (d[0] * c + d[1] * s) / T, (-d[0] * s + d[1] * c) / T
+    if (src == "FW" and not vx > 0.3) or (src == "BW" and not vx < -0.2) or \
+       (src == "SW" and not (vy * lat_sign > 0.1 and abs(vx) < 0.15)):
+      continue
+    ph = np.linspace(0, 1, BINS + 1)
+    t = np.arange(a, b + 1)
+    cy = np.interp(ph, (t - a) / (b - a), q[t, 2])
+    cycles.append(cy - ph * (cy[-1] - cy[0]))
+  c = np.median(np.array(cycles), 0)[:-1]
+  F = np.fft.rfft(c)
+  F[0] = 0
+  F[5:] = 0
+  return np.fft.irfft(F, n=BINS)
+
+
+def leg_ik(m, d, q, targets, leg_dofs, iters=20):
+  """Move only the leg joints of q so each ankle body meets its (pos, rot) target."""
+  d.qpos[:] = q
+  for _ in range(iters):
+    mujoco.mj_kinematics(m, d)
+    mujoco.mj_comPos(m, d)
+    J, e = [], []
+    for b, (pt, Rt) in targets.items():
+      jp, jr = np.zeros((3, m.nv)), np.zeros((3, m.nv))
+      mujoco.mj_jacBody(m, d, jp, jr, b)
+      J += [jp[:, leg_dofs], 0.3 * jr[:, leg_dofs]]
+      e += [pt - d.xpos[b], 0.3 * Rot.from_matrix(Rt @ d.xmat[b].reshape(3, 3).T).as_rotvec()]
+    J, e = np.vstack(J), np.concatenate(e)
+    if np.linalg.norm(e) < 1e-5:
+      break
+    dq = np.linalg.solve(J.T @ J + 1e-6 * np.eye(len(leg_dofs)), J.T @ e)
+    d.qpos[np.array(leg_dofs) + 1] += dq
+  return d.qpos.copy(), float(np.linalg.norm(e))
+
+
 def main():
   alpha, out = float(sys.argv[1]), sys.argv[2]
   # BLEND_ALPHA_CLIP="1:0,2:0.5,3:0": per BWC clip (0 fwd, 1 left, 2 back, 3 right)
   clip_alpha = {int(k): float(v) for k, v in (kv.split(":") for kv in
                 os.environ.get("BLEND_ALPHA_CLIP", "").split(",") if kv)}
+  # BLEND_PELVIS=1 (stage 2a): add the human pelvis bob, legs re-solved by IK so both
+  # ankles keep their BWC world pose; BLEND_PELVIS_CLIP per clip as above.
+  pel = float(os.environ.get("BLEND_PELVIS", "0"))
+  pel_clip = {int(k): float(v) for k, v in (kv.split(":") for kv in
+              os.environ.get("BLEND_PELVIS_CLIP", "").split(",") if kv)}
   m = rt.model()
   jn = [m.joint(j).name for j in range(1, m.njnt)]
   z = dict(np.load("docs/bwc_motion_v3.npz"))
@@ -116,6 +169,24 @@ def main():
     fr = (x - np.floor(x))[:, None]
     val = (1 - fr) * cyc[i0] + fr * cyc[(i0 + 1) % BINS]
     q[a:b, 7 + np.array(ju)] += a_k * w[:, None] * val
+    p_k = pel_clip.get(k, pel)
+    if p_k > 0:
+      pc = pelvis_cycle(src, sgn)
+      dz = p_k * w * ((1 - fr[:, 0]) * pc[i0] + fr[:, 0] * pc[(i0 + 1) % BINS])
+      dd = mujoco.MjData(m)
+      leg_dofs = [m.joint(n).dofadr[0] for n in jn if any(t in n for t in ("CROTCH", "KNEE", "ANKLE"))]
+      bl, br_ = m.body("L_ANKLE_P_LINK").id, m.body("R_ANKLE_P_LINK").id
+      worst = 0.0
+      for i in np.where(np.abs(dz) > 1e-5)[0]:
+        x = q[a + i].copy()
+        dd.qpos[:] = x
+        mujoco.mj_kinematics(m, dd)
+        tg = {b_: (dd.xpos[b_].copy(), dd.xmat[b_].reshape(3, 3).copy()) for b_ in (bl, br_)}
+        x[2] += dz[i]
+        x, err = leg_ik(m, dd, x, tg, leg_dofs)
+        q[a + i] = x
+        worst = max(worst, err)
+      print(f"clip {k}: bassin +/- {np.ptp(dz) * 50:.1f} cm (x{p_k:g}), residu IK des chevilles max {worst * 1000:.1f} mm")
     amp = np.degrees(np.ptp(cyc, 0))
     print(f"clip {k} ({src}{'+' if sgn > 0 else '-'}, {n} foulees humaines): ajout crete a crete "
           + ", ".join(f"{u} {a_k * x:.0f}" for u, x in zip(UPPER, amp)) + " deg")
