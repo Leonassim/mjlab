@@ -303,6 +303,60 @@ def _soft_landing(env, sensor_name: str) -> "torch.Tensor":
   return (window * (force / BODY_WEIGHT_N) ** 2).mean(dim=-1)
 
 
+def _touchdown_speed_cap(env, sensor_name: str, body_names: tuple[str, ...], v_max: float) -> "torch.Tensor":
+  """Squared relative excess of the foot's landing speed over v_max, at each touchdown.
+
+  Landing speed = fastest downward foot speed in the 50 ms before the load rises.
+  v_max = the BWC's own fastest landing (0.21 m/s on bwc_motion_v3): zero for any
+  landing the BWC makes, quadratic beyond (Leo, 2026-10-20: the impact limit is the
+  BWC's). Event term divided by the step, so its weight reads per landing.
+  """
+  robot = env.scene["robot"]
+  if not hasattr(env, "_tdc_ids"):
+    env._tdc_ids = [list(robot.body_names).index(n) for n in body_names]
+  vz = robot.data.body_link_lin_vel_w[:, env._tdc_ids, 2]
+  force = env.scene[sensor_name].data.force.norm(dim=-1).reshape(vz.shape)
+  n = int(round(0.05 / env.step_dt)) + 1
+  buf = getattr(env, "_tdc_buf", None)
+  if buf is None or buf.shape[0] != vz.shape[0]:
+    buf = vz[:, None].repeat(1, n, 1)
+  buf = torch.cat([buf[:, 1:], vz[:, None]], 1)
+  fresh = env.episode_length_buf <= 1
+  buf = torch.where(fresh[:, None, None], vz[:, None].expand_as(buf), buf)
+  env._tdc_buf = buf
+  prev = getattr(env, "_tdc_prev", None)
+  if prev is None or prev.shape != force.shape:
+    prev = force.clone()
+  landed = (force > LAND_N) & (prev <= LAND_N) & ~fresh[:, None]
+  env._tdc_prev = force.clone()
+  v_down = (-buf.min(dim=1).values).clamp(min=0.0)
+  # capped at 2: a fall lands at metres per second and would swamp the return
+  excess = (torch.relu(v_down - v_max) / v_max).clamp(max=2.0)
+  return (landed.float() * excess**2).sum(-1) / env.step_dt
+
+
+def _impact_force_cap(env, sensor_name: str, f_max: float, window: float = 0.06) -> "torch.Tensor":
+  """Squared relative excess of the peak foot force over f_max in the `window` after each
+  touchdown, emitted once when the window closes. f_max = slot 13's p99 (729 N in sim,
+  dyn_envelope.py): impacts no harder than the BWC copy the robot already walks with.
+  Event term divided by the step, so its weight reads per landing; excess capped at 2.
+  """
+  force = env.scene[sensor_name].data.force.norm(dim=-1).reshape(env.num_envs, -1)
+  prev = getattr(env, "_ifc_prev", None)
+  if prev is None or prev.shape != force.shape:
+    prev = force.clone()
+    env._ifc_since = torch.full_like(force, 1e4)
+    env._ifc_peak = torch.zeros_like(force)
+  landed = (force > LAND_N) & (prev <= LAND_N)
+  env._ifc_prev = force.clone()
+  since = torch.where(landed, torch.zeros_like(force), env._ifc_since + env.step_dt)
+  peak = torch.where(landed, force, torch.maximum(env._ifc_peak, force))
+  closing = (env._ifc_since < window) & (since >= window)
+  env._ifc_since, env._ifc_peak = since, peak
+  excess = (torch.relu(peak - f_max) / f_max).clamp(max=2.0)
+  return (closing.float() * excess**2).sum(-1) / env.step_dt
+
+
 def _double_support_match(
   env, command_name: str, sensor_name: str, body_names: tuple[str, ...],
   air_threshold: float = 0.01,
@@ -1155,8 +1209,27 @@ def rhps1_flat_tracking_env_cfg(
   if _te:
     _tl = {k: float(v) for k, v in (kv.split(":") for kv in _te.split(","))}
     cfg.rewards["torque_envelope"] = RewardTermCfg(
-      func=_torque_envelope, weight=float(os.environ.get("RHPS1_TORQUE_ENV_W", "-20")),
+      func=_torque_envelope, weight=float(os.environ.get("RHPS1_TORQUE_ENV_W", "-3")),
       params={"limits": _tl},
+    )
+
+  # RHPS1_TOUCHDOWN_VMAX (m/s): feet land no faster than the BWC (0.21 m/s), weight
+  # RHPS1_TOUCHDOWN_W per landing. Needs the foot-ground sensor (cadence_term).
+  _tdv = os.environ.get("RHPS1_TOUCHDOWN_VMAX")
+  if _tdv and cadence_term:
+    cfg.rewards["touchdown_speed_cap"] = RewardTermCfg(
+      func=_touchdown_speed_cap, weight=float(os.environ.get("RHPS1_TOUCHDOWN_W", "-5")),
+      params={"sensor_name": "feet_ground_contact", "body_names": ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK"),
+              "v_max": float(_tdv)},
+    )
+
+  # RHPS1_IMPACT_FMAX (N): touchdown force peaks no harder than slot 13's p99 (729 N),
+  # weight RHPS1_IMPACT_W per landing.
+  _ifm = os.environ.get("RHPS1_IMPACT_FMAX")
+  if _ifm and cadence_term:
+    cfg.rewards["impact_force_cap"] = RewardTermCfg(
+      func=_impact_force_cap, weight=float(os.environ.get("RHPS1_IMPACT_W", "-5")),
+      params={"sensor_name": "feet_ground_contact", "f_max": float(_ifm)},
     )
 
   # RHPS1_YAW_MOM_W: replaces the imposed arm swing (k 0.9 raised L_z rms from

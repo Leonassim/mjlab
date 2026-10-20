@@ -63,7 +63,7 @@ def rollout(run_dir, ck):
   sens = u.scene["feet_ground_contact"]
   bn = list(robot.body_names)
   ia = [bn.index("L_ANKLE_P_LINK"), bn.index("R_ANKLE_P_LINK")]
-  rec = {k: [] for k in ("tau", "qd", "f", "v")}
+  rec = {k: [] for k in ("tau", "qd", "f", "v", "vz")}
   obs, _ = env.reset()
   dt = u.step_dt
   with torch.no_grad():
@@ -76,6 +76,7 @@ def rollout(run_dir, ck):
         rec["qd"].append(d.joint_vel.numpy().copy())
         rec["f"].append(sens.data.force.norm(dim=-1).reshape(N, -1).numpy().copy())
         rec["v"].append(d.body_link_lin_vel_w[:, ia, :2].norm(dim=-1).numpy().copy())
+        rec["vz"].append(d.body_link_lin_vel_w[:, ia, 2].numpy().copy())
   r = {k: np.stack(v, 1) for k, v in rec.items()}  # (N, T, ...)
   jn = list(robot.joint_names)
   lim = {}
@@ -98,6 +99,11 @@ def rollout(run_dir, ck):
       for t0 in np.where(np.diff(on.astype(int)) == 1)[0]:
         imp.append(f[e, t0:t0 + w, s].max())
       slip.extend(v[e, on, s])
+  # touchdown speed: fastest downward foot speed in the 50 ms before the load rises
+  w50 = int(0.05 / dt)
+  tdv = [-r["vz"][e, max(0, t0 - w50):t0 + 1, s].min() for e in range(f.shape[0]) for s in range(2)
+         for t0 in np.where(np.diff((f[e, :, s] > 100).astype(int)) == 1)[0]]
+  out["td_speed"] = (np.percentile(tdv, 99), np.max(tdv)) if tdv else (np.nan, np.nan)
   out["impact"] = np.percentile(imp, 99) if imp else np.nan
   out["slip"] = np.percentile(slip, 90) if slip else np.nan
   if os.environ.get("DYN_PER_CMD") == "1":  # where the peaks come from
@@ -126,7 +132,8 @@ def main():
       if ref is not None:
         line += f"   x{p99 / ref[gname][0]:.2f} / x{mx / ref[gname][1]:.2f} / x{qd / ref[gname][3]:.2f}"
       print(line)
-    line = f"  impact pied p99 {o['impact']:5.0f} N | glissement appui p90 {o['slip'] * 100:4.1f} cm/s"
+    line = (f"  impact pied p99 {o['impact']:5.0f} N | vitesse de pose p99 {o['td_speed'][0]:.3f} max {o['td_speed'][1]:.3f} m/s"
+            f" | glissement appui p90 {o['slip'] * 100:4.1f} cm/s")
     if ref is not None:
       line += f"   x{o['impact'] / ref['impact']:.2f} / x{o['slip'] / ref['slip']:.2f}"
     print(line, flush=True)

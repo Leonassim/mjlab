@@ -197,7 +197,9 @@ def main():
         while i1 < len(up) - 1 and up[i1 + 1]:
           i1 += 1
         u = (i - i0 + 0.5) / max(i1 - i0 + 1, 1)
-        s_bw = np.cos(np.pi * u) ** 2  # 1 at lift-off and touchdown, 0 mid-swing
+        # 1 at lift-off, 0 at u = 0.375, back to 1 at u = 0.75: the last quarter of the
+        # swing is the BWC's own, so the reference lands no faster than the BWC
+        s_bw = 1.0 - np.sin(np.pi * min(u / 0.75, 1.0)) ** 2
         p_h, R_h = d.xpos[ank[s]].copy(), d.xmat[ank[s]].reshape(3, 3).copy()
         p_ = s_bw * bw[s][0] + (1 - s_bw) * p_h
         p_[2] = max(p_[2], bw[s][0][2], base)
