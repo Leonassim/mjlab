@@ -17,10 +17,10 @@ O=/tmp/claude-1002/-home-lmoussafir-mc-rtc-superbuild/6f3e2030-bd2b-4492-8c6b-67
 CUDA_VISIBLE_DEVICES="" MJLAB_TASK=Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start MJLAB_LOG_ROOT=logs/rsl_rl/rhps1_tracking \
   MJLAB_MOTION_FILE=docs/bwc_motion_v2.npz timeout 900 uv run python scripts/tools/export_onnx.py "$R" "model_$C.pt" "$O" > /dev/null 2>&1 \
   && ! pgrep -x mc_mujoco > /dev/null \
-  && uv run python scripts/tools/check_slot_scales.py "$O" 4 2>&1 | tail -1 | tee /dev/stderr | grep -q "== ONNX" \
+  && uv run python scripts/tools/check_slot_scales.py "$O" 6 2>&1 | tail -1 | tee /dev/stderr | grep -q "== ONNX" \
   && cp /home/lmoussafir/install/share/NewRLQPController/policy/rhps1_bwc_x10.onnx /tmp/claude-1002/-home-lmoussafir-mc-rtc-superbuild/6f3e2030-bd2b-4492-8c6b-6737c1f6af5e/scratchpad/slot4_backup.onnx \
   && cp "$O" /home/lmoussafir/install/share/NewRLQPController/policy/rhps1_bwc_x10.onnx \
-  && { timeout 600 /tmp/claude-1002/-home-lmoussafir-mc-rtc-superbuild/6f3e2030-bd2b-4492-8c6b-6737c1f6af5e/scratchpad/mcbench.sh 4 1.0 0 0 20 > /dev/null 2>&1; true; } \
+  && { timeout 600 /tmp/claude-1002/-home-lmoussafir-mc-rtc-superbuild/6f3e2030-bd2b-4492-8c6b-6737c1f6af5e/scratchpad/mcbench.sh 6 1.0 0 0 20 > /dev/null 2>&1; true; } \
   && python3 scripts/tools/mc_log_summary.py --export=/tmp/claude-1002/-home-lmoussafir-mc-rtc-superbuild/6f3e2030-bd2b-4492-8c6b-6737c1f6af5e/scratchpad/mc_gait.npz 2>&1 | tail -1 \
   && uv run python scripts/tools/mc_gait.py /tmp/claude-1002/-home-lmoussafir-mc-rtc-superbuild/6f3e2030-bd2b-4492-8c6b-6737c1f6af5e/scratchpad/mc_gait.npz 2>&1 | tail -1
 RHPS1_POSTURE_K=1600 RHPS1_POSTURE_K_HI=0 CUDA_VISIBLE_DEVICES="" timeout 1500 uv run python scripts/tools/fall_probe.py "$R" "model_$C.pt" noise_settle 2>&1 | grep -a "debout" &
