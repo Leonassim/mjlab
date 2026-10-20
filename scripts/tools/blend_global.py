@@ -105,6 +105,10 @@ def main():
   # 4th arg: leg alpha relative to alpha. 1.0 drove the swing knee to 7 rad/s, past
   # the controller's 4 rad/s runaway guard (slot 15, mc_mujoco 2026-10-20).
   leg_alpha = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
+  # BLEND_PELVIS_ALPHA="z,roll,pitch,yaw" (forward/backward), BLEND_PELVIS_ALPHA_LAT (sideways)
+  import os
+  pel_alpha = [float(x) for x in os.environ.get("BLEND_PELVIS_ALPHA", "1,1,1,1").split(",")]
+  pel_alpha_lat = [float(x) for x in os.environ.get("BLEND_PELVIS_ALPHA_LAT", ",".join(map(str, pel_alpha))).split(",")]
   m = rt.model()
   d = mujoco.MjData(m)
   jn = [m.joint(j).name for j in range(1, m.njnt)]
@@ -160,6 +164,10 @@ def main():
     # upper body + pelvis (left foot phase)
     dU = lookup(up_h - up_h.mean(0), warp(np.nan_to_num(phL), fb, fh)) - lookup(up_b - up_b.mean(0), np.nan_to_num(phL))
     dU *= (alpha * wL)[:, None]
+    # pelvis oscillation per axis: height, roll, pitch, yaw. The full human roll (8 deg
+    # sideways, BWC 0.6) left the hip roll at its limit and the lateral walk failed.
+    pel = pel_alpha_lat if src == "SW" else pel_alpha
+    dU[:, len(rest):] *= np.array(pel)[None]
     q[a:b, 7 + np.array(rest)] += dU[:, :len(rest)]
     q[a:b, 2] += dU[:, len(rest)] + raise_m * wL
     R = Rot.from_quat(q[a:b, 3:7], scalar_first=True)
