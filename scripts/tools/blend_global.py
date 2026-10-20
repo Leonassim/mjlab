@@ -102,6 +102,9 @@ def direction_ok(src, sgn, q, yaw, dt):
 def main():
   alpha, out = float(sys.argv[1]), sys.argv[2]
   raise_m = float(sys.argv[3]) if len(sys.argv) > 3 else 0.015
+  # 4th arg: leg alpha relative to alpha. 1.0 drove the swing knee to 7 rad/s, past
+  # the controller's 4 rad/s runaway guard (slot 15, mc_mujoco 2026-10-20).
+  leg_alpha = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
   m = rt.model()
   d = mujoco.MjData(m)
   jn = [m.joint(j).name for j in range(1, m.njnt)]
@@ -167,7 +170,7 @@ def main():
       ph_s, w_s = phase_and_w(td_s)
       ok = ~np.isnan(ph_s)
       dL = lookup(ch - ch.mean(0), warp(np.nan_to_num(ph_s), fb_, fh_)) - lookup(cb - cb.mean(0), np.nan_to_num(ph_s))
-      q[a:b, 7 + np.array(side[s])] += (alpha * np.minimum(w_s, wL) * ok)[:, None] * dL
+      q[a:b, 7 + np.array(side[s])] += (alpha * leg_alpha * np.minimum(w_s, wL) * ok)[:, None] * dL
       amp = np.degrees(np.ptp(ch, 0))
       print(f"clip {k} ({src}) jambe {s}: {n} foulees humaines, appui {fh_:.2f} (BWC {fb_:.2f}), "
             f"genou humain crete a crete {amp[3]:.0f} deg")

@@ -89,7 +89,7 @@ def rollout(run_dir, ck):
     cols = [i for i, n in enumerate(jn) if gname in n]
     t = np.abs(r["tau"][:, :, cols]).reshape(-1)
     q = np.abs(r["qd"][:, :, cols]).reshape(-1)
-    out[gname] = (np.percentile(t, 99), t.max(), lim.get(gname, np.nan), np.percentile(q, 99))
+    out[gname] = (np.percentile(t, 99), t.max(), lim.get(gname, np.nan), np.percentile(q, 99), q.max())
   f, v = r["f"], r["v"]
   imp, slip = [], []
   w = int(0.06 / dt)
@@ -127,8 +127,10 @@ def main():
     o = rollout(args[a], args[a + 1])
     print(f"== {args[a]} {args[a + 1]}" + ("" if ref is None else "   (rapport a la reference)"))
     for gname in GROUPS:
-      p99, mx, lim, qd = o[gname]
-      line = f"  {gname:9s} couple p99 {p99:6.1f} max {mx:6.1f} N.m (limite {lim:5.0f}, max/limite {mx / lim:4.2f}) | vitesse p99 {qd:4.1f} rad/s"
+      p99, mx, lim, qd, qdm = o[gname]
+      # the controller disarms above runaway_disarm_vel (4 rad/s) on any joint
+      line = (f"  {gname:9s} couple p99 {p99:6.1f} max {mx:6.1f} N.m (limite {lim:5.0f}, max/limite {mx / lim:4.2f})"
+              f" | vitesse p99 {qd:4.1f} max {qdm:4.1f} rad/s")
       if ref is not None:
         line += f"   x{p99 / ref[gname][0]:.2f} / x{mx / ref[gname][1]:.2f} / x{qd / ref[gname][3]:.2f}"
       print(line)
