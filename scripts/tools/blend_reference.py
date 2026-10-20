@@ -107,8 +107,9 @@ def pelvis_cycle(src: str, lat_sign: int):
   return np.fft.irfft(F, n=BINS)
 
 
-def leg_ik(m, d, q, targets, leg_dofs, iters=20):
-  """Move only the leg joints of q so each ankle body meets its (pos, rot) target."""
+def leg_ik(m, d, q, targets, leg_dofs, iters=20, limits=None):
+  """Move only the leg joints of q so each ankle body meets its (pos, rot) target.
+  limits=(lo, hi) over leg_dofs clamps every step."""
   d.qpos[:] = q
   for _ in range(iters):
     mujoco.mj_kinematics(m, d)
@@ -124,6 +125,10 @@ def leg_ik(m, d, q, targets, leg_dofs, iters=20):
       break
     dq = np.linalg.solve(J.T @ J + 1e-6 * np.eye(len(leg_dofs)), J.T @ e)
     d.qpos[np.array(leg_dofs) + 1] += dq
+    if limits is not None:
+      d.qpos[np.array(leg_dofs) + 1] = np.clip(d.qpos[np.array(leg_dofs) + 1], *limits)
+  mujoco.mj_kinematics(m, d)
+  e = np.concatenate([pt - d.xpos[b] for b, (pt, _) in targets.items()])
   return d.qpos.copy(), float(np.linalg.norm(e))
 
 
