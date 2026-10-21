@@ -303,7 +303,17 @@ def _soft_landing(env, sensor_name: str) -> "torch.Tensor":
   return (window * (force / BODY_WEIGHT_N) ** 2).mean(dim=-1)
 
 
-def _touchdown_speed_cap(env, sensor_name: str, body_names: tuple[str, ...], v_max: float) -> "torch.Tensor":
+def _cap_gate(env, settle: float, ramp_steps: int) -> "torch.Tensor":
+  """Constraint gate: 0 for `settle` s after each reset (RSI lands mid-step), times a
+  linear weight ramp over the first `ramp_steps` env steps of the launch."""
+  g = (env.episode_length_buf * env.step_dt >= settle).float()
+  if ramp_steps > 0:
+    g = g * min(1.0, env.common_step_counter / ramp_steps)
+  return g
+
+
+def _touchdown_speed_cap(env, sensor_name: str, body_names: tuple[str, ...], v_max: float,
+                         settle: float = 0.0, ramp_steps: int = 0) -> "torch.Tensor":
   """Squared relative excess of the foot's landing speed over v_max, at each touchdown.
 
   Landing speed = fastest downward foot speed in the 50 ms before the load rises.
@@ -332,10 +342,11 @@ def _touchdown_speed_cap(env, sensor_name: str, body_names: tuple[str, ...], v_m
   v_down = (-buf.min(dim=1).values).clamp(min=0.0)
   # capped at 2: a fall lands at metres per second and would swamp the return
   excess = (torch.relu(v_down - v_max) / v_max).clamp(max=2.0)
-  return (landed.float() * excess**2).sum(-1) / env.step_dt
+  return (landed.float() * excess**2).sum(-1) / env.step_dt * _cap_gate(env, settle, ramp_steps)
 
 
-def _impact_force_cap(env, sensor_name: str, f_max: float, window: float = 0.06) -> "torch.Tensor":
+def _impact_force_cap(env, sensor_name: str, f_max: float, window: float = 0.06,
+                      settle: float = 0.0, ramp_steps: int = 0) -> "torch.Tensor":
   """Squared relative excess of the peak foot force over f_max in the `window` after each
   touchdown, emitted once when the window closes. f_max = slot 13's p99 (729 N in sim,
   dyn_envelope.py): impacts no harder than the BWC copy the robot already walks with.
@@ -354,7 +365,7 @@ def _impact_force_cap(env, sensor_name: str, f_max: float, window: float = 0.06)
   closing = (env._ifc_since < window) & (since >= window)
   env._ifc_since, env._ifc_peak = since, peak
   excess = (torch.relu(peak - f_max) / f_max).clamp(max=2.0)
-  return (closing.float() * excess**2).sum(-1) / env.step_dt
+  return (closing.float() * excess**2).sum(-1) / env.step_dt * _cap_gate(env, settle, ramp_steps)
 
 
 def _double_support_match(
@@ -628,22 +639,36 @@ def _sway_torque(env, env_ids, amp: tuple[float, float, float], tau: float) -> N
   robot.write_external_wrench_to_sim(torch.zeros_like(tq), tq, body_ids=env._rhps1_sway_body)
 
 
-def _torque_envelope(env, limits: dict[str, float]) -> "torch.Tensor":
+def _group_limits(robot, limits: dict[str, float], device) -> "torch.Tensor":
+  lim = torch.full((len(robot.joint_names),), float("inf"), device=device)
+  for i, n in enumerate(robot.joint_names):
+    for g, v in limits.items():
+      if g in n:
+        lim[i] = v
+  return lim
+
+
+def _torque_envelope(env, limits: dict[str, float], settle: float = 0.0, ramp_steps: int = 0) -> "torch.Tensor":
   """Squared relative excess of |actuator torque| over a per-group ceiling.
 
-  Ceilings = the slot 13 (BWC copy) p99 measured by dyn_envelope.py: what the
-  robot already does. Below them the term is exactly zero.
+  Ceilings = what slot 3 (BWC copy) already does: its p99 under training conditions
+  (scripts/tools/train_cond_caps.py). Below them the term is exactly zero.
   """
   robot = env.scene["robot"]
   if not hasattr(env, "_tenv_lim"):
-    lim = torch.full((len(robot.joint_names),), float("inf"), device=env.device)
-    for i, n in enumerate(robot.joint_names):
-      for g, v in limits.items():
-        if g in n:
-          lim[i] = v
-    env._tenv_lim = lim
+    env._tenv_lim = _group_limits(robot, limits, env.device)
   tau = robot.data.qfrc_actuator.abs()
-  return ((torch.relu(tau - env._tenv_lim) / env._tenv_lim) ** 2).sum(-1)
+  return ((torch.relu(tau - env._tenv_lim) / env._tenv_lim) ** 2).sum(-1) * _cap_gate(env, settle, ramp_steps)
+
+
+def _joint_speed_cap(env, limits: dict[str, float], settle: float = 0.0, ramp_steps: int = 0) -> "torch.Tensor":
+  """Squared relative excess of |joint speed| over a per-group ceiling (rl_controller
+  disarms a policy above runaway_disarm_vel, 4 rad/s)."""
+  robot = env.scene["robot"]
+  if not hasattr(env, "_jsc_lim"):
+    env._jsc_lim = _group_limits(robot, limits, env.device)
+  qd = robot.data.joint_vel.abs()
+  return ((torch.relu(qd - env._jsc_lim) / env._jsc_lim) ** 2).sum(-1) * _cap_gate(env, settle, ramp_steps)
 
 
 def _arm_swing(env, k: float, std: float) -> "torch.Tensor":
@@ -1203,14 +1228,28 @@ def rhps1_flat_tracking_env_cfg(
           params={"std": float(os.environ.get("RHPS1_HEAD_YAW_STD", "0.15"))},
         )
 
-  # RHPS1_TORQUE_ENV="KNEE:78,CROTCH_P:48,ANKLE_P:62": stay inside the slot 13
-  # torque envelope (p99 + 10 %, dyn_envelope.py) while the reference changes.
+  # Constraint gate for the caps below: RHPS1_CAP_SETTLE (s) ignored after each reset,
+  # RHPS1_CAP_RAMP (env steps) linear weight ramp from the launch. Defaults off.
+  _gate = {"settle": float(os.environ.get("RHPS1_CAP_SETTLE", "0")),
+           "ramp_steps": int(os.environ.get("RHPS1_CAP_RAMP", "0"))}
+
+  # RHPS1_TORQUE_ENV="KNEE:78,CROTCH_P:48,ANKLE_P:62": stay inside the slot 3
+  # torque envelope while the reference changes.
   _te = os.environ.get("RHPS1_TORQUE_ENV")
   if _te:
     _tl = {k: float(v) for k, v in (kv.split(":") for kv in _te.split(","))}
     cfg.rewards["torque_envelope"] = RewardTermCfg(
       func=_torque_envelope, weight=float(os.environ.get("RHPS1_TORQUE_ENV_W", "-3")),
-      params={"limits": _tl},
+      params={"limits": _tl, **_gate},
+    )
+
+  # RHPS1_JOINT_VMAX="KNEE:4,ANKLE_P:4": joint speed ceilings per group.
+  _jv = os.environ.get("RHPS1_JOINT_VMAX")
+  if _jv:
+    _jl = {k: float(v) for k, v in (kv.split(":") for kv in _jv.split(","))}
+    cfg.rewards["joint_speed_cap"] = RewardTermCfg(
+      func=_joint_speed_cap, weight=float(os.environ.get("RHPS1_JOINT_VMAX_W", "-1")),
+      params={"limits": _jl, **_gate},
     )
 
   # RHPS1_TOUCHDOWN_VMAX (m/s): feet land no faster than the BWC (0.21 m/s), weight
@@ -1220,7 +1259,7 @@ def rhps1_flat_tracking_env_cfg(
     cfg.rewards["touchdown_speed_cap"] = RewardTermCfg(
       func=_touchdown_speed_cap, weight=float(os.environ.get("RHPS1_TOUCHDOWN_W", "-5")),
       params={"sensor_name": "feet_ground_contact", "body_names": ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK"),
-              "v_max": float(_tdv)},
+              "v_max": float(_tdv), **_gate},
     )
 
   # RHPS1_IMPACT_FMAX (N): touchdown force peaks no harder than slot 13's p99 (729 N),
@@ -1229,7 +1268,7 @@ def rhps1_flat_tracking_env_cfg(
   if _ifm and cadence_term:
     cfg.rewards["impact_force_cap"] = RewardTermCfg(
       func=_impact_force_cap, weight=float(os.environ.get("RHPS1_IMPACT_W", "-5")),
-      params={"sensor_name": "feet_ground_contact", "f_max": float(_ifm)},
+      params={"sensor_name": "feet_ground_contact", "f_max": float(_ifm), **_gate},
     )
 
   # RHPS1_YAW_MOM_W: replaces the imposed arm swing (k 0.9 raised L_z rms from
