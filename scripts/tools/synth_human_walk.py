@@ -1,6 +1,6 @@
 """Straight human walking for RHPS1: 100STYLE stride style, LIPM centre of mass.
 
-  uv run python scripts/tools/synth_human_walk.py <out.npz> [<leg_amp>] [<slow>]
+  uv run python scripts/tools/synth_human_walk.py <out.npz> [<leg_amp>] [<slow>] [<ramp_strides>]
 
 The mean 100STYLE Neutral stride (FW forward, BW backward; median over ~80 strides,
 6 harmonics) gives the style: upper-body joints, pelvis roll/pitch/yaw and bob,
@@ -373,13 +373,14 @@ def main():
   out = sys.argv[1]
   leg_amp = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
   slow = float(sys.argv[3]) if len(sys.argv) > 3 else 2.0
+  ramp = float(sys.argv[4]) if len(sys.argv) > 4 else 1.5  # strides from the stand to full amplitude
   z = dict(np.load("docs/bwc_motion_v3.npz"))
   cs = list(z["clip_starts"]) + [len(z["joint_pos"])]
   parts = []
   for k in range(6):
     if k in (0, 2):
       src = "FW" if k == 0 else "BW"
-      q, T, n = synth(src, 16.0, leg_amp, slow)
+      q, T, n = synth(src, 16.0, leg_amp, slow, ramp_strides=ramp)
       jp, jv, pos, quat, lv, av = frames(q, FPS)
       print(f"clip {k} humain {src} : {n} foulees, foulee {T:.2f} s, {len(q) / FPS:.0f} s")
       parts.append(dict(joint_pos=jp, joint_vel=jv, body_pos_w=pos, body_quat_w=quat,
