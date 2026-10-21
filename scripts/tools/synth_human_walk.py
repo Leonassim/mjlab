@@ -1,32 +1,33 @@
-"""Straight human walking for RHPS1, synthesized from the mean 100STYLE Neutral stride.
+"""Straight human walking for RHPS1: 100STYLE stride style, LIPM centre of mass.
 
   uv run python scripts/tools/synth_human_walk.py <out.npz> [<leg_amp>] [<slow>]
 
-The 100STYLE actor never walks straight for 4 s, and straightening the paths would
-slide the feet. So the mean stride (all joints, pelvis roll/pitch/yaw oscillation,
-flat-foot contact schedule, ankle lift; FW forward, BW backward; median over ~80
-strides, 6 harmonics) is replayed at the human cadence slowed `slow` times (default 2).
-A foot is in stance only while flat (heel strike and toe-off are swing for the robot's
-flat feet). The pelvis moves with the stance feet of the cycle, 1 cm below the lowest
-stance requirement (no straight knee); stance feet stay flat where they landed; swing
-feet lift at the human ankle height, travel minimum-jerk between footholds and take
-the human foot orientation mid-swing; the soles never go below the ground. Legs are
-solved by IK on both ankles.
+The mean 100STYLE Neutral stride (FW forward, BW backward; median over ~80 strides,
+6 harmonics) gives the style: upper-body joints, pelvis roll/pitch/yaw and bob,
+contact schedule, step length, ankle lift and swing foot orientation, replayed at the
+human cadence slowed `slow` times (default 2).
+
+Slowed, the human kinematics are not balanced (LIPM ZMP outside the sole 57% of the
+time), so the centre of mass comes from the footholds, as in the BWC: the ZMP rolls
+heel to toe on the stance sole, moves linearly across double support, and the CoM
+solves c - zc/g c'' = zmp exactly (boundary value problem, standing at both ends).
+The pelvis is moved until the whole-body CoM follows it; its height keeps both knees
+>= 15 deg. Stance feet are flat where they landed, at least the BWC stance width
+apart; swing feet lift at the human ankle height, travel minimum-jerk between
+footholds and take the human foot orientation mid-swing; soles stay above ground.
+Legs by IK on both ankles.
 
 Gait initiation and termination: the stride amplitude ramps from the BWC's standing
-pose (feet together, the deployment q0 within a few degrees) to the full human stride
-over 1.5 strides, and back. Arms keep the BWC's mean posture (clear of the QP
-collision zones) with the human swing on top; legs take the human mean posture and
-`leg_amp` (default 1) of its oscillation.
-
-Clips: [human forward] [BWC left] [human backward] [BWC right] [BWC yaw left]
-[BWC yaw right], so every command keeps a single style. bwc_motion_v3.npz format.
+pose over 1.5 strides, and back. Clips: [human forward] [BWC left] [human backward]
+[BWC right] [BWC yaw left] [BWC yaw right]; bwc_motion_v3.npz format.
 """
 
 import sys
 
 import mujoco
 import numpy as np
+from scipy.linalg import solve_banded
+from scipy.ndimage import minimum_filter1d, uniform_filter1d
 from scipy.spatial.transform import Rotation as Rot
 
 sys.path.insert(0, "scripts/tools")
@@ -35,13 +36,21 @@ import blend_reference as br  # noqa: E402
 import retarget_lafan as rt  # noqa: E402
 
 FPS = 200.0
-BINS = bg.BINS
+G = 9.81
+KNEE_MIN = np.radians(15.0)
+ROLL = 0.025  # ZMP heel-to-toe travel on the stance sole, +- m
+# stance = sole down and ankle within this of its lowest: double support ~25-30% like
+# the BWC (full human contact gives 46-57%, the swing then whips the knee)
+STANCE_H = {"FW": 0.03, "BW": 0.025}
 M = rt.model()
 JN = [M.joint(j).name for j in range(1, M.njnt)]
 LEGS = [i for i, n in enumerate(JN) if any(t in n for t in ("CROTCH", "KNEE", "ANKLE"))]
 ARMS = [i for i, n in enumerate(JN) if any(t in n for t in ("SHOULDER", "ELBOW", "WRIST"))]
 ANK = {s: M.body(f"{s}_ANKLE_P_LINK").id for s in ("L", "R")}
+SOLE = {s: [k for k in range(M.ngeom) if M.geom_bodyid[k] == ANK[s]
+            and M.geom_type[k] == mujoco.mjtGeom.mjGEOM_BOX][0] for s in ("L", "R")}
 LEG_DOFS = [M.joint(JN[j]).dofadr[0] for j in LEGS]
+LEG_Q = np.array(LEG_DOFS) + 1
 LEG_LIM = (np.array([M.jnt_range[M.dof_jntid[j], 0] for j in LEG_DOFS]),
            np.array([M.jnt_range[M.dof_jntid[j], 1] for j in LEG_DOFS]))
 
@@ -52,16 +61,14 @@ def human_stride(src):
   pel, yaw = bg.pelvis_signals(q)
   keep = bg.direction_ok(src, 1, q, yaw, dt)
   td, lo = bg.foot_events(sole[:, 0] > 0.01)
-  # flat-foot stance: ankle within 1.2 cm of its lowest; heel strike and toe-off are
-  # swing for a flat-footed robot
   d = mujoco.MjData(M)
   az = np.zeros((len(q), 2))
   for i, x in enumerate(q):
     d.qpos[:] = x
     mujoco.mj_kinematics(M, d)
     az[i] = d.xpos[[ANK["L"], ANK["R"]], 2]
-  flat_down = (az < az.min(0) + 0.012) & (sole < 0.01)
-  sig = np.concatenate([q[:, 7:], pel[:, 1:], flat_down.astype(float), az - az.min(0)], 1)
+  down = (az - az.min(0) < STANCE_H[src]) & (sole < 0.01)
+  sig = np.concatenate([q[:, 7:], pel[:, 1:], down.astype(float), az - az.min(0), pel[:, :1]], 1)
   cyc, _ = bg.stride_cycles(sig, td, lo, keep)
   periods = [(b - a) * dt for a, b in zip(td[:-1], td[1:], strict=True) if keep(a, b)]
   c = np.median(cyc, 0)
@@ -69,7 +76,8 @@ def human_stride(src):
   rot = bg.smooth_cycle(c[:, 30:33] - c[:, 30:33].mean(0))
   stance = c[:, 33:35] > 0.5
   lift = np.maximum(bg.smooth_cycle(c[:, 35:37]) - 0.012, 0.0)  # ankle height above flat-down
-  return joints, rot, stance, lift, float(np.median(periods)), len(cyc)
+  bob = bg.smooth_cycle(c[:, 37:38] - c[:, 37].mean())[:, 0]
+  return joints, rot, stance, lift, bob, float(np.median(periods)), len(cyc)
 
 
 def bwc_stand():
@@ -84,15 +92,20 @@ def smooth(x):
   return x * x * (3 - 2 * x)
 
 
-def foot_pose(q):
-  d = mujoco.MjData(M)
-  d.qpos[:] = q
-  mujoco.mj_kinematics(M, d)
-  return {s: (d.xpos[ANK[s]].copy(), d.xmat[ANK[s]].reshape(3, 3).copy()) for s in ("L", "R")}
+def lipm_com(p, zc):
+  """CoM (T, k) whose LIPM ZMP is exactly p: c - zc/g c'' = p, c = p at both ends."""
+  n, k = len(p), zc / G * FPS ** 2
+  ab = np.zeros((3, n))
+  ab[0, 1:] = -k
+  ab[1] = 1 + 2 * k
+  ab[2, :-1] = -k
+  ab[1, 0] = ab[1, -1] = 1.0
+  ab[0, 1] = ab[2, -2] = 0.0
+  return solve_banded((1, 1), ab, p)
 
 
 def synth(src, walk_s, leg_amp, slow, stand_s=4.0, ramp_strides=1.5):
-  joints, rot, stance, lift, period, n = human_stride(src)
+  joints, rot, stance, lift, bob, period, n = human_stride(src)
   T = period * slow
   qs = bwc_stand()
   q_stand = qs[7:]
@@ -103,6 +116,7 @@ def synth(src, walk_s, leg_amp, slow, stand_s=4.0, ramp_strides=1.5):
   ramp = ramp_strides * T
   total = stand_s + ramp + walk_s + ramp + stand_s
   t = np.arange(0, total, 1 / FPS)
+  n_t = len(t)
   a = np.clip((t - stand_s) / ramp, 0, 1) * np.clip((total - stand_s - t) / ramp, 0, 1)
   a = a * a * (3 - 2 * a)  # smoothstep
   ph = np.where(t > stand_s, (t - stand_s) / T, 0.0) % 1.0
@@ -110,18 +124,35 @@ def synth(src, walk_s, leg_amp, slow, stand_s=4.0, ramp_strides=1.5):
   cr = bg.lookup(rot, ph)
   st = bg.lookup(stance.astype(float), ph) > 0.5
   cl = bg.lookup(lift, ph) * a[:, None]
+  cb = bg.lookup(bob[:, None], ph)[:, 0] * a
   st[a < 0.15] = True  # small steps near the stand: both feet down
   qj = q_stand[None] + a[:, None] * (cj - q_stand[None])
-  heading = Rot.from_quat(qs[3:7], scalar_first=True).as_euler("ZYX")[0]
-  R0 = Rot.from_euler("Z", heading)
-  # pelvis orientation: heading x human oscillation (scaled by the amplitude)
-  Rp = [R0 * Rot.from_rotvec(a[i] * cr[i]) * (R0.inv() * Rot.from_quat(qs[3:7], scalar_first=True)) for i in range(len(t))]
-  # Pelvis and footholds, both continuous. r_s = ankle position relative to the pelvis
-  # from the cycle's own kinematics; while a foot is down the pelvis moves by -dr_s
-  # (mean of the two in double support), so it never jumps; a foot lands where the
-  # cycle brings it and stays there, flat.
+  R_stand = Rot.from_quat(qs[3:7], scalar_first=True)
+  R0 = Rot.from_euler("Z", R_stand.as_euler("ZYX")[0])
+  fwd, lat = R0.apply([1.0, 0, 0])[:2], R0.apply([0, 1.0, 0])[:2]
+  Rp = [R0 * Rot.from_rotvec(a[i] * cr[i]) * (R0.inv() * R_stand) for i in range(n_t)]
+
+  # stand geometry: ankles, soles, CoM, hips, leg reach at KNEE_MIN
   d = mujoco.MjData(M)
-  n_t = len(t)
+  d.qpos[:] = qs
+  mujoco.mj_kinematics(M, d)
+  mujoco.mj_comPos(M, d)
+  ground = np.array([d.xpos[ANK[s], 2] for s in ("L", "R")])
+  flat = {s: d.xmat[ANK[s]].reshape(3, 3).copy() for s in ("L", "R")}
+  sole_off = {s: (d.geom_xpos[SOLE[s]] - d.xpos[ANK[s]])[:2] for s in ("L", "R")}
+  sole0 = rt.sole_min_z(M, d)
+  com0 = d.subtree_com[1].copy()
+  zc = com0[2] - np.mean(sole0)
+  mid0 = 0.5 * (d.xpos[ANK["L"], :2] + d.xpos[ANK["R"], :2])
+  w0 = (d.xpos[ANK["L"], :2] - d.xpos[ANK["R"], :2]) @ lat
+  hip_off, reach = {}, {}
+  for s in ("L", "R"):
+    h, k_, an = (d.xanchor[M.joint(f"{s}_{j}").id].copy() for j in ("CROTCH_P", "KNEE_P", "ANKLE_P"))
+    hip_off[s] = R_stand.inv().apply(h - qs[:3])
+    lt, ls = np.linalg.norm(h - k_), np.linalg.norm(k_ - an)
+    reach[s] = np.sqrt(lt ** 2 + ls ** 2 + 2 * lt * ls * np.cos(KNEE_MIN))
+
+  # cycle kinematics with the pelvis at the origin: ankle positions and orientations
   rel = np.zeros((n_t, 2, 3))
   Rc = np.zeros((n_t, 2, 3, 3))
   qk = np.tile(qs, (n_t, 1))
@@ -133,77 +164,128 @@ def synth(src, walk_s, leg_amp, slow, stand_s=4.0, ramp_strides=1.5):
     mujoco.mj_kinematics(M, d)
     rel[i] = [d.xpos[ANK["L"]], d.xpos[ANK["R"]]]
     Rc[i] = [d.xmat[ANK["L"]].reshape(3, 3), d.xmat[ANK["R"]].reshape(3, 3)]
-  ground = np.array([foot_pose(qs)[s][0][2] for s in ("L", "R")])
-  pel = np.zeros((n_t, 3))
-  pel[0] = qs[:3]
+  # footholds from the cycle's own progression: the pelvis moves by -dr of the feet down
+  pc = np.zeros((n_t, 2))
+  pc[0] = qs[:2]
   for i in range(1, n_t):
     on = st[i] & st[i - 1]
-    step = -(rel[i] - rel[i - 1])[on].mean(0) if on.any() else np.zeros(3)
-    pel[i] = pel[i - 1] + step
-  # pelvis height: stance ankles on the ground
-  for i in range(n_t):  # lowest stance requirement, 1 cm lower: no straight knee
-    on = st[i]
-    pel[i, 2] = np.min(ground[on] - rel[i, on, 2]) - 0.01 * a[i] if on.any() else pel[i - 1, 2]
-  k = int(0.1 * FPS)
-  for c in range(3):  # 0.1 s smoothing, the double-support switches step the velocity
-    pel[:, c] = np.convolve(np.pad(pel[:, c], k // 2, mode="edge"), np.ones(k) / k, "valid")[:n_t]
-  # footholds: where the foot is at each touchdown, held flat during stance
-  flat = {s: foot_pose(qs)[s][1] for s in ("L", "R")}
-  d.qpos[:] = qs
-  mujoco.mj_kinematics(M, d)
-  sole0 = rt.sole_min_z(M, d)
-  hold = np.zeros((n_t, 2, 3))
-  for si in range(2):
-    cur = qs[:3] + rel[0, si]
-    cur[2] = ground[si]
-    for i in range(n_t):
-      if st[i, si] and (i == 0 or not st[i - 1, si]):
-        cur = pel[i] + rel[i, si]
-        cur[2] = ground[si]
-      hold[i, si] = cur
-  q = np.zeros((n_t, 37))
-  worst = 0.0
-  for i in range(n_t):
-    x = qk[i].copy()
-    x[:3] = pel[i]
-    if i > 0:  # warm start
-      x[np.array(LEG_DOFS) + 1] = q[i - 1, np.array(LEG_DOFS) + 1]
-    d.qpos[:] = x
-    mujoco.mj_kinematics(M, d)
-    tg = {}
-    for si, s in enumerate(("L", "R")):
+    pc[i] = pc[i - 1] - ((rel[i] - rel[i - 1])[on, :2].mean(0) if on.any() else 0.0)
+
+  def footholds(widen):
+    hold = np.zeros((n_t, 2, 3))
+    for si, sgn in ((0, 1.0), (1, -1.0)):
+      cur = np.r_[qs[:2] + rel[0, si, :2], ground[si]]
+      for i in range(n_t):
+        if st[i, si] and (i == 0 or not st[i - 1, si]):
+          cur = np.r_[pc[i] + rel[i, si, :2] + sgn * 0.5 * widen * a[i] * lat, ground[si]]
+        hold[i, si] = cur
+    return hold
+
+  hold = footholds(0.0)
+  ds = st.all(1) & (a > 0.9)
+  w_h = float(np.median((hold[ds, 0, :2] - hold[ds, 1, :2]) @ lat))
+  if w_h < w0:  # the human walks narrower than the robot's legs allow
+    hold = footholds(w0 - w_h)
+
+  # foot targets (pelvis independent)
+  tpos = hold.copy()
+  trot = np.zeros((n_t, 2, 3, 3))
+  for si, s in enumerate(("L", "R")):
+    i = 0
+    while i < n_t:
       if st[i, si]:
-        tg[ANK[s]] = (hold[i, si], flat[s])
-      else:
-        # swing: lifts flat at the human ankle height, minimum-jerk from foothold to
-        # foothold, human foot orientation mid-swing
-        i0 = i
-        while i0 > 0 and not st[i0 - 1, si]:
-          i0 -= 1
-        i1 = i
-        while i1 < n_t - 1 and not st[i1 + 1, si]:
-          i1 += 1
-        u = (i - i0 + 0.5) / max(i1 - i0 + 1, 1)
-        p0, p1 = hold[max(i0 - 1, 0), si], hold[min(i1 + 1, n_t - 1), si]
+        trot[i, si] = flat[s]
+        i += 1
+        continue
+      i0 = i
+      while i < n_t and not st[i, si]:
+        i += 1
+      i1 = i - 1
+      p0, p1 = hold[max(i0 - 1, 0), si], hold[min(i1 + 1, n_t - 1), si]
+      for j in range(i0, i1 + 1):
+        u = (j - i0 + 0.5) / (i1 - i0 + 1)
         sx = np.clip((u - 0.05) / 0.9, 0, 1)
-        p_t = p0 + sx ** 3 * (10 - 15 * sx + 6 * sx * sx) * (p1 - p0)
-        p_t[2] = ground[si] + cl[i, si] * smooth(min(u, 1 - u) / 0.15)
+        tpos[j, si] = p0 + sx ** 3 * (10 - 15 * sx + 6 * sx * sx) * (p1 - p0)
+        tpos[j, si, 2] = ground[si] + cl[j, si] * smooth(min(u, 1 - u) / 0.15)
         w = 1 - smooth(min(u, 1 - u) / 0.35)
-        rv = Rot.from_matrix(flat[s] @ Rc[i, si].T).as_rotvec() * w
-        tg[ANK[s]] = (p_t, Rot.from_rotvec(rv).as_matrix() @ Rc[i, si])
-    x, err = br.leg_ik(M, d, x, tg, LEG_DOFS, iters=25, limits=LEG_LIM)
-    for _ in range(3):  # a pitched swing foot near the ground: raise it until the sole clears
-      sz = rt.sole_min_z(M, d)
-      low = {si: sole0[si] - sz[si] for si in range(2) if not st[i, si] and sz[si] < sole0[si] - 1e-4}
-      if not low:
-        break
-      for si, dz in low.items():
-        b = ANK["LR"[si]]
-        tg[b] = (tg[b][0] + np.array([0.0, 0.0, dz]), tg[b][1])
+        rv = Rot.from_matrix(flat[s] @ Rc[j, si].T).as_rotvec() * w
+        trot[j, si] = Rot.from_rotvec(rv).as_matrix() @ Rc[j, si]
+
+  # ZMP: rolls on the stance sole in single support, linear across double support,
+  # under the standing CoM while both feet are down near the stand
+  roll = 1.0 if src == "FW" else -1.0
+  zmp = np.full((n_t, 2), np.nan)
+  ss = st.sum(1) == 1
+  i = 0
+  while i < n_t:
+    if not ss[i]:
+      i += 1
+      continue
+    si = int(np.argmax(st[i]))
+    i0 = i
+    while i < n_t and ss[i] and st[i, si]:
+      i += 1
+    u = (np.arange(i0, i) - i0 + 0.5) / (i - i0)
+    zmp[i0:i] = hold[i0, si, :2] + sole_off["LR"[si]] + (roll * ROLL * a[i0:i] * (2 * u - 1))[:, None] * fwd
+  still = st.all(1) & (a < 0.15)
+  zmp[still] = 0.5 * (hold[still, 0, :2] + hold[still, 1, :2]) + (com0[:2] - mid0)
+  for c in range(2):
+    ok = ~np.isnan(zmp[:, c])
+    zmp[:, c] = np.interp(np.arange(n_t), np.where(ok)[0], zmp[ok, c])
+  com_ref = lipm_com(zmp, zc)
+
+  def pelvis_z(pxy):
+    z_nom = qs[2] + cb
+    bound = np.full(n_t, np.inf)
+    for i in range(n_t):
+      for si, s in enumerate(("L", "R")):
+        h = Rp[i].apply(hip_off[s])
+        dxy = np.linalg.norm(pxy[i] + h[:2] - tpos[i, si, :2])
+        bound[i] = min(bound[i], tpos[i, si, 2] - h[2] + np.sqrt(max(reach[s] ** 2 - dxy ** 2, 0.0)))
+    k = int(0.4 * FPS)
+    return uniform_filter1d(minimum_filter1d(np.minimum(z_nom, bound), k, mode="nearest"), k, mode="nearest")
+
+  def solve(pxy, pz, every=1, final=False):
+    idx = np.r_[np.arange(0, n_t, every), n_t - 1] if (n_t - 1) % every else np.arange(0, n_t, every)
+    q = np.zeros((n_t, 37))
+    com = np.zeros((len(idx), 2))
+    prev, worst = None, 0.0
+    for j, i in enumerate(idx):
+      x = qk[i].copy()
+      x[:2], x[2] = pxy[i], pz[i]
+      if prev is not None:
+        x[LEG_Q] = prev[LEG_Q]  # warm start
+      tg = {ANK[s]: (tpos[i, si].copy(), trot[i, si]) for si, s in enumerate(("L", "R"))}
       x, err = br.leg_ik(M, d, x, tg, LEG_DOFS, iters=25, limits=LEG_LIM)
-    worst = max(worst, err)
-    q[i] = x
-  print(f"  {src}: residu IK des pieds max {worst * 1000:.1f} mm")
+      for _ in range(3 if final else 0):  # a pitched swing foot near the ground: raise it
+        sz = rt.sole_min_z(M, d)
+        low = {si: sole0[si] - sz[si] for si in range(2) if not st[i, si] and sz[si] < sole0[si] - 1e-4}
+        if not low:
+          break
+        for si, dz in low.items():
+          b = ANK["LR"[si]]
+          tg[b] = (tg[b][0] + np.array([0.0, 0.0, dz]), tg[b][1])
+        x, err = br.leg_ik(M, d, x, tg, LEG_DOFS, iters=25, limits=LEG_LIM)
+      mujoco.mj_comPos(M, d)
+      com[j] = d.subtree_com[1][:2]
+      worst = max(worst, err)
+      prev = q[i] = x
+    full = np.stack([np.interp(np.arange(n_t), idx, com[:, c]) for c in range(2)], 1)
+    return q, full, worst
+
+  # pelvis xy until the whole-body CoM follows com_ref
+  pxy = com_ref + (qs[:2] - com0[:2])
+  for _ in range(3):
+    pz = pelvis_z(pxy)
+    _, com, _ = solve(pxy, pz, every=4)
+    pxy = pxy + (com_ref - com)
+  pz = pelvis_z(pxy)
+  q, com, worst = solve(pxy, pz, final=True)
+  kn = np.degrees(q[:, 7 + JN.index("L_KNEE_P")])
+  walk = a > 0.9
+  print(f"  {src}: appui double {st[walk].all(1).mean() * 100:.0f}%, largeur humaine {w_h * 100:.0f} cm (BWC {w0 * 100:.0f}),"
+        f" CoM - LIPM max {np.abs(com - com_ref).max() * 1000:.1f} mm, genou {kn.min():.0f}-{kn.max():.0f} deg,"
+        f" residu IK des pieds max {worst * 1000:.1f} mm")
   return q, T, n
 
 
