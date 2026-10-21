@@ -22,6 +22,7 @@ pose over 1.5 strides, and back. Clips: [human forward] [BWC left] [human backwa
 [BWC right] [BWC yaw left] [BWC yaw right]; bwc_motion_v3.npz format.
 """
 
+import os
 import sys
 
 import mujoco
@@ -40,7 +41,13 @@ G = 9.81
 DEBUG_OUT = None  # path prefix: synth() saves its stance flags and foot targets
 KNEE_MIN = np.radians(10.0)
 ROLL = 0.025  # ZMP heel-to-toe travel on the stance sole, +- m
-ROLL_MAX = np.radians(10.0)  # foot roll on the heel / toe edge, double support only
+ROLL_MAX = np.radians(float(os.environ.get("SYNTH_ROLL_DEG", "10")))  # foot roll on the heel / toe edge, double support only
+# Closer to the BWC's dynamics: SYNTH_LIFT scales the human ankle lift, SYNTH_HFRAC puts
+# the pelvis that fraction of the way from the BWC stand height to the human one (lower =
+# more knee bend), SYNTH_BW=bwc keeps the BWC's backward clip.
+LIFT = float(os.environ.get("SYNTH_LIFT", "1"))
+HFRAC = float(os.environ.get("SYNTH_HFRAC", "1"))
+BW_SRC = os.environ.get("SYNTH_BW", "human")
 # stance = sole down and ankle within this of its lowest: double support ~25-30% like
 # the BWC (full human contact gives 46-57%, the swing then whips the knee)
 STANCE_H = {"FW": 0.03, "BW": 0.025}
@@ -139,7 +146,7 @@ def synth(src, walk_s, leg_amp, slow, stand_s=4.0, ramp_strides=1.5):
   cj = bg.lookup(cyc, ph)
   cr = bg.lookup(rot, ph)
   st = bg.lookup(stance.astype(float), ph) > 0.5
-  cl = bg.lookup(lift, ph) * a[:, None]
+  cl = bg.lookup(lift, ph) * a[:, None] * LIFT
   cb = bg.lookup(bob[:, None], ph)[:, 0] * a
   th = np.clip(bg.lookup(foot_pitch, ph), -ROLL_MAX, ROLL_MAX) * a[:, None]
   st[a < 0.15] = True  # small steps near the stand: both feet down
@@ -290,7 +297,7 @@ def synth(src, walk_s, leg_amp, slow, stand_s=4.0, ramp_strides=1.5):
   com_ref = lipm_com(zmp, zc)
 
   def pelvis_z(pxy):
-    z_nom = qs[2] + a * (pz_h - qs[2]) + cb  # the human pelvis height, from the BWC stand
+    z_nom = qs[2] + a * HFRAC * (pz_h - qs[2]) + cb  # toward the human pelvis height, from the BWC stand
     bound = np.full(n_t, np.inf)
     for i in range(n_t):
       for si, s in enumerate(("L", "R")):
@@ -378,7 +385,7 @@ def main():
   cs = list(z["clip_starts"]) + [len(z["joint_pos"])]
   parts = []
   for k in range(6):
-    if k in (0, 2):
+    if k == 0 or (k == 2 and BW_SRC == "human"):
       src = "FW" if k == 0 else "BW"
       q, T, n = synth(src, 16.0, leg_amp, slow, ramp_strides=ramp)
       jp, jv, pos, quat, lv, av = frames(q, FPS)
