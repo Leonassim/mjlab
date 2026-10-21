@@ -244,7 +244,7 @@ def synth(src, walk_s, leg_amp, slow, stand_s=4.0, ramp_strides=1.5):
         R = Rot.from_rotvec(r * gm[s][:, 1]).as_matrix()
         tpos[s0 + m_, si] = pivot + R @ (hold[s0 + m_, si] - pivot)
         trot[s0 + m_, si] = R @ flat[s]
-  for si, s in enumerate(("L", "R")):
+  for si in range(2):
     i = 0
     while i < n_t:
       if st[i, si]:
