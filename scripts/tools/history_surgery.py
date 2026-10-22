@@ -6,8 +6,8 @@ V3: base_lin_vel[5x3], base_ang_vel[3], projected_gravity[3], joint_pos[30], joi
 actions[30], command[5x3]. Full history: every term at `depth`, oldest first per term
 (RHPS1_FULL_HISTORY, rl_controller obs_format 2). Each old input keeps its weights at its
 own time slot; every other slot starts at zero weight, so the widened actor outputs
-exactly what the old one did. Normalizer stats are copied per term; the optimizer state
-is dropped (Adam restarts its moments).
+exactly what the old one did. Normalizer stats are copied per term; Adam's moments are
+kept, the first layer's widened the same way (zero for the new slots).
 """
 
 import shutil
@@ -56,7 +56,15 @@ def main():
       n += dim * depth
     v2[0, new] = v[0, old]
     a[key] = v2
-  d["optimizer_state_dict"]["state"] = {}
+  # Adam moments: widen the actor's first layer only, keep everything else. Dropping the
+  # whole state made Adam take full-size steps on every weight and the run diverged
+  # (action_rate -3383 within 1000 iterations, 2026-10-22_18-59-57).
+  for s in d["optimizer_state_dict"]["state"].values():
+    if s["exp_avg"].shape == (w.shape[0], n_old):
+      for key in ("exp_avg", "exp_avg_sq"):
+        m2 = torch.zeros(w.shape[0], n_new, dtype=s[key].dtype)
+        m2[:, new] = s[key][:, old]
+        s[key] = m2
   out = ROOT / dst
   out.mkdir(parents=True, exist_ok=True)
   for f in ("params",):

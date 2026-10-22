@@ -44,7 +44,7 @@ prev_f = cmd.anchor_pos_w[:, :2].clone()
 with torch.no_grad():
   for _ in range(int(12.0 / u.step_dt)):
     o = obs["actor"] if hasattr(obs, "keys") else obs
-    cx.append(o[:, 111].numpy().copy())
+    cx.append(o[:, -3].numpy().copy())  # newest command vx, last term in every format
     obs, _, d, _ = env.step(pol(obs))
     r, f = robot.data.root_link_pos_w[:, :2].clone(), cmd.anchor_pos_w[:, :2].clone()
     vr.append(((r - prev_r)[:, 0] / u.step_dt).numpy())
