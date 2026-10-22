@@ -1087,8 +1087,11 @@ def rhps1_flat_tracking_env_cfg(
       if _val:
         assert hasattr(_act, "series_stiffness_range")
         _act.series_stiffness_range = tuple(float(x) for x in _val.split(","))
-        # RHPS1_SERIES_DAMP="lo,hi": spring damping as a fraction of the PD damping.
-        _sd = os.environ.get("RHPS1_SERIES_DAMP")
+        # RHPS1_SERIES_DAMP="lo,hi": spring damping as a fraction of the PD damping;
+        # RHPS1_SERIES_DAMP_<GROUP> sets one group and wins. The robot rocks heel-to-toe
+        # at ~1 Hz with ~2% damping (static push test, 2026-10-22): ANKLE_P ~1400 with
+        # a ratio ~0.01 reproduces it; the default 0.3-1.0 overdamps it.
+        _sd = os.environ.get(f"RHPS1_SERIES_DAMP_{_gname}") or os.environ.get("RHPS1_SERIES_DAMP")
         if _sd:
           _act.series_damping_ratio = tuple(float(x) for x in _sd.split(","))
     from dataclasses import replace as _srep
