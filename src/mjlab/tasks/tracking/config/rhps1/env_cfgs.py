@@ -1087,6 +1087,10 @@ def rhps1_flat_tracking_env_cfg(
       if _val:
         assert hasattr(_act, "series_stiffness_range")
         _act.series_stiffness_range = tuple(float(x) for x in _val.split(","))
+        # RHPS1_SERIES_DAMP="lo,hi": spring damping as a fraction of the PD damping.
+        _sd = os.environ.get("RHPS1_SERIES_DAMP")
+        if _sd:
+          _act.series_damping_ratio = tuple(float(x) for x in _sd.split(","))
     from dataclasses import replace as _srep
 
     _at = cfg.observations["actor"].terms
@@ -1487,6 +1491,14 @@ def rhps1_flat_tracking_env_cfg(
       _v3[_k] = _base[_k]
     _v3["base_lin_vel"].history_length = 5
     _v3["velocity_command"].history_length = 5
+    # RHPS1_FULL_HISTORY=10: every term at that depth, oldest first per term --
+    # rl_controller obs_format 2 (V3_DEEP_HISTORY_SIZE = 10, 1020 dims).
+    _fh = int(os.environ.get("RHPS1_FULL_HISTORY", "0"))
+    if _fh > 0:
+      from dataclasses import replace as _hrep
+
+      for _k in list(_v3):
+        _v3[_k] = _hrep(_v3[_k], history_length=_fh)
     _tau = float(os.environ.get("RHPS1_CMD_TAU", "0"))
     if _tau > 0:
       from dataclasses import replace as _crep

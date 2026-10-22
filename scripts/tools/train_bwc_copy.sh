@@ -17,7 +17,7 @@ export CUDA_VISIBLE_DEVICES=0 \
 for kv in "$@"; do export "$kv"; done
 # MJLAB_MOTION_FILE=docs/... as an extra swaps the reference (e.g. the BWC with
 # the human upper-body swing, blend_reference.py).
-nohup uv run train Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start --env.scene.num-envs 4096 \
+nohup uv run train Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start --env.scene.num-envs "${NUM_ENVS:-4096}" \
   --env.commands.motion.motion-file "$PWD/$MJLAB_MOTION_FILE" \
   --video True --video-interval 6000 --video-length 600 \
   --agent.resume True --agent.load-run "$RUN" --agent.load-checkpoint "$CK" \
