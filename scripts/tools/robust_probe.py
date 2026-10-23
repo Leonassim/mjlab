@@ -64,6 +64,7 @@ runner = load_runner_cls(TASK)(env, asdict(load_rl_cfg(TASK)), device="cpu")
 runner.load(str(Path("logs/rsl_rl/rhps1_tracking") / run / ck), load_cfg={"actor": True},
             strict=True, map_location="cpu")
 pol = runner.get_inference_policy(device="cpu")
+STOCH = os.environ.get("PROBE_STOCHASTIC") == "1"  # sample actions as in training
 robot = u.scene["robot"]
 dt = u.step_dt
 obs, _ = env.reset()
@@ -87,7 +88,7 @@ yaw_prev = yaw0.clone()
 with torch.no_grad():
   for k in range(int(23.0 / dt)):
     CMD[:] = TARGET if k * dt >= 3.0 else 0.0
-    obs, _, _, _ = env.step(pol(obs) if k * dt >= 1.0 else torch.zeros(N, env.num_actions))
+    obs, _, _, _ = env.step(pol(obs, stochastic_output=STOCH) if k * dt >= 1.0 else torch.zeros(N, env.num_actions))
     fell |= robot.data.root_link_pos_w[:, 2] < 0.55
     y = _yaw()
     yaw_acc += torch.atan2(torch.sin(y - yaw_prev), torch.cos(y - yaw_prev))
