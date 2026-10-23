@@ -1511,6 +1511,14 @@ def rhps1_flat_tracking_env_cfg(
         func=_filtered_velocity_command,
         params={"command_name": "motion", "tau": _tau},
       )
+    # RHPS1_HOLD_LAST_ACTION=1: the policy sees the held (applied) action, as
+    # the controller seeds it at arming, not its own ignored output.
+    if os.environ.get("RHPS1_HOLD_LAST_ACTION", "0") == "1":
+      from dataclasses import replace as _arep
+
+      from mjlab.tasks.tracking.config.rhps1.hold_action import held_last_action
+
+      _v3["actions"] = _arep(_v3["actions"], func=held_last_action)
     # Noise sized on mc_mujoco's estimator error vs sim truth (p99: lin vel
     # 0.036 m/s, ang vel 0.030 rad/s, joint vel < 0.01). The inherited +-0.5 m/s
     # on base_lin_vel was the kick out of standstill: noise-free the policy froze.

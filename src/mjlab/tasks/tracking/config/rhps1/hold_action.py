@@ -30,3 +30,19 @@ class HoldableJointPositionAction(JointPositionAction):
 class HoldableJointPositionActionCfg(JointPositionActionCfg):
   def build(self, env) -> HoldableJointPositionAction:
     return HoldableJointPositionAction(self, env)
+
+
+def held_last_action(env, action_name: str | None = None) -> torch.Tensor:
+  """Last action as the controller presents it: zero while the hold zeroed it.
+
+  The raw output during the hold is never applied; rl_controller arms with the
+  stance's own action (~0 for the legs), so a policy trained on its raw outputs
+  jerked at arming (2026-10-23: 41500 hit 5.6 rad/s, 80/80 falls).
+  """
+  a = env.action_manager.action
+  hold = getattr(env, "_action_hold_steps", None)
+  if hold is None:
+    return a
+  # The action applied at step t was held iff t < hold, i.e. buf (= t + 1) <= hold.
+  held = env.episode_length_buf <= hold
+  return torch.where(held[:, None], torch.zeros_like(a), a)
