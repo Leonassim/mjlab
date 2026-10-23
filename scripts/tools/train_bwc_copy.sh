@@ -16,10 +16,11 @@ export CUDA_VISIBLE_DEVICES=0 \
   MJLAB_MOTION_FILE=docs/bwc_motion_v3.npz
 for kv in "$@"; do export "$kv"; done
 # MJLAB_MOTION_FILE=docs/... as an extra swaps the reference (e.g. the BWC with
-# the human upper-body swing, blend_reference.py).
+# the human upper-body swing, blend_reference.py). TRAIN_ARGS adds CLI flags
+# (e.g. "--agent.seed 7 --agent.save-interval 250").
 nohup uv run train Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start --env.scene.num-envs "${NUM_ENVS:-4096}" \
   --env.commands.motion.motion-file "$PWD/$MJLAB_MOTION_FILE" \
   --video True --video-interval 6000 --video-length 600 \
   --agent.resume True --agent.load-run "$RUN" --agent.load-checkpoint "$CK" \
-  --agent.max-iterations "$ITERS" > "$LOG" 2>&1 &
+  --agent.max-iterations "$ITERS" ${TRAIN_ARGS:-} > "$LOG" 2>&1 &
 echo $!
