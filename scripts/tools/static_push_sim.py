@@ -1,11 +1,15 @@
 """Static push test in sim, as on the robot (2026-10-22): joints held, one push on the pelvis,
 then the free pitch oscillation's frequency and damping (log decrement of the peaks).
 
-  <env vars of the plant> uv run python scripts/tools/static_push_sim.py [force_N] [duration_s]
+  <env vars of the plant> uv run python scripts/tools/static_push_sim.py [force_N] [duration_s] [run ckpt]
+
+With run and ckpt the policy holds the robot instead (standing command, armed at 1 s).
 """
 
 import os
 import sys
+from dataclasses import asdict
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -13,7 +17,7 @@ from scipy.signal import butter, filtfilt
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
-from mjlab.tasks.registry import load_env_cfg
+from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 F = float(sys.argv[1]) if len(sys.argv) > 1 else 80.0
 DUR = float(sys.argv[2]) if len(sys.argv) > 2 else 0.3
@@ -28,11 +32,22 @@ m.pose_range = {}
 m.velocity_range = {}
 if hasattr(m, "standing_start_prob"):
   m.standing_start_prob = 0.0
+POLICY = sys.argv[3:5] if len(sys.argv) > 4 else None
+if POLICY:
+  cfg.observations["actor"].terms["velocity_command"].func = lambda env, command_name, tau=0.0: torch.zeros(
+    env.num_envs, 3, device=env.device)
 env = RslRlVecEnvWrapper(ManagerBasedRlEnv(cfg, device="cpu"))
 u = env.unwrapped
 robot = u.scene["robot"]
 body = [list(robot.body_names).index("BODY")]
-env.reset()
+obs, _ = env.reset()
+pol = None
+if POLICY:
+  runner = load_runner_cls("Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start")(
+    env, asdict(load_rl_cfg("Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start")), device="cpu")
+  runner.load(str(Path("logs/rsl_rl/rhps1_tracking") / POLICY[0] / POLICY[1]), load_cfg={"actor": True},
+              strict=True, map_location="cpu")
+  pol = runner.get_inference_policy(device="cpu")
 q0 = robot.data.default_joint_pos.clone()
 robot.write_joint_state_to_sim(q0, torch.zeros_like(q0))
 root = robot.data.default_root_state.clone()
@@ -48,7 +63,7 @@ with torch.no_grad():
     if 3.0 <= tt < 3.0 + DUR:
       f[0, 0, 0] = F
     robot.write_external_wrench_to_sim(f, torch.zeros(1, 1, 3), body_ids=body)
-    env.step(zero)
+    obs, _, _, _ = env.step(pol(obs) if pol and tt >= 1.0 else zero)
     g = robot.data.projected_gravity_b[0]
     t.append(tt)
     pitch.append(float(torch.rad2deg(torch.atan2(-g[0], -g[2]))))
