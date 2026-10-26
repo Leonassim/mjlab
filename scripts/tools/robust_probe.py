@@ -21,7 +21,13 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 TASK = "Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start"
 run, ck = sys.argv[1], sys.argv[2]
-CMDS = {"debout": (0, 0, 0), "avant": (1, 0, 0), "gauche": (0, 1, 0), "rot+": (0, 0, 1), "arriere": (-1, 0, 0)}
+CMDS = {
+  "debout": (0, 0, 0),
+  "avant": (1, 0, 0),
+  "gauche": (0, 1, 0),
+  "rot+": (0, 0, 1),
+  "arriere": (-1, 0, 0),
+}
 PER = 16
 N = PER * len(CMDS)
 torch.manual_seed(int(os.environ.get("PROBE_SEED", "0")))
@@ -29,7 +35,9 @@ cfg = load_env_cfg(TASK)
 cfg.scene.num_envs = N
 cfg.terminations = {}
 cfg.episode_length_s = 1e9
-cfg.commands["motion"].motion_file = os.environ.get("MJLAB_MOTION_FILE", "docs/bwc_motion_v3.npz")
+cfg.commands["motion"].motion_file = os.environ.get(
+  "MJLAB_MOTION_FILE", "docs/bwc_motion_v3.npz"
+)
 # No reference resets mid-run: every env starts at frame 0 of the first clip
 # (long enough for 23 s), as in play. Otherwise RSI and the clip seam teleport
 # envs and fake both falls and drift.
@@ -39,11 +47,15 @@ _m.pose_range = {}
 _m.velocity_range = {}
 if hasattr(_m, "standing_start_prob"):
   _m.standing_start_prob = 0.0
-_lag = int(round(float(os.environ.get("FLIP_DELAY_MS", "30")) / 1000 / cfg.sim.mujoco.timestep))
+_lag = int(
+  round(float(os.environ.get("FLIP_DELAY_MS", "30")) / 1000 / cfg.sim.mujoco.timestep)
+)
 for _a in cfg.scene.entities["robot"].articulation.actuators:
   _a.delay_min_lag = _lag
   _a.delay_max_lag = _lag
-TARGET = torch.tensor([c for c in CMDS.values() for _ in range(PER)], dtype=torch.float32)
+TARGET = torch.tensor(
+  [c for c in CMDS.values() for _ in range(PER)], dtype=torch.float32
+)
 CMD = torch.zeros(N, 3)
 TAU = float(os.environ.get("RHPS1_CMD_TAU", "0.3"))
 _filt = {"y": torch.zeros(N, 3), "step": -1}
@@ -61,26 +73,66 @@ cfg.observations["actor"].terms["velocity_command"].func = _cmd
 env = RslRlVecEnvWrapper(ManagerBasedRlEnv(cfg, device="cpu"))
 u = env.unwrapped
 runner = load_runner_cls(TASK)(env, asdict(load_rl_cfg(TASK)), device="cpu")
-runner.load(str(Path("logs/rsl_rl/rhps1_tracking") / run / ck), load_cfg={"actor": True},
-            strict=True, map_location="cpu")
+runner.load(
+  str(Path("logs/rsl_rl/rhps1_tracking") / run / ck),
+  load_cfg={"actor": True},
+  strict=True,
+  map_location="cpu",
+)
 pol = runner.get_inference_policy(device="cpu")
 STOCH = os.environ.get("PROBE_STOCHASTIC") == "1"  # sample actions as in training
 CMD_T = float(os.environ.get("PROBE_CMD_T", "3.0"))  # command step time; arming at 1 s
+HOLD = torch.zeros(N, env.num_actions)
+if os.environ.get("PROBE_HOLD_POSTURE"):
+  # mc_mujoco's arming: hold the stance posture, then seed that action as the last one.
+  import json
+
+  _post = json.load(open(os.environ["PROBE_HOLD_POSTURE"]))
+  _term = u.action_manager.get_term("joint_pos")
+  _rb = u.scene["robot"]
+  _names = (
+    list(_term._joint_names)
+    if hasattr(_term, "_joint_names")
+    else list(_rb.joint_names)
+  )
+  _q0 = _rb.data.default_joint_pos[0]
+  _jn = list(_rb.joint_names)
+  _sc = (
+    _term._scale[0]
+    if torch.is_tensor(_term._scale)
+    else torch.full((env.num_actions,), _term._scale)
+  )
+  for _a, _n in enumerate(_names):
+    if _n in _post:
+      HOLD[:, _a] = (_post[_n] - float(_q0[_jn.index(_n)])) / float(_sc[_a])
+  print(
+    "hold action max",
+    float(HOLD.abs().max()),
+    "on",
+    _names[int(HOLD[0].abs().argmax())],
+  )
 robot = u.scene["robot"]
 dt = u.step_dt
 obs, _ = env.reset()
 q0 = robot.data.default_joint_pos.clone()
-robot.write_joint_state_to_sim(q0 + (torch.rand_like(q0) * 2 - 1) * 0.03, torch.zeros_like(q0))
+robot.write_joint_state_to_sim(
+  q0 + (torch.rand_like(q0) * 2 - 1) * 0.03, torch.zeros_like(q0)
+)
 root = robot.data.default_root_state.clone()
 root[:, :3] += u.scene.env_origins
 robot.write_root_state_to_sim(root)
 fell = torch.zeros(N, dtype=torch.bool)
+arm_peak = torch.zeros(
+  N
+)  # joint speed in the second after arming (controller guard: 4 rad/s)
 start = robot.data.root_link_pos_w[:, :2].clone()
 
 
 def _yaw():
   q = robot.data.root_link_quat_w
-  return torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+  return torch.atan2(
+    2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2)
+  )
 
 
 yaw0 = _yaw().clone()
@@ -89,14 +141,25 @@ yaw_prev = yaw0.clone()
 with torch.no_grad():
   for k in range(int(23.0 / dt)):
     CMD[:] = TARGET if k * dt >= CMD_T else 0.0
-    obs, _, _, _ = env.step(pol(obs, stochastic_output=STOCH) if k * dt >= 1.0 else torch.zeros(N, env.num_actions))
+    obs, _, _, _ = env.step(
+      pol(obs, stochastic_output=STOCH) if k * dt >= 1.0 else HOLD
+    )
     fell |= robot.data.root_link_pos_w[:, 2] < 0.55
+    if 1.0 <= k * dt < 2.0:
+      arm_peak = torch.maximum(arm_peak, robot.data.joint_vel.abs().max(dim=1).values)
     y = _yaw()
     yaw_acc += torch.atan2(torch.sin(y - yaw_prev), torch.cos(y - yaw_prev))
     yaw_prev = y
 d = (robot.data.root_link_pos_w[:, :2] - start).numpy()
-print(f"{run} {ck}  RHPS1_ROBUST={os.environ.get('RHPS1_ROBUST', '')} push x{os.environ.get('RHPS1_PUSH_SCALE', '-')}"
-      f" friction {os.environ.get('RHPS1_FRICTION_RANGE', '-')}  retard {_lag * cfg.sim.mujoco.timestep * 1000:.0f} ms")
+print(
+  f"{run} {ck}  RHPS1_ROBUST={os.environ.get('RHPS1_ROBUST', '')} push x{os.environ.get('RHPS1_PUSH_SCALE', '-')}"
+  f" friction {os.environ.get('RHPS1_FRICTION_RANGE', '-')}  retard {_lag * cfg.sim.mujoco.timestep * 1000:.0f} ms"
+)
+print(
+  f"  PIC ARMEMENT max {float(arm_peak.max()):.2f} p90 {float(arm_peak.quantile(0.9)):.2f} rad/s, envs > 4 rad/s {int((arm_peak > 4.0).sum())}/{N}"
+)
 for i, (name, c) in enumerate(CMDS.items()):
   s = slice(i * PER, (i + 1) * PER)
-  print(f"  {name:8s} chutes {int(fell[s].sum()):2d}/{PER}   deplacement median dx {np.median(d[s, 0]):+.2f} dy {np.median(d[s, 1]):+.2f} m   lacet median {np.degrees(np.median(yaw_acc[s].numpy())):+5.0f} deg (p10 {np.degrees(np.percentile(yaw_acc[s].numpy(), 10)):+.0f} p90 {np.degrees(np.percentile(yaw_acc[s].numpy(), 90)):+.0f})")
+  print(
+    f"  {name:8s} chutes {int(fell[s].sum()):2d}/{PER}   deplacement median dx {np.median(d[s, 0]):+.2f} dy {np.median(d[s, 1]):+.2f} m   lacet median {np.degrees(np.median(yaw_acc[s].numpy())):+5.0f} deg (p10 {np.degrees(np.percentile(yaw_acc[s].numpy(), 10)):+.0f} p90 {np.degrees(np.percentile(yaw_acc[s].numpy(), 90)):+.0f})"
+  )
