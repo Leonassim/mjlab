@@ -30,6 +30,8 @@ class StandingStartMotionCommand(MotionCommand):
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     super()._resample_command(env_ids)
+    if hasattr(self._env, "_hold_offset_q"):
+      self._env._hold_offset_q[env_ids] = 0.0
     p = float(getattr(self.cfg, "standing_start_prob", 0.0))
     if p <= 0.0 or len(env_ids) == 0:
       return
@@ -105,6 +107,24 @@ class StandingStartMotionCommand(MotionCommand):
       root_pos[:, 2] = torch.where(
         at_q0, robot.data.default_root_state[pick, 2], root_pos[:, 2]
       )
+      # RHPS1_HOLD_POSTURE_NOISE="legs,upper" (rad): the controller arms from the
+      # policy's measured stance (arm_posture), 0.06-0.2 rad off q0 on the legs,
+      # and seeds that stance's action as last action. Hold a perturbed q0 instead
+      # of q0 exactly, and present the same seed (hold_action.stance_action).
+      _pn = os.environ.get("RHPS1_HOLD_POSTURE_NOISE")
+      if _pn:
+        legs, upper = (float(x) for x in _pn.split(","))
+        if not hasattr(self._env, "_hold_offset_q"):
+          self._env._hold_offset_q = torch.zeros_like(robot.data.default_joint_pos)
+          is_leg = torch.tensor(
+            [any(k in n for k in ("CROTCH", "KNEE", "ANKLE")) for n in robot.joint_names],
+            device=self.device,
+          )
+          self._env._hold_noise_amp = torch.where(is_leg, legs, upper)
+        off = (torch.rand(len(pick), q.shape[1], device=self.device) * 2 - 1) * self._env._hold_noise_amp
+        off = off * at_q0[:, None]
+        self._env._hold_offset_q[pick] = off
+        q = q + off
     # Duree pendant laquelle les actions sont ignorees : le robot est tenu a sa
     # posture, comme avant l'armement dans mc_mujoco (0 a 3 s).
     hold = getattr(self._env, "_action_hold_steps", None)

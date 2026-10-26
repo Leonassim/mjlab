@@ -16,13 +16,21 @@ import torch
 from mjlab.envs.mdp.actions.actions import JointPositionAction, JointPositionActionCfg
 
 
+def stance_action(env, term) -> torch.Tensor:
+  """Action that holds the start posture: (q_start - q0) / scale, zero without an offset."""
+  off = getattr(env, "_hold_offset_q", None)
+  if off is None:
+    return torch.zeros(env.num_envs, term.action_dim, device=env.device)
+  return off[:, term.target_ids] / term._scale
+
+
 class HoldableJointPositionAction(JointPositionAction):
   def process_actions(self, actions: torch.Tensor) -> None:
     hold = getattr(self._env, "_action_hold_steps", None)
     if hold is not None:
       held = self._env.episode_length_buf < hold
       if bool(held.any()):
-        actions = torch.where(held[:, None], torch.zeros_like(actions), actions)
+        actions = torch.where(held[:, None], stance_action(self._env, self), actions)
     super().process_actions(actions)
 
 
@@ -45,4 +53,5 @@ def held_last_action(env, action_name: str | None = None) -> torch.Tensor:
     return a
   # The action applied at step t was held iff t < hold, i.e. buf (= t + 1) <= hold.
   held = env.episode_length_buf <= hold
-  return torch.where(held[:, None], torch.zeros_like(a), a)
+  term = env.action_manager.get_term(action_name or "joint_pos")
+  return torch.where(held[:, None], stance_action(env, term), a)
