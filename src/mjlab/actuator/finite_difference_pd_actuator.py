@@ -60,6 +60,31 @@ class FiniteDifferencePdActuatorCfg(IdealPdActuatorCfg):
   series_damping_ratio: tuple[float, float] = (0.3, 1.0)
   """Spring damping as a fraction of the PD damping, uniform per env and joint."""
 
+  drive_damping: float | None = None
+  """Joint-side velocity-loop gain of the real Elmo drive at the neutral pose
+  [N.m.s/rad]; ``None`` keeps the kinematic motor. Needs ``series_stiffness_range``.
+
+  Replaces the series model's kinematic motor by the drive cascade, motor
+  massless (reflected inertia ~0.05 kg.m^2 against loops of 30-800 N.m.s/rad):
+
+      e_v = drive_kp_pos*(q* - q_m) - qd_m
+      c*(e_v + w_i*integral(e_v)) = k*(q_m - q) + c_s*(qd_m - qd)
+
+  Series PI, w_i = 2*pi*KI[2], no velocity feedforward, as on the robot. Below
+  sqrt(kp_pos*w_i) the integral makes the drive's damping negative: 4.4 Hz on
+  the ankles (KI 2 Hz), ~15 Hz on the hips (KI 45 Hz). On the 2026-10-27
+  disarmed log the ankle drive force lags the motor deflection by 58 deg at
+  0.97 Hz (model 58.3), which is what sustains the ~1 Hz rocking on the
+  compliance beyond the encoders. KP[3] is also the joints' 4-8 Hz pole, so
+  leave ``lowlevel_lag_hz`` off. Cylinder joints scale c with the summed
+  (dL/dq)^2 of their two cylinders.
+  """
+
+  drive_kp_pos: float = 60.0
+  drive_ki_hz: float = 2.0
+  drive_gain_scale_range: tuple[float, float] = (1.0, 1.0)
+  """Per env and joint scale on ``drive_damping``, drawn at each reset."""
+
   posture_task_stiffness: float | None = None
   # With the posture filter on, the damping target is the FILTER's velocity, as
   # mc_mujoco's PD uses mc_rtc's alpha_ref (mj_sim.cpp:830) -- not a finite
@@ -196,6 +221,10 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     self._lag_scale: torch.Tensor | None = None
     self._series_k: torch.Tensor | None = None
     self._series_c: torch.Tensor | None = None
+    self._drive_qm: torch.Tensor | None = None
+    self._drive_int: torch.Tensor | None = None
+    self._drive_scale: torch.Tensor | None = None
+    self._drive_grid: torch.Tensor | None = None
     self._desired_velocity_target: torch.Tensor | None = None
     self._elapsed_since_target_update: torch.Tensor | None = None
     self._initialized: torch.Tensor | None = None
@@ -323,6 +352,14 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
         nj = len(ent.joint_names)
         ent._rhps1_deflection = torch.zeros(shape[0], nj, device=device, dtype=torch.float)
         ent._rhps1_deflection_rate = torch.zeros(shape[0], nj, device=device, dtype=torch.float)
+    if self.cfg.drive_damping is not None:
+      assert self._series_k is not None, "drive_damping needs series_stiffness_range"
+      self._mj_dt = float(mj_model.opt.timestep)
+      self._drive_qm = torch.zeros(shape, device=device, dtype=torch.float)
+      self._drive_int = torch.zeros(shape, device=device, dtype=torch.float)
+      self._drive_scale = torch.ones(shape, device=device, dtype=torch.float)
+      self._sample_drive_scale(slice(None))
+      self._init_drive_lever(mj_model, device)
     if self.cfg.lowlevel_lag_hz > 0.0:
       self._lag_q = torch.zeros(shape, device=device, dtype=torch.float)
       self._lag_qd = torch.zeros(shape, device=device, dtype=torch.float)
@@ -518,12 +555,90 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     # on a spring-damper behind it; the encoder reads the motor.
     assert self._series_c is not None and self.damping is not None and self.force_limit is not None
     c = self._series_c * self.damping
-    tau = self._series_k * (pd_pos - cmd.pos) + c * (pd_vel - cmd.vel)
-    tau = torch.clamp(tau, -self.force_limit, self.force_limit)
+    if self._drive_qm is not None:
+      tau, motor_q, motor_qd = self._drive(pd_pos, cmd.pos, cmd.vel, c, uninitialized)
+    else:
+      motor_q, motor_qd = pd_pos, pd_vel
+      tau = self._series_k * (pd_pos - cmd.pos) + c * (pd_vel - cmd.vel)
+      tau = torch.clamp(tau, -self.force_limit, self.force_limit)
     ent = self.entity
-    ent._rhps1_deflection[:, self._target_ids_list] = pd_pos - cmd.pos
-    ent._rhps1_deflection_rate[:, self._target_ids_list] = pd_vel - cmd.vel
+    ent._rhps1_deflection[:, self._target_ids_list] = motor_q - cmd.pos
+    ent._rhps1_deflection_rate[:, self._target_ids_list] = motor_qd - cmd.vel
     return tau
+
+  def _drive(self, q_ref, q, qd, c_s, fresh):
+    """One substep of the drive cascade on a massless motor, backward Euler in the
+    motor position and the integral (the hips' KI 45 Hz puts a pole past 400 /s).
+    Returns the link torque and the motor position and speed."""
+    assert self._drive_qm is not None and self._drive_int is not None
+    assert self._drive_scale is not None and self._series_k is not None
+    assert self.force_limit is not None
+    dt = self._substep_dt or self._mj_dt
+    self._drive_qm = torch.where(fresh, q_ref, self._drive_qm)
+    self._drive_int = torch.where(fresh, torch.zeros_like(self._drive_int), self._drive_int)
+    k = self._series_k
+    c = self.cfg.drive_damping * self._drive_scale * self._drive_lever()
+    kp = self.cfg.drive_kp_pos
+    wi = 2.0 * math.pi * self.cfg.drive_ki_hz
+    kpi = c * kp * (1.0 + wi * dt)
+    den = c + c_s + c * wi * dt
+    a = kpi * q_ref + c * wi * self._drive_int + k * q + c_s * qd
+    qm0 = self._drive_qm
+    qm = (qm0 + dt * a / den) / (1.0 + dt * (kpi + k) / den)
+    qdm = (qm - qm0) / dt
+    ev = kp * (q_ref - qm) - qdm
+    tau = k * (qm - q) + c_s * (qdm - qd)
+    sat = tau.abs() > self.force_limit
+    tau = torch.clamp(tau, -self.force_limit, self.force_limit)
+    # Anti-windup: hold the integral while saturated and pushing further.
+    self._drive_int = self._drive_int + torch.where(sat & (ev * tau > 0), 0.0, ev * dt)
+    self._drive_qm = qm
+    return tau, qm, qdm
+
+  def _drive_lever(self) -> torch.Tensor:
+    """Bilinear lookup of the (pitch, roll) lever grids at the current joint pose."""
+    assert self._drive_grid is not None
+    q = self.entity.data.joint_pos
+    n = self._drive_grid.shape[-1]
+    u = ((q[:, self._drive_jid[0]] - self._drive_lo[:, 0]) / self._drive_step[:, 0]).clamp(0, n - 1 - 1e-4)
+    v = ((q[:, self._drive_jid[1]] - self._drive_lo[:, 1]) / self._drive_step[:, 1]).clamp(0, n - 1 - 1e-4)
+    i, j = u.long(), v.long()
+    a, b = u - i, v - j
+    t = self._drive_tid
+    G = self._drive_grid
+    return ((1 - a) * (1 - b) * G[t, i, j] + a * (1 - b) * G[t, i + 1, j]
+            + (1 - a) * b * G[t, i, j + 1] + a * b * G[t, i + 1, j + 1])
+
+  def _init_drive_lever(self, mj_model, device: str) -> None:
+    import numpy as np
+
+    from mjlab.asset_zoo.robots.RHPS1.rhps1_cylinders import PAIRS, lever_grid
+
+    names = self.entity.joint_names
+    prefix = next((mj_model.joint(i).name[: -len(names[0])] for i in range(mj_model.njnt)
+                   if mj_model.joint(i).name.endswith(names[0])), "")
+    n = 33
+    grids, lo, step, pid, rid = [], [], [], [], []
+    for t in self._target_names:
+      if t in PAIRS:
+        P, R, G = lever_grid(mj_model, t, n, prefix=prefix)
+        grids.append(G); lo.append((P[0], R[0])); step.append((P[1] - P[0], R[1] - R[0]))
+        pid.append(names.index(PAIRS[t][0])); rid.append(names.index(PAIRS[t][1]))
+      else:
+        # Rotary joint: constant gear, lever 1 everywhere.
+        grids.append(np.ones((n, n))); lo.append((0.0, 0.0)); step.append((1.0, 1.0))
+        pid.append(names.index(t)); rid.append(names.index(t))
+    self._drive_grid = torch.tensor(np.stack(grids), device=device, dtype=torch.float)
+    self._drive_lo = torch.tensor(lo, device=device, dtype=torch.float)
+    self._drive_step = torch.tensor(step, device=device, dtype=torch.float)
+    self._drive_jid = torch.tensor([pid, rid], device=device, dtype=torch.long)
+    self._drive_tid = torch.arange(len(self._target_names), device=device)
+
+  def _sample_drive_scale(self, env_ids: torch.Tensor | slice) -> None:
+    assert self._drive_scale is not None
+    lo, hi = self.cfg.drive_gain_scale_range
+    n = self._drive_scale[env_ids].shape
+    self._drive_scale[env_ids] = lo + (hi - lo) * torch.rand(n, device=self._drive_scale.device)
 
   def _sample_series_k(self, env_ids: torch.Tensor | slice) -> None:
     assert self._series_k is not None and self.cfg.series_stiffness_range is not None
@@ -659,6 +774,8 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
       self._sample_lag_scale(env_ids)
     if self._series_k is not None:
       self._sample_series_k(env_ids)
+    if self._drive_scale is not None:
+      self._sample_drive_scale(env_ids)
 
   def _sample_lag_scale(self, env_ids: torch.Tensor | slice) -> None:
     assert self._lag_scale is not None

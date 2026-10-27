@@ -661,13 +661,27 @@ def _torque_envelope(env, limits: dict[str, float], settle: float = 0.0, ramp_st
   return ((torch.relu(tau - env._tenv_lim) / env._tenv_lim) ** 2).sum(-1) * _cap_gate(env, settle, ramp_steps)
 
 
+def _motor_joint_vel(robot) -> "torch.Tensor":
+  """Joint speed on the encoder side: the link's plus the hidden spring's deflection rate."""
+  d = getattr(robot, "_rhps1_deflection_rate", None)
+  return robot.data.joint_vel if d is None else robot.data.joint_vel + d
+
+
+def _joint_speed_guard(env, vmax: float) -> "torch.Tensor":
+  """rl_controller's runaway guard: any joint faster than vmax disarms the policy and
+  the robot falls. Not while the hold ignores the policy's actions."""
+  out = (_motor_joint_vel(env.scene["robot"]).abs() > vmax).any(-1)
+  hold = getattr(env, "_action_hold_steps", None)
+  return out if hold is None else out & ~(env.episode_length_buf <= hold)
+
+
 def _joint_speed_cap(env, limits: dict[str, float], settle: float = 0.0, ramp_steps: int = 0) -> "torch.Tensor":
   """Squared relative excess of |joint speed| over a per-group ceiling (rl_controller
   disarms a policy above runaway_disarm_vel, 4 rad/s)."""
   robot = env.scene["robot"]
   if not hasattr(env, "_jsc_lim"):
     env._jsc_lim = _group_limits(robot, limits, env.device)
-  qd = robot.data.joint_vel.abs()
+  qd = _motor_joint_vel(robot).abs()
   return ((torch.relu(qd - env._jsc_lim) / env._jsc_lim) ** 2).sum(-1) * _cap_gate(env, settle, ramp_steps)
 
 
@@ -1070,6 +1084,29 @@ def rhps1_flat_tracking_env_cfg(
       _act.delay_update_period = 8000
       _act.delay_per_env_phase = False
 
+  # RHPS1_DRIVE="ANKLE_P,ANKLE_R,CROTCH_P,CROTCH_R" (1 for these four): the real Elmo
+  # cascade in place of the kinematic motor (FiniteDifferencePdActuatorCfg
+  # drive_damping). Joint-side c at neutral [N.m.s/rad] = Kt*KP[2]*counts*gear^2,
+  # KP[3] [/s], KI[2] [Hz]: RHPS1_drive_data (2026-08-03 export) and the Kaleido axis
+  # table (hip cylinders Drive07/08/12/13, ankles 09/10/14/15). RHPS1_DRIVE_SCALE
+  # scales c: the 0.97 Hz disarmed rocking measures 0.53x nominal on the ankles.
+  _DRIVE = {"ANKLE_P": (252.0, 60.0, 2.0), "ANKLE_R": (84.0, 60.0, 2.0),
+            "CROTCH_P": (280.7, 30.0, 45.0), "CROTCH_R": (137.4, 30.0, 45.0),
+            "CROTCH_Y": (33.7, 39.0, 45.0), "KNEE": (838.6, 50.0, 0.02)}
+  _dv = os.environ.get("RHPS1_DRIVE", "")
+  _drive_groups = (("ANKLE_P", "ANKLE_R", "CROTCH_P", "CROTCH_R") if _dv == "1"
+                   else tuple(g for g in _dv.split(",") if g))
+  _drive_scale = tuple(float(x) for x in os.environ.get("RHPS1_DRIVE_SCALE", "0.53,0.53").split(","))
+  for _act in cfg.scene.entities["robot"].articulation.actuators:
+    _expr = " ".join(_act.target_names_expr)
+    _g = next((g for g in _drive_groups if g in _expr), None)
+    if _g:
+      _act.drive_damping, _act.drive_kp_pos, _act.drive_ki_hz = _DRIVE[_g]
+      _act.drive_gain_scale_range = _drive_scale
+      # Stiff structure unless RHPS1_SERIES_K_<GROUP> says otherwise.
+      if _act.series_stiffness_range is None:
+        _act.series_stiffness_range = (5e4, 5e4)
+
   # RHPS1_SERIES_K="lo,hi" [N.m/rad]: hidden transmission compliance on the leg
   # joints, log-uniform per env and joint, the deflection added to the observed
   # joint position and velocity (see FiniteDifferencePdActuatorCfg).
@@ -1079,7 +1116,7 @@ def rhps1_flat_tracking_env_cfg(
   _sk = os.environ.get("RHPS1_SERIES_K")
   _groups = ("CROTCH_Y", "CROTCH_R", "CROTCH_P", "KNEE", "ANKLE_P", "ANKLE_R")
   _per = {gname: os.environ.get(f"RHPS1_SERIES_K_{gname}") for gname in _groups}
-  if _sk or any(_per.values()):
+  if _sk or any(_per.values()) or _drive_groups:
     for _act in cfg.scene.entities["robot"].articulation.actuators:
       _expr = " ".join(_act.target_names_expr)
       _gname = next((gn for gn in _groups if gn in _expr), None)
@@ -1113,7 +1150,8 @@ def rhps1_flat_tracking_env_cfg(
       _expr = " ".join(_act.target_names_expr)
       _f = next((v for k, v in _hz.items() if k in _expr), None)
       assert _f is not None and hasattr(_act, "lowlevel_lag_hz"), _expr
-      _act.lowlevel_lag_hz = _f
+      # The drive's KP[3] is that pole already.
+      _act.lowlevel_lag_hz = 0.0 if any(g in _expr for g in _drive_groups) else _f
       _act.lowlevel_lag_scale_range = _rng
 
   motion_cmd = cfg.commands["motion"]
@@ -1250,6 +1288,14 @@ def rhps1_flat_tracking_env_cfg(
       params={"limits": _tl, **_gate},
     )
 
+  # RHPS1_GUARD_VMAX=4: the controller's runaway guard as a termination. Hardened human
+  # checkpoints armed at 3.4-3.7 rad/s in mjlab and were disarmed at 6 in mc_mujoco.
+  _gv = os.environ.get("RHPS1_GUARD_VMAX")
+  if _gv:
+    from mjlab.managers.termination_manager import TerminationTermCfg
+
+    cfg.terminations["joint_speed_guard"] = TerminationTermCfg(
+      func=_joint_speed_guard, params={"vmax": float(_gv)})
   # RHPS1_JOINT_VMAX="KNEE:4,ANKLE_P:4": joint speed ceilings per group.
   _jv = os.environ.get("RHPS1_JOINT_VMAX")
   if _jv:
