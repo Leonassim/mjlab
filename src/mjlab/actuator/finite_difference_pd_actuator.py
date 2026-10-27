@@ -80,6 +80,11 @@ class FiniteDifferencePdActuatorCfg(IdealPdActuatorCfg):
   (dL/dq)^2 of their two cylinders.
   """
 
+  drive_cylinders: bool = False
+  """Hip and ankle roll/pitch: run the two cylinder drives of each joint pair as on
+  the robot (rhps1_cylinders.CylinderDrive) instead of the per-joint cascade. All
+  four owning actuators must set it; needs ``series_stiffness_range``."""
+
   drive_kp_pos: float = 60.0
   drive_ki_hz: float = 2.0
   drive_gain_scale_range: tuple[float, float] = (1.0, 1.0)
@@ -352,6 +357,15 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
         nj = len(ent.joint_names)
         ent._rhps1_deflection = torch.zeros(shape[0], nj, device=device, dtype=torch.float)
         ent._rhps1_deflection_rate = torch.zeros(shape[0], nj, device=device, dtype=torch.float)
+    if self.cfg.drive_cylinders:
+      assert self._series_k is not None, "drive_cylinders needs series_stiffness_range"
+      from mjlab.asset_zoo.robots.RHPS1.rhps1_cylinders import CylinderDrive
+
+      self._mj_dt = float(mj_model.opt.timestep)
+      ent = self.entity
+      if not hasattr(ent, "_rhps1_cyl"):
+        ent._rhps1_cyl = CylinderDrive(ent, mj_model, shape[0], device)
+      ent._rhps1_cyl.register(self)
     if self.cfg.drive_damping is not None:
       assert self._series_k is not None, "drive_damping needs series_stiffness_range"
       self._mj_dt = float(mj_model.opt.timestep)
@@ -555,6 +569,9 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
     # on a spring-damper behind it; the encoder reads the motor.
     assert self._series_c is not None and self.damping is not None and self.force_limit is not None
     c = self._series_c * self.damping
+    if self.cfg.drive_cylinders:
+      return self.entity._rhps1_cyl.compute(
+        self, pd_pos, self._series_k, c, uninitialized, self._substep_dt or self._mj_dt)
     if self._drive_qm is not None:
       tau, motor_q, motor_qd = self._drive(pd_pos, cmd.pos, cmd.vel, c, uninitialized)
     else:
@@ -776,6 +793,8 @@ class FiniteDifferencePdActuator(IdealPdActuator[FiniteDifferencePdActuatorCfg])
       self._sample_series_k(env_ids)
     if self._drive_scale is not None:
       self._sample_drive_scale(env_ids)
+    if self.cfg.drive_cylinders:
+      self.entity._rhps1_cyl.reset(env_ids)
 
   def _sample_lag_scale(self, env_ids: torch.Tensor | slice) -> None:
     assert self._lag_scale is not None

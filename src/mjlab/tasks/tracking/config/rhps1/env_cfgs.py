@@ -1093,19 +1093,27 @@ def rhps1_flat_tracking_env_cfg(
   _DRIVE = {"ANKLE_P": (252.0, 60.0, 2.0), "ANKLE_R": (84.0, 60.0, 2.0),
             "CROTCH_P": (280.7, 30.0, 45.0), "CROTCH_R": (137.4, 30.0, 45.0),
             "CROTCH_Y": (33.7, 39.0, 45.0), "KNEE": (838.6, 50.0, 0.02)}
+  # RHPS1_DRIVE=cyl: the same four groups, two drives per joint pair in cylinder space.
   _dv = os.environ.get("RHPS1_DRIVE", "")
-  _drive_groups = (("ANKLE_P", "ANKLE_R", "CROTCH_P", "CROTCH_R") if _dv == "1"
+  _drive_groups = (("ANKLE_P", "ANKLE_R", "CROTCH_P", "CROTCH_R") if _dv in ("1", "cyl")
                    else tuple(g for g in _dv.split(",") if g))
   _drive_scale = tuple(float(x) for x in os.environ.get("RHPS1_DRIVE_SCALE", "0.53,0.53").split(","))
   for _act in cfg.scene.entities["robot"].articulation.actuators:
     _expr = " ".join(_act.target_names_expr)
     _g = next((g for g in _drive_groups if g in _expr), None)
     if _g:
-      _act.drive_damping, _act.drive_kp_pos, _act.drive_ki_hz = _DRIVE[_g]
+      if _dv == "cyl":
+        _act.drive_cylinders = True
+      else:
+        _act.drive_damping, _act.drive_kp_pos, _act.drive_ki_hz = _DRIVE[_g]
       _act.drive_gain_scale_range = _drive_scale
       # Stiff structure unless RHPS1_SERIES_K_<GROUP> says otherwise.
       if _act.series_stiffness_range is None:
         _act.series_stiffness_range = (5e4, 5e4)
+      # RHPS1_DRIVE_ARMATURE=1: the motors' reflected inertia, 2 x JM x (dtheta_m/dq)^2
+      # at neutral (rotor only), instead of the 1.0 the PD was tuned with.
+      if os.environ.get("RHPS1_DRIVE_ARMATURE") == "1":
+        _act.armature = {"ANKLE_P": 0.046, "ANKLE_R": 0.015, "CROTCH_P": 0.078, "CROTCH_R": 0.038}[_g]
 
   # RHPS1_SERIES_K="lo,hi" [N.m/rad]: hidden transmission compliance on the leg
   # joints, log-uniform per env and joint, the deflection added to the observed
