@@ -1465,6 +1465,15 @@ def rhps1_flat_tracking_env_cfg(
   #
   # Desserrer laisse le temps de reconstruire la marche. A resserrer une fois la
   # politique adaptee, sinon elle n'a plus de garde-fou sur la derive.
+  # With RHPS1_HOLD_POSTURE_NOISE the held stance is off the reference: no
+  # tracking termination while the policy's actions are ignored.
+  if os.environ.get("RHPS1_HOLD_POSTURE_NOISE"):
+    from mjlab.tasks.tracking.config.rhps1 import hold_action as _ha
+
+    for _k, _f in (("anchor_pos", _ha.held_bad_anchor_pos_z_only), ("anchor_ori", _ha.held_bad_anchor_ori),
+                   ("ee_body_pos", _ha.held_bad_motion_body_pos_z_only)):
+      if _k in cfg.terminations:
+        cfg.terminations[_k].func = _f
   _term = float(os.environ.get("RHPS1_TERM_SCALE", "1.0"))
   if _term != 1.0:
     for _k in ("anchor_pos", "ee_body_pos"):

@@ -55,3 +55,28 @@ def held_last_action(env, action_name: str | None = None) -> torch.Tensor:
   held = env.episode_length_buf <= hold
   term = env.action_manager.get_term(action_name or "joint_pos")
   return torch.where(held[:, None], stance_action(env, term), a)
+
+
+
+def _not_held(env, out: torch.Tensor) -> torch.Tensor:
+  hold = getattr(env, "_action_hold_steps", None)
+  return out if hold is None else out & ~(env.episode_length_buf <= hold)
+
+
+def held_bad_anchor_pos_z_only(env, **kwargs) -> torch.Tensor:
+  """Tracking terminations that cannot fire while the hold ignores the policy."""
+  from mjlab.tasks.tracking import mdp
+
+  return _not_held(env, mdp.bad_anchor_pos_z_only(env, **kwargs))
+
+
+def held_bad_anchor_ori(env, **kwargs) -> torch.Tensor:
+  from mjlab.tasks.tracking import mdp
+
+  return _not_held(env, mdp.bad_anchor_ori(env, **kwargs))
+
+
+def held_bad_motion_body_pos_z_only(env, **kwargs) -> torch.Tensor:
+  from mjlab.tasks.tracking import mdp
+
+  return _not_held(env, mdp.bad_motion_body_pos_z_only(env, **kwargs))
