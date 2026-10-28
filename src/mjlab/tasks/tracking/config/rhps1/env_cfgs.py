@@ -525,6 +525,39 @@ def _heading_hold(env, command_name: str) -> "torch.Tensor":
   return torch.where(no_rot, k, torch.zeros_like(k))
 
 
+def _ankle_vibration(env, joint_names: tuple[str, ...], hp_hz: float, lp_hz: float) -> "torch.Tensor":
+  """Squared motor-side ankle speed in the drive's resonance band (2x high-pass, low-pass).
+
+  Slot 17 drives the ankle roll at 4.7 Hz in stance: motor side 5-7 deg/s on the robot,
+  10-12 in mc_mujoco with the drives, slot 3 1.0-1.4 in both (2026-10-28).
+  """
+  robot = env.scene["robot"]
+  if not hasattr(env, "_vib_ids"):
+    env._vib_ids = torch.tensor([robot.joint_names.index(n) for n in joint_names], device=env.device)
+  v = robot.data.joint_vel[:, env._vib_ids]
+  d = getattr(robot, "_rhps1_deflection_rate", None)
+  if d is not None:
+    v = v + d[:, env._vib_ids]
+  dt = env.step_dt
+  a = 1.0 / (1.0 + 2.0 * math.pi * hp_hz * dt)
+  b = 1.0 - math.exp(-2.0 * math.pi * lp_hz * dt)
+  if not hasattr(env, "_vib_state"):
+    env._vib_state = torch.zeros(4, *v.shape, device=env.device)
+  s = env._vib_state
+  fresh = (env.episode_length_buf <= 1).unsqueeze(-1)
+  x0 = torch.where(fresh, v, s[0])
+  h1 = torch.where(fresh, torch.zeros_like(v), a * (s[1] + v - x0))
+  h2 = torch.where(fresh, torch.zeros_like(v), a * (s[2] + h1 - s[1]))
+  y = torch.where(fresh, torch.zeros_like(v), s[3] + b * (h2 - s[3]))
+  env._vib_state = torch.stack((v, h1, h2, y))
+  return (y**2).sum(dim=-1)
+
+
+def _roll_rate(env) -> "torch.Tensor":
+  """Squared pelvis roll rate."""
+  return env.scene["robot"].data.root_link_ang_vel_b[:, 0] ** 2
+
+
 def _still_when_reference_still(
   env, command_name: str, std: float, gate: float, joint_std: float = 0.0
 ) -> "torch.Tensor":
@@ -1016,6 +1049,18 @@ def rhps1_flat_tracking_env_cfg(
       },
     )
 
+  # RHPS1_ANKLE_VIB_W (<0): motor-side ankle speed in 3-10 Hz, see _ankle_vibration.
+  _vib_w = float(os.environ.get("RHPS1_ANKLE_VIB_W", "0"))
+  if _vib_w:
+    cfg.rewards["ankle_vibration"] = RewardTermCfg(
+      func=_ankle_vibration,
+      weight=_vib_w,
+      params={"joint_names": ("L_ANKLE_R", "L_ANKLE_P", "R_ANKLE_R", "R_ANKLE_P"), "hp_hz": 3.0, "lp_hz": 10.0},
+    )
+  _roll_w = float(os.environ.get("RHPS1_ROLL_RATE_W", "0"))
+  if _roll_w:
+    cfg.rewards["roll_rate"] = RewardTermCfg(func=_roll_rate, weight=_roll_w)
+
   _heading_w = float(os.environ.get("RHPS1_HEADING_W", "0"))
   if _heading_w:
     cfg.rewards["heading_hold"] = RewardTermCfg(
@@ -1098,9 +1143,18 @@ def rhps1_flat_tracking_env_cfg(
   _drive_groups = (("ANKLE_P", "ANKLE_R", "CROTCH_P", "CROTCH_R") if _dv in ("1", "cyl")
                    else tuple(g for g in _dv.split(",") if g))
   _drive_scale = tuple(float(x) for x in os.environ.get("RHPS1_DRIVE_SCALE", "0.53,0.53").split(","))
+  # RHPS1_DRIVE_ROT="CROTCH_Y,KNEE": the rotary joints' own cascade, per joint, next to
+  # RHPS1_DRIVE=cyl (hip yaw Drive02/04 KI 45 Hz, knee Drive03/05 KI 0.02 Hz).
+  _drive_rot = tuple(g for g in os.environ.get("RHPS1_DRIVE_ROT", "").split(",") if g)
   for _act in cfg.scene.entities["robot"].articulation.actuators:
     _expr = " ".join(_act.target_names_expr)
     _g = next((g for g in _drive_groups if g in _expr), None)
+    _gr = next((g for g in _drive_rot if g in _expr), None)
+    if _gr and not _g:
+      _act.drive_damping, _act.drive_kp_pos, _act.drive_ki_hz = _DRIVE[_gr]
+      _act.drive_gain_scale_range = _drive_scale
+      if _act.series_stiffness_range is None:
+        _act.series_stiffness_range = (5e4, 5e4)
     if _g:
       if _dv == "cyl":
         _act.drive_cylinders = True
@@ -1124,7 +1178,7 @@ def rhps1_flat_tracking_env_cfg(
   _sk = os.environ.get("RHPS1_SERIES_K")
   _groups = ("CROTCH_Y", "CROTCH_R", "CROTCH_P", "KNEE", "ANKLE_P", "ANKLE_R")
   _per = {gname: os.environ.get(f"RHPS1_SERIES_K_{gname}") for gname in _groups}
-  if _sk or any(_per.values()) or _drive_groups:
+  if _sk or any(_per.values()) or _drive_groups or _drive_rot:
     for _act in cfg.scene.entities["robot"].articulation.actuators:
       _expr = " ".join(_act.target_names_expr)
       _gname = next((gn for gn in _groups if gn in _expr), None)
@@ -1159,7 +1213,7 @@ def rhps1_flat_tracking_env_cfg(
       _f = next((v for k, v in _hz.items() if k in _expr), None)
       assert _f is not None and hasattr(_act, "lowlevel_lag_hz"), _expr
       # The drive's KP[3] is that pole already.
-      _act.lowlevel_lag_hz = 0.0 if any(g in _expr for g in _drive_groups) else _f
+      _act.lowlevel_lag_hz = 0.0 if any(g in _expr for g in _drive_groups + _drive_rot) else _f
       _act.lowlevel_lag_scale_range = _rng
 
   motion_cmd = cfg.commands["motion"]

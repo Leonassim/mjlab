@@ -12,6 +12,7 @@ strokes ([194.78, 291.33] / [198.91, 292.79] mm) on the mjlab model.
 from __future__ import annotations
 
 import math
+import os
 
 import mujoco
 import numpy as np
@@ -136,6 +137,10 @@ class CylinderDrive:
       p0.append([c[3] for c in cyls]); p2.append([c[4] for c in cyls]); p3.append([c[5] for c in cyls])
       ankle.append(j == "ANKLE")
       Kt, KP2, KP3, KI, PL = DRIVES[j]
+      # RHPS1_DRIVE_GAINS_<CROTCH|ANKLE>="KP3,KI": candidate KP[3], KI[2] [Hz].
+      ov = os.environ.get(f"RHPS1_DRIVE_GAINS_{j}")
+      if ov:
+        KP3, KI = (float(x) for x in ov.split(","))
       C.append([Kt * KP2 * COUNTS_PER_M * MOTOR_RAD_PER_M] * 2)
       kp.append(KP3); wi.append(2.0 * math.pi * KI); fmax.append([Kt * PL * MOTOR_RAD_PER_M] * 2)
     t = lambda x, dt=torch.float64: torch.tensor(np.asarray(x, dtype=float), device=device, dtype=dt)
