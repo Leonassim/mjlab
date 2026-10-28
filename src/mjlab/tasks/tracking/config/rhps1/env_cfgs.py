@@ -525,6 +525,26 @@ def _heading_hold(env, command_name: str) -> "torch.Tensor":
   return torch.where(no_rot, k, torch.zeros_like(k))
 
 
+def _slip_speed(env, sensor_name: str, body_names: tuple[str, ...]) -> "torch.Tensor":
+  """Summed slip speed of the feet in contact [m/s], yaw through _SLIP_LEVER.
+
+  Linear, so it keeps a gradient where _no_slip's 0.02 m/s kernel is already zero: the
+  loaded foot dragged at the walk start (2.5 cm, up to 4.5, slot 17 in mc_mujoco).
+  """
+  robot = env.scene["robot"]
+  sensor = env.scene[sensor_name]
+  ids = getattr(env, "_slip_body_ids", None)
+  if ids is None:
+    names = list(robot.body_names)
+    ids = torch.tensor([names.index(n) for n in body_names], device=robot.data.body_link_pos_w.device)
+    env._slip_body_ids = ids
+  assert sensor.data.found is not None
+  contact = (sensor.data.found > 0).float()
+  v = robot.data.body_link_lin_vel_w[:, ids, :2].norm(dim=-1)
+  w = robot.data.body_link_ang_vel_w[:, ids, 2].abs()
+  return ((v + _SLIP_LEVER * w) * contact).sum(dim=-1)
+
+
 def _ankle_vibration(env, joint_names: tuple[str, ...], hp_hz: float, lp_hz: float) -> "torch.Tensor":
   """Squared motor-side ankle speed in the drive's resonance band (2x high-pass, low-pass).
 
@@ -1049,6 +1069,14 @@ def rhps1_flat_tracking_env_cfg(
       },
     )
 
+  # RHPS1_SLIP_SPEED_W (<0): linear slip speed of the loaded feet, see _slip_speed.
+  _slipv_w = float(os.environ.get("RHPS1_SLIP_SPEED_W", "0"))
+  if _slipv_w and cadence_term:
+    cfg.rewards["slip_speed"] = RewardTermCfg(
+      func=_slip_speed,
+      weight=_slipv_w,
+      params={"sensor_name": "feet_ground_contact", "body_names": ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")},
+    )
   # RHPS1_ANKLE_VIB_W (<0): motor-side ankle speed in 3-10 Hz, see _ankle_vibration.
   _vib_w = float(os.environ.get("RHPS1_ANKLE_VIB_W", "0"))
   if _vib_w:
