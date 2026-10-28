@@ -623,6 +623,52 @@ def _sample_obs_bias(env, env_ids, lin: float, grav: float) -> None:
     getattr(env, attr)[env_ids] = (torch.rand(len(env_ids), 3, device=env.device) * 2 - 1) * r
 
 
+def _waiko_lin_vel(env, tau: float = 0.04, scale: tuple[float, float] = (1.0, 1.0)) -> "torch.Tensor":
+  """MCWaiko-like base velocity for the actor: leg odometry on the feet in contact
+  (base velocity minus the ankle's: the stance foot taken as fixed, so rolling and
+  slip leak in), in the heading frame (MCWaiko estimates tilt, not yaw), low-passed.
+
+  In mc_mujoco the real MCWaiko is 0.09 m/s rms off the truth while walking, ~40 ms
+  late and ~15% short over a walk, and exact standing (2026-10-29). With true link
+  velocities this odometry alone gives half of that (no motor-side encoders, exact
+  contacts), hence tau and a per-episode scale drawn in `scale`.
+  """
+  step = int(env.common_step_counter)
+  if getattr(env, "_waiko_step", None) == step and hasattr(env, "_waiko_v"):
+    return env._waiko_v
+  robot = env.scene["robot"]
+  sensor = env.scene["feet_ground_contact"]
+  ids = getattr(env, "_waiko_ids", None)
+  if ids is None:
+    names = list(robot.body_names)
+    ids = torch.tensor([names.index(n) for n in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")], device=env.device)
+    env._waiko_ids = ids
+  assert sensor.data.found is not None
+  contact = (sensor.data.found > 0).float()
+  n = contact.sum(-1, keepdim=True)
+  vf = (robot.data.body_link_lin_vel_w[:, ids, :] * contact[..., None]).sum(1) / n.clamp(min=1.0)
+  v = robot.data.root_link_lin_vel_w - vf
+  w, x, y, z = robot.data.root_link_quat_w.unbind(-1)
+  yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+  c, s = torch.cos(yaw), torch.sin(yaw)
+  vh = torch.stack((c * v[:, 0] + s * v[:, 1], -s * v[:, 0] + c * v[:, 1], v[:, 2]), -1)
+  fresh = (env.episode_length_buf <= 1).unsqueeze(-1)
+  sc = getattr(env, "_waiko_scale", None)
+  if sc is None:
+    sc = torch.ones(env.num_envs, 1, device=env.device)
+  sc = torch.where(fresh, scale[0] + (scale[1] - scale[0]) * torch.rand_like(sc), sc)
+  env._waiko_scale = sc
+  vh = vh * sc
+  prev = getattr(env, "_waiko_v", None)
+  if prev is None:
+    prev = vh.clone()
+  a = 1.0 - math.exp(-env.step_dt / tau)
+  new = torch.where(n > 0, prev + a * (vh - prev), prev)
+  env._waiko_v = torch.where(fresh, vh, new)
+  env._waiko_step = step
+  return env._waiko_v
+
+
 def _ou_obs(func):
   """Observation plus a slowly varying error (Ornstein-Uhlenbeck, see _sample_ou)."""
 
@@ -1682,6 +1728,18 @@ def rhps1_flat_tracking_env_cfg(
   # permet de repartir de la critique de l'experte telle quelle.
   if student_actor:
     cfg.observations["actor"] = cfg.observations["student"]
+
+  # RHPS1_WAIKO=1: the actor's base_lin_vel comes from an MCWaiko-like leg odometry
+  # (_waiko_lin_vel) instead of the truth; the critic keeps the truth. Noise and bias
+  # wrappers below still apply on top.
+  if os.environ.get("RHPS1_WAIKO") == "1" and "base_lin_vel" in cfg.observations["actor"].terms:
+    from dataclasses import replace as _wrep
+
+    _wt = cfg.observations["actor"].terms
+    _wt["base_lin_vel"] = _wrep(_wt["base_lin_vel"], func=_waiko_lin_vel,
+                                params={"tau": float(os.environ.get("RHPS1_WAIKO_TAU", "0.08")),
+                                        "scale": tuple(float(x) for x in os.environ.get(
+                                          "RHPS1_WAIKO_SCALE", "0.82,0.98").split(","))})
 
   if not has_state_estimation:
     new_actor_terms = {
