@@ -93,9 +93,10 @@ def lever_grid(m: mujoco.MjModel, joint: str, n: int = 33, h: float = 1e-4, pref
 
 # Per drive type: Kt [N.m/A], KP[2] [A/(count/s)], KP[3] [/s], KI[2] [Hz], PL[1] [A].
 # RHPS1_drive_data (2026-08-03 export): hip cylinders Drive07/08/12/13, ankle 09/10/14/15.
+# Ankle KI[2] 2 -> 0.02 Hz on the robot since 2026-10-29 (RHPS1_DRIVE_GAINS_ANKLE=60,2 = before).
 DRIVES = {
   "CROTCH": (0.246, 1.1e-6, 30.0, 45.0, 2.55),
-  "ANKLE": (0.0487, 5.0e-6, 60.0, 2.0, 6.79),
+  "ANKLE": (0.0487, 5.0e-6, 60.0, 0.02, 6.79),
 }
 COUNTS_PER_M = 42598.4e3
 

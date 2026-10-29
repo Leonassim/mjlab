@@ -72,8 +72,9 @@ class FiniteDifferencePdActuatorCfg(IdealPdActuatorCfg):
 
   Series PI, w_i = 2*pi*KI[2], no velocity feedforward, as on the robot. Below
   sqrt(kp_pos*w_i) the integral makes the drive's damping negative: 4.4 Hz on
-  the ankles (KI 2 Hz), ~15 Hz on the hips (KI 45 Hz). On the 2026-10-27
-  disarmed log the ankle drive force lags the motor deflection by 58 deg at
+  the ankles at KI 2 Hz (0.44 Hz at 0.02, the robot since 2026-10-29), ~15 Hz on
+  the hips (KI 45 Hz). On the 2026-10-27 disarmed log (KI 2) the ankle drive
+  force lags the motor deflection by 58 deg at
   0.97 Hz (model 58.3), which is what sustains the ~1 Hz rocking on the
   compliance beyond the encoders. KP[3] is also the joints' 4-8 Hz pole, so
   leave ``lowlevel_lag_hz`` off. Cylinder joints scale c with the summed

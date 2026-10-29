@@ -1209,7 +1209,8 @@ def rhps1_flat_tracking_env_cfg(
   # KP[3] [/s], KI[2] [Hz]: RHPS1_drive_data (2026-08-03 export) and the Kaleido axis
   # table (hip cylinders Drive07/08/12/13, ankles 09/10/14/15). RHPS1_DRIVE_SCALE
   # scales c: the 0.97 Hz disarmed rocking measures 0.53x nominal on the ankles.
-  _DRIVE = {"ANKLE_P": (252.0, 60.0, 2.0), "ANKLE_R": (84.0, 60.0, 2.0),
+  # Ankle KI[2] 0.02 Hz since 2026-10-29 (2.0 before).
+  _DRIVE = {"ANKLE_P": (252.0, 60.0, 0.02), "ANKLE_R": (84.0, 60.0, 0.02),
             "CROTCH_P": (280.7, 30.0, 45.0), "CROTCH_R": (137.4, 30.0, 45.0),
             "CROTCH_Y": (33.7, 39.0, 45.0), "KNEE": (838.6, 50.0, 0.02)}
   # RHPS1_DRIVE=cyl: the same four groups, two drives per joint pair in cylinder space.
