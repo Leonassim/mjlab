@@ -16,6 +16,7 @@ import os
 
 import mujoco
 import numpy as np
+import warp as wp
 
 # name, base_link0, base_link1, pos0, pos2, pos3
 CYLINDERS = (
@@ -314,3 +315,99 @@ class CylinderDrive:
         cyls = [c for c in CYLINDERS if c[0][0] == s and c[0][3] == j[0]]
         Lc = [cylinder_length(mj_model, d, c, prefix) for c in cyls]
         assert np.allclose(Lt[k, i], Lc, atol=1e-9), (s, j, Lt[k, i], Lc)
+
+
+# Coupled stroke limits of the hip and ankle (roll, pitch): the URDF box minus the corners where a cylinder would
+# leave its stroke (3 mm margin). One half-plane per (cylinder, stroke end), (q - p1) x (p2 - p1) <= 0 with
+# q = [roll, pitch] [rad]. Same 16 lines as rl_controller etc/NewRLQPController.in.yaml
+# (rl_controller scripts/cylinder_limits.py regenerates them).
+HALF_PLANES = (
+  ("R_CROTCH_R", "R_CROTCH_P", (-0.29583, 0.74095), (-0.71002, 1.02104)),
+  ("R_CROTCH_R", "R_CROTCH_P", (-0.50291, 0.20082), (-0.91710, -0.07926)),
+  ("R_CROTCH_R", "R_CROTCH_P", (-0.62124, -1.17132), (-0.20569, -1.44938)),
+  ("R_CROTCH_R", "R_CROTCH_P", (-0.50291, -1.92354), (-0.08736, -1.64548)),
+  ("L_CROTCH_R", "L_CROTCH_P", (0.29583, 0.74095), (-0.11836, 0.46087)),
+  ("L_CROTCH_R", "L_CROTCH_P", (0.50291, 0.20082), (0.08872, 0.48091)),
+  ("L_CROTCH_R", "L_CROTCH_P", (0.62124, -1.17132), (1.03679, -0.89325)),
+  ("L_CROTCH_R", "L_CROTCH_P", (0.50291, -1.92354), (0.91846, -2.20160)),
+  ("R_ANKLE_R", "R_ANKLE_P", (0.05169, 0.61188), (-0.39362, 0.83927)),
+  ("R_ANKLE_R", "R_ANKLE_P", (-0.31011, 0.48280), (-0.75973, 0.26408)),
+  ("R_ANKLE_R", "R_ANKLE_P", (-0.54270, -1.01421), (-0.12904, -1.29508)),
+  ("R_ANKLE_R", "R_ANKLE_P", (0.33596, -1.15458), (0.74962, -0.87372)),
+  ("L_ANKLE_R", "L_ANKLE_P", (-0.05169, 0.61188), (-0.49699, 0.38449)),
+  ("L_ANKLE_R", "L_ANKLE_P", (0.31011, 0.48280), (-0.13951, 0.70153)),
+  ("L_ANKLE_R", "L_ANKLE_P", (0.54270, -1.01421), (0.95636, -0.73335)),
+  ("L_ANKLE_R", "L_ANKLE_P", (-0.33596, -1.15458), (0.07771, -1.43545)),
+)
+
+
+def cylinder_limits_enabled() -> bool:
+  """RHPS1_CYL_LIMITS=1: tendon end stops in the model and targets projected inside, as rl_controller does."""
+  return os.environ.get("RHPS1_CYL_LIMITS", "0") == "1"
+
+
+def half_plane_coeffs():
+  """(roll joint, pitch joint, a, b, c) with g = a roll + b pitch + c the signed distance [rad], > 0 outside."""
+  out = []
+  for j1, j2, p1, p2 in HALF_PLANES:
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    n = math.hypot(dx, dy)
+    out.append((j1, j2, dy / n, -dx / n, (p1[1] * dx - p1[0] * dy) / n))
+  return out
+
+
+def add_cylinder_limit_tendons(spec: mujoco.MjSpec) -> None:
+  """One fixed tendon a roll + b pitch per half-plane, limited above at -c: a physical end stop on the line."""
+  for k, (j1, j2, a, b, c) in enumerate(half_plane_coeffs()):
+    t = spec.add_tendon(name=f"cyl_limit_{j1[:-2]}_{k % 4}", limited=mujoco.mjtLimited.mjLIMITED_TRUE,
+                        range=[-10.0, -c])
+    t.wrap_joint(j1, a)
+    t.wrap_joint(j2, b)
+
+
+def cylinder_limit_tensors(names, limits, device):
+  """Projection data for targets ordered as `names` (limits [n, 2]): roll/pitch columns per joint pair [2, P],
+  the pair's four half-planes (a, b, c) [P, 4, 3], and the pair's joint ranges lo/hi [2, P]."""
+  import torch
+
+  wp.init()
+  col = lambda j: next(i for i, n in enumerate(names) if n == j or n.endswith("/" + j))
+  pairs = list(dict.fromkeys((j1, j2) for j1, j2, *_ in half_plane_coeffs()))
+  cols = torch.tensor([[col(j1) for j1, _ in pairs], [col(j2) for _, j2 in pairs]], dtype=torch.int32, device=device)
+  coeffs = torch.tensor([[h[2:] for h in half_plane_coeffs() if h[:2] == pr] for pr in pairs], dtype=torch.float32,
+                        device=device)
+  lim = torch.as_tensor(limits, dtype=torch.float32, device=device)[cols.long()]
+  return cols, coeffs, lim[..., 0].contiguous(), lim[..., 1].contiguous()
+
+
+@wp.kernel
+def _project_kernel(q: wp.array2d(dtype=wp.float32), cols: wp.array2d(dtype=wp.int32),
+                    coeffs: wp.array3d(dtype=wp.float32), lo: wp.array2d(dtype=wp.float32),
+                    hi: wp.array2d(dtype=wp.float32), sweeps: int):
+  e, k = wp.tid()
+  i1 = cols[0, k]
+  i2 = cols[1, k]
+  r = q[e, i1]
+  p = q[e, i2]
+  for _s in range(sweeps):
+    for l in range(coeffs.shape[1]):
+      a = coeffs[k, l, 0]
+      b = coeffs[k, l, 1]
+      g = a * r + b * p + coeffs[k, l, 2]
+      if g > 0.0:
+        r = wp.clamp(r - g * a, lo[0, k], hi[0, k])
+        p = wp.clamp(p - g * b, lo[1, k], hi[1, k])
+  q[e, i1] = r
+  q[e, i2] = p
+
+
+def project_cylinder_limits(q, cols, coeffs, lo, hi, sweeps: int = 10):
+  """Projects float32 joint targets q [N, n] in place inside the half-planes by alternating projections, a joint
+  pushed back being clamped to its range, like NewRLQPController::projectCylinderLimits. One kernel launch, one
+  thread per (env, joint pair), on torch's current stream."""
+  q = q.contiguous()
+  wp.launch(_project_kernel, dim=(q.shape[0], cols.shape[1]),
+            inputs=[wp.from_torch(q), wp.from_torch(cols), wp.from_torch(coeffs), wp.from_torch(lo),
+                    wp.from_torch(hi), sweeps],
+            device=wp.device_from_torch(q.device), stream=wp.stream_from_torch(q.device) if q.is_cuda else None)
+  return q

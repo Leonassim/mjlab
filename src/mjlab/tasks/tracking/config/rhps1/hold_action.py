@@ -25,6 +25,15 @@ def stance_action(env, term) -> torch.Tensor:
 
 
 class HoldableJointPositionAction(JointPositionAction):
+  def __init__(self, cfg, env):
+    super().__init__(cfg, env)
+    self._cyl = None
+    from mjlab.asset_zoo.robots.RHPS1.rhps1_cylinders import cylinder_limit_tensors, cylinder_limits_enabled
+
+    if cylinder_limits_enabled():
+      lim = self._entity.data.joint_pos_limits[0, self._target_ids]
+      self._cyl = cylinder_limit_tensors(list(self.target_names), lim, self.device)
+
   def process_actions(self, actions: torch.Tensor) -> None:
     hold = getattr(self._env, "_action_hold_steps", None)
     if hold is not None:
@@ -32,6 +41,11 @@ class HoldableJointPositionAction(JointPositionAction):
       if bool(held.any()):
         actions = torch.where(held[:, None], stance_action(self._env, self), actions)
     super().process_actions(actions)
+    if self._cyl is not None:
+      # Same target projection as rl_controller (cylinder_limits/project_targets): part of the deployed plant.
+      from mjlab.asset_zoo.robots.RHPS1.rhps1_cylinders import project_cylinder_limits
+
+      self._processed_actions = project_cylinder_limits(self._processed_actions, *self._cyl)
 
 
 @dataclass(kw_only=True)

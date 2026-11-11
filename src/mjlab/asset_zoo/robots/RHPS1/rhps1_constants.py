@@ -275,6 +275,11 @@ def get_spec() -> mujoco.MjSpec:
   for geom in spec.geoms:
     geom.contype = 0
     geom.conaffinity = 0
+  if RHPS1_XML.name == "RHPS1main.xml":
+    from mjlab.asset_zoo.robots.RHPS1.rhps1_cylinders import add_cylinder_limit_tendons, cylinder_limits_enabled
+
+    if cylinder_limits_enabled():
+      add_cylinder_limit_tendons(spec)
   return spec
 
 
