@@ -72,6 +72,14 @@ class StandingStartMotionCommand(MotionCommand):
       k = torch.randint(0, len(starts), (len(pick),), device=self.device)
       w0 = starts[k]
       hold_steps = torch.minimum(hold_steps, still[k])
+      # RHPS1_STAND_PRE_S: 0..PRE_S of standing under the policy's control between the
+      # hold and the walk, inside the reference's stillness (~10 s before each walk).
+      # Without it the hold ends on the first step: the policy never stands on its own.
+      pre = float(os.environ.get("RHPS1_STAND_PRE_S", "0"))
+      if pre > 0.0:
+        free_steps = (torch.rand(len(pick), device=self.device) * (pre / self._env.step_dt)).long()
+        free_steps = torch.minimum(free_steps, (self._segment_still_full[k] - hold_steps).clamp(min=0))
+        w0 = w0 - free_steps
     # Free stand: the policy holds the robot at command 0 for a random time
     # after the hold, then the command flips where the reference's does. The
     # operator's joystick push on the robot, which training never showed in
@@ -158,7 +166,7 @@ class StandingStartMotionCommand(MotionCommand):
       idx = [self.cfg.body_names.index(n) for n in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")]
       moving = (self.motion.body_pos_w[:, idx, 2].max(dim=1).values > 0.11).cpu()
       min_still = int(1.5 / self._env.step_dt)
-      starts, still, run = [], [], 0
+      starts, still, full, run = [], [], [], 0
       clip_start = self.motion.clip_start.cpu()
       for f, m in enumerate(moving.tolist()):
         if clip_start[f] == f:
@@ -166,7 +174,9 @@ class StandingStartMotionCommand(MotionCommand):
         if m and run >= min_still:
           starts.append(f)
           still.append(min(run, int(3.0 / self._env.step_dt)) - 1)
+          full.append(run - 1)
         run = 0 if m else run + 1
+      self._segment_still_full = torch.tensor(full, device=self.device)
       self._segment_starts_cache = (
         torch.tensor(starts, device=self.device),
         torch.tensor(still, device=self.device),

@@ -32,6 +32,11 @@ _RULES = {
   "projected_gravity": ([0, 1, 2], list(_VEC3_LIN_SIGN)),
   "base_ang_vel": ([0, 1, 2], list(_VEC3_ANG_SIGN)),
   "velocity_command": ([0, 1, 2], list(_VEC3_CMD_SIGN)),
+  # Without a rule the whole actor group went unmirrored while the actions were
+  # mirrored: ff1 (2026-10-31) fell from slot 20's reward 70 to 40.
+  "foot_force": ([1, 0], [1.0, 1.0]),
+  # L <-> R, sagittal mirror: fy, mx, mz change sign.
+  "foot_wrench": ([6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5], [1.0, -1.0, 1.0, -1.0, 1.0, -1.0] * 2),
 }
 _JOINT_TERMS = ("joint_pos", "joint_vel", "actions")
 

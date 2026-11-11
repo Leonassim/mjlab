@@ -18,6 +18,8 @@ import math
 import os
 from typing import cast
 
+import mujoco
+import numpy as np
 import torch
 
 from mjlab.asset_zoo.robots.RHPS1.rhps1_constants import (
@@ -573,6 +575,51 @@ def _ankle_vibration(env, joint_names: tuple[str, ...], hp_hz: float, lp_hz: flo
   return (y**2).sum(dim=-1)
 
 
+def _rest_yaw_vibration(env, command_name: str, gate: float, hp_hz: float, lp_hz: float) -> "torch.Tensor":
+  """Squared pelvis yaw rate in hp_hz..lp_hz (2x high-pass, low-pass), while the reference
+  is still (its rms body rate below `gate`, see _still_when_reference_still).
+
+  The torsion mode the gates measure at rest: ff2c and ffa2 grew to 3-4 deg/s at 7.2 Hz
+  within 1000 iterations (2026-11-01), which neither ankle_vibration nor roll_rate sees.
+  """
+  v = env.scene["robot"].data.root_link_ang_vel_b[:, 2]
+  dt = env.step_dt
+  a = 1.0 / (1.0 + 2.0 * math.pi * hp_hz * dt)
+  b = 1.0 - math.exp(-2.0 * math.pi * lp_hz * dt)
+  if not hasattr(env, "_ryv_state"):
+    env._ryv_state = torch.zeros(4, *v.shape, device=env.device)
+  s = env._ryv_state
+  fresh = env.episode_length_buf <= 1
+  x0 = torch.where(fresh, v, s[0])
+  h1 = torch.where(fresh, torch.zeros_like(v), a * (s[1] + v - x0))
+  h2 = torch.where(fresh, torch.zeros_like(v), a * (s[2] + h1 - s[1]))
+  y = torch.where(fresh, torch.zeros_like(v), s[3] + b * (h2 - s[3]))
+  env._ryv_state = torch.stack((v, h1, h2, y))
+  ref = env.command_manager.get_term(command_name).body_ang_vel_w
+  still = (ref**2).sum(-1).mean(-1) < gate**2
+  return torch.where(still, y**2, torch.zeros_like(y))
+
+
+def _rest_load_shift(env, command_name: str, gate: float, hp_hz: float) -> "torch.Tensor":
+  """Squared high-passed (hp_hz) sole loads in body weights, summed over both feet, while
+  the reference is still.
+
+  Every policy trained on the KI 0.02 ankle plant shifted its weight foot to foot at the
+  step rate while standing (Fz std 126-270 N per foot, slot 18 3 N, robot 5 N; 2026-11-02),
+  feet never leaving the ground: no tracking or contact term sees it.
+  """
+  f = env.scene["feet_ground_contact"].data.force[..., 2].abs().reshape(env.num_envs, -1) / BODY_WEIGHT_N
+  a = 1.0 / (1.0 + 2.0 * math.pi * hp_hz * env.step_dt)
+  fresh = (env.episode_length_buf <= 1).unsqueeze(-1)
+  if not hasattr(env, "_rls_x"):
+    env._rls_x, env._rls_y = f.clone(), torch.zeros_like(f)
+  y = torch.where(fresh, torch.zeros_like(f), a * (env._rls_y + f - env._rls_x))
+  env._rls_x, env._rls_y = f.clone(), y
+  ref = env.command_manager.get_term(command_name).body_ang_vel_w
+  still = (ref**2).sum(-1).mean(-1) < gate**2
+  return torch.where(still, (y**2).sum(-1), torch.zeros_like(still, dtype=f.dtype))
+
+
 def _roll_rate(env) -> "torch.Tensor":
   """Squared pelvis roll rate."""
   return env.scene["robot"].data.root_link_ang_vel_b[:, 0] ** 2
@@ -667,6 +714,107 @@ def _waiko_lin_vel(env, tau: float = 0.04, scale: tuple[float, float] = (1.0, 1.
   env._waiko_v = torch.where(fresh, vh, new)
   env._waiko_step = step
   return env._waiko_v
+
+
+def _foot_force_obs(env, tau: float = 0.02, gain: tuple[float, float] = (0.85, 1.2),
+                    bias: float = 0.05) -> "torch.Tensor":
+  """Vertical load on each foot (L, R) in body weights, as rl_controller obs_format 8
+  builds it from the sole force sensors: low-passed (tau), with a per-episode, per-foot
+  gain (sensor calibration, hoist) and offset, clamped to [-0.1, 2.5]."""
+  step = int(env.common_step_counter)
+  if getattr(env, "_ffo_step", None) == step and hasattr(env, "_ffo_v"):
+    return env._ffo_v
+  f = env.scene["feet_ground_contact"].data.force[..., 2].abs().reshape(env.num_envs, -1) / BODY_WEIGHT_N
+  fresh = (env.episode_length_buf <= 1).unsqueeze(-1)
+  g = getattr(env, "_ffo_gain", None)
+  if g is None:
+    g, b = torch.ones_like(f), torch.zeros_like(f)
+  else:
+    b = env._ffo_bias
+  g = torch.where(fresh, gain[0] + (gain[1] - gain[0]) * torch.rand_like(g), g)
+  b = torch.where(fresh, (torch.rand_like(b) * 2 - 1) * bias, b)
+  env._ffo_gain, env._ffo_bias = g, b
+  x = (f * g + b).clamp(-0.1, 2.5)
+  prev = getattr(env, "_ffo_v", None)
+  if prev is None:
+    prev = x.clone()
+  a = 1.0 - math.exp(-env.step_dt / tau)
+  env._ffo_v = torch.where(fresh, x, prev + a * (x - prev))
+  env._ffo_step = step
+  return env._ffo_v
+
+
+FOOT_MOMENT_NM = BODY_WEIGHT_N * 0.1  # moments in body weight x 10 cm
+
+
+def _foot_wrench_clean(env) -> "torch.Tensor":
+  """Soles' 6-axis wrenches (L fx fy fz mx my mz, R ...) from RHPS1main.xml's
+  Left/RightFootForceSensor (site 9.7 cm below the ankle, as in mc_rhps1), in the foot
+  frame, as the zeroed real sensors read them: mc_mujoco's sign (-sensordata) minus the
+  foot's own weight. Forces in body weights, moments in body weight x 10 cm."""
+  step = int(env.common_step_counter)
+  if getattr(env, "_fwc_step", None) == step:
+    return env._fwc_v
+  robot = env.scene["robot"]
+  if not hasattr(env, "_fwc_ids"):
+    m = env.sim.mj_model
+    names = list(robot.body_names)
+    env._fwc_ids = [names.index(n) for n in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")]
+    mass, com = [], []
+    for n in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK"):
+      b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, f"robot/{n}")
+      if b < 0:
+        b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, n)
+      mass.append(float(m.body_mass[b]))
+      com.append(m.body_ipos[b] - (0.0, 0.0, -0.097))
+    env._fwc_mass = torch.tensor(mass, device=env.device)
+    env._fwc_com = torch.tensor(np.array(com), dtype=torch.float32, device=env.device)
+  q = robot.data.body_link_quat_w[:, env._fwc_ids]  # (N, 2, 4) wxyz
+  w, x, y, z = q.unbind(-1)
+  # gravity force on the foot in the foot frame: R^T (0, 0, -m g)
+  gz = -9.81 * env._fwc_mass
+  g = torch.stack((2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)), -1) * gz[:, None]
+  out = []
+  for k, side in enumerate(("Left", "Right")):
+    f = -env.scene[f"robot/{side}FootForceSensor_fsensor"].data - g[:, k]
+    t = -env.scene[f"robot/{side}FootForceSensor_tsensor"].data - torch.cross(env._fwc_com[k].expand_as(g[:, k]), g[:, k], dim=-1)
+    out += [f / BODY_WEIGHT_N, t / FOOT_MOMENT_NM]
+  env._fwc_v = torch.cat(out, -1)
+  env._fwc_step = step
+  return env._fwc_v
+
+
+def _foot_wrench_obs(env, tau: float = 0.02, gain: tuple[float, float] = (0.85, 1.2),
+                     bias: float = 0.028, delay_max: int = 2) -> "torch.Tensor":
+  """The actor's view of _foot_wrench_clean, as rl_controller obs_format 10 builds it from
+  the real sensors: per-episode gain per foot (calibration, hoist), per-channel offset
+  (+-15 N, +-1.5 N.m), a 0..delay_max step delay, low-passed (tau), clamped to +-3."""
+  step = int(env.common_step_counter)
+  if getattr(env, "_fwo_step", None) == step:
+    return env._fwo_v
+  x = _foot_wrench_clean(env)
+  n = env.num_envs
+  fresh = (env.episode_length_buf <= 1).unsqueeze(-1)
+  if not hasattr(env, "_fwo_gain"):
+    env._fwo_gain = torch.ones(n, 2, device=env.device)
+    env._fwo_bias = torch.zeros_like(x)
+    env._fwo_lag = torch.zeros(n, dtype=torch.long, device=env.device)
+    env._fwo_buf = x[:, None].repeat(1, delay_max + 1, 1)
+  env._fwo_gain = torch.where(fresh, gain[0] + (gain[1] - gain[0]) * torch.rand_like(env._fwo_gain), env._fwo_gain)
+  env._fwo_bias = torch.where(fresh, (torch.rand_like(x) * 2 - 1) * bias, env._fwo_bias)
+  env._fwo_lag = torch.where(fresh[:, 0], torch.randint(0, delay_max + 1, (n,), device=env.device), env._fwo_lag)
+  y = (x * env._fwo_gain.repeat_interleave(6, -1) + env._fwo_bias).clamp(-3.0, 3.0)
+  buf = torch.cat([y[:, None], env._fwo_buf[:, :-1]], 1)
+  buf = torch.where(fresh[:, :, None], y[:, None].expand_as(buf), buf)
+  env._fwo_buf = buf
+  y = buf[torch.arange(n, device=env.device), env._fwo_lag]
+  prev = getattr(env, "_fwo_v", None)
+  if prev is None:
+    prev = y.clone()
+  a = 1.0 - math.exp(-env.step_dt / tau)
+  env._fwo_v = torch.where(fresh, y, prev + a * (y - prev))
+  env._fwo_step = step
+  return env._fwo_v
 
 
 def _ou_obs(func):
@@ -1122,6 +1270,20 @@ def rhps1_flat_tracking_env_cfg(
       func=_slip_speed,
       weight=_slipv_w,
       params={"sensor_name": "feet_ground_contact", "body_names": ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")},
+    )
+  # RHPS1_REST_SHIFT_W (<0): sole loads above 0.5 Hz while the reference stands.
+  _rs_w = float(os.environ.get("RHPS1_REST_SHIFT_W", "0"))
+  if _rs_w:
+    cfg.rewards["rest_load_shift"] = RewardTermCfg(
+      func=_rest_load_shift, weight=_rs_w,
+      params={"command_name": "motion", "gate": 0.02, "hp_hz": 0.5},
+    )
+  # RHPS1_REST_VIB_W (<0): pelvis yaw rate in 3.5-10 Hz while the reference stands.
+  _rv_w = float(os.environ.get("RHPS1_REST_VIB_W", "0"))
+  if _rv_w:
+    cfg.rewards["rest_yaw_vibration"] = RewardTermCfg(
+      func=_rest_yaw_vibration, weight=_rv_w,
+      params={"command_name": "motion", "gate": 0.02, "hp_hz": 3.5, "lp_hz": 10.0},
     )
   # RHPS1_ANKLE_VIB_W (<0): motor-side ankle speed in 3-10 Hz, see _ankle_vibration.
   _vib_w = float(os.environ.get("RHPS1_ANKLE_VIB_W", "0"))
@@ -1720,6 +1882,18 @@ def rhps1_flat_tracking_env_cfg(
 
     for _k, _a in (("base_lin_vel", 0.05), ("base_ang_vel", 0.05), ("joint_vel", 0.1)):
       _v3[_k] = _nrep(_v3[_k], noise=_Unoise(n_min=-_a, n_max=_a))
+    # RHPS1_FOOT_FORCE_OBS=1: the soles' vertical loads appended last, 128 dims
+    # (rl_controller obs_format 8). Needs the foot-ground sensor (cadence_term).
+    if os.environ.get("RHPS1_FOOT_FORCE_OBS", "0") == "1":
+      _v3["foot_force"] = ObservationTermCfg(
+        func=_foot_force_obs, noise=_Unoise(n_min=-0.03, n_max=0.03),
+        params={"tau": float(os.environ.get("RHPS1_FOOT_FORCE_TAU", "0.02"))})
+    # RHPS1_FOOT_WRENCH_OBS=1: both soles' 6-axis wrenches, degraded like the real
+    # sensors, history 5, appended last: 186 dims (rl_controller obs_format 10).
+    if os.environ.get("RHPS1_FOOT_WRENCH_OBS", "0") == "1":
+      _v3["foot_wrench"] = ObservationTermCfg(
+        func=_foot_wrench_obs, noise=_Unoise(n_min=-0.015, n_max=0.015), history_length=5,
+        params={"tau": float(os.environ.get("RHPS1_FOOT_FORCE_TAU", "0.02"))})
     cfg.observations["student"] = ObservationGroupCfg(
       terms=_v3, concatenate_terms=True, enable_corruption=not play
     )
@@ -1729,6 +1903,11 @@ def rhps1_flat_tracking_env_cfg(
   # permet de repartir de la critique de l'experte telle quelle.
   if student_actor:
     cfg.observations["actor"] = cfg.observations["student"]
+
+  # The 6-axis sensors' exact reading for the critic (asymmetric: the actor gets the
+  # degraded one above). RHPS1_FOOT_WRENCH_CRITIC=0 keeps the critic unchanged.
+  if os.environ.get("RHPS1_FOOT_WRENCH_OBS", "0") == "1" and os.environ.get("RHPS1_FOOT_WRENCH_CRITIC", "1") == "1":
+    cfg.observations["critic"].terms["foot_wrench_true"] = ObservationTermCfg(func=_foot_wrench_clean)
 
   # RHPS1_WAIKO=1: the actor's base_lin_vel comes from an MCWaiko-like leg odometry
   # (_waiko_lin_vel) instead of the truth; the critic keeps the truth. Noise and bias
@@ -1793,6 +1972,28 @@ def rhps1_flat_tracking_env_cfg(
     cfg.events["foot_friction"].params["ranges"] = (_f[0], _f[1])
   if "com" in _rob:
     cfg.events["base_com"] = _rand_events["base_com"]
+    # The real robot stands with its CoM 1.3-2.2 cm behind the model's (sole sensors vs
+    # model CoM, three sessions, 2026-10-29/30) and weighs ~5 kg more (585-594 N on the
+    # sensors vs 540). The default chest range (x +-2.5 cm) moves the total CoM +-0.8 cm.
+    _cx = os.environ.get("RHPS1_COM_X_RANGE")
+    if _cx:
+      _lo, _hi = (float(v) for v in _cx.split(","))
+      cfg.events["base_com"].params["ranges"] = {**cfg.events["base_com"].params["ranges"], 0: (_lo, _hi)}
+    _cm = os.environ.get("RHPS1_CHEST_MASS_ADD")
+    if _cm:
+      from mjlab.envs.mdp import dr as _mdr
+      from mjlab.managers.event_manager import EventTermCfg as _MEv
+      from mjlab.managers.scene_entity_config import SceneEntityCfg as _MSc
+
+      _lo, _hi = (float(v) for v in _cm.split(","))
+      cfg.events["chest_mass"] = _MEv(
+        mode="startup", func=_mdr.body_mass,
+        params={"asset_cfg": _MSc("robot", body_names=("CHEST_P_LINK",)), "operation": "add", "ranges": (_lo, _hi)})
+  # RHPS1_COM_SHIFT_X (m): the identified chest CoM offset alone, no randomisation (probes).
+  _csx = os.environ.get("RHPS1_COM_SHIFT_X")
+  if _csx and "com" not in _rob:
+    cfg.events["base_com"] = _rand_events["base_com"]
+    cfg.events["base_com"].params["ranges"] = {0: (float(_csx), float(_csx))}
   if "bias" in _rob:
     # Estimator offsets held for a whole episode: MCWaiko's velocity drifts
     # instead of being white noise, and the IMU sits slightly off level.
