@@ -295,13 +295,15 @@ def get_spec() -> mujoco.MjSpec:
 # case needs dt <= 76 us) and implicitfast cannot help, since MuJoCo will not
 # implicitly integrate a torque supplied through ctrl. Enabling the real values
 # requires retuning kp and kd per joint, hence redoing action_scale. Each joint
-# records its real value next to its armature line.
+# records its real value next to its armature line: n_channels * (JM + JS) * N^2,
+# rotor plus encoder from the SANMOTION datasheets (RHPS1_gains/Doc); gear and
+# screw inertias not included.
 RHPS1_ACTUATOR_CROTCH_Y = FiniteDifferencePdActuatorCfg(
   target_names_expr=(r".*_CROTCH_Y",),
   stiffness=20000.0,
   damping=400.0,
   effort_limit=35.0,
-  # Real armature: 0.07087
+  # Real armature: 0.0731
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=8.0,
@@ -316,6 +318,7 @@ RHPS1_ACTUATOR_CROTCH_P = FiniteDifferencePdActuatorCfg(
   stiffness=20000.0,
   damping=400.0,
   effort_limit=140.0,
+  # Real armature: 0.4152 at the neutral pose (cylinders, pose dependent)
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=8.0,
@@ -330,6 +333,7 @@ RHPS1_ACTUATOR_CROTCH_R = FiniteDifferencePdActuatorCfg(
   stiffness=20000.0,
   damping=400.0,
   effort_limit=100.0,
+  # Real armature: 0.2034 at the neutral pose (cylinders, pose dependent)
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=8.0,
@@ -354,7 +358,7 @@ RHPS1_ACTUATOR_KNEE_L = FiniteDifferencePdActuatorCfg(
   stiffness=20000.0,
   damping=400.0,
   effort_limit=70.0,
-  # Real armature: 0.27651
+  # Real armature: 0.2950
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
@@ -369,7 +373,7 @@ RHPS1_ACTUATOR_KNEE_R = FiniteDifferencePdActuatorCfg(
   stiffness=20000.0,
   damping=400.0,
   effort_limit=70.0,
-  # Real armature: 0.27651
+  # Real armature: 0.2950
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
@@ -384,6 +388,7 @@ RHPS1_ACTUATOR_ANKLE_P = FiniteDifferencePdActuatorCfg(
   stiffness=10000.0,
   damping=300.0,
   effort_limit=65.0,
+  # Real armature: 0.0477 at the neutral pose (cylinders, pose dependent)
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
@@ -398,6 +403,7 @@ RHPS1_ACTUATOR_ANKLE_R = FiniteDifferencePdActuatorCfg(
   stiffness=10000.0,
   damping=300.0,
   effort_limit=45.0,
+  # Real armature: 0.0159 at the neutral pose (cylinders, pose dependent)
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=10.0,
@@ -412,7 +418,7 @@ RHPS1_ACTUATOR_TORSO = FiniteDifferencePdActuatorCfg(
   stiffness=44000.0,
   damping=440.0,
   effort_limit=120.0,
-  # Real armature: 0.03994
+  # Real armature: 0.2140
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
@@ -427,7 +433,7 @@ RHPS1_ACTUATOR_SHOULDER_Y = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=50.0,
-  # Real armature: 0.02556
+  # Real armature: 0.0267
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
@@ -442,7 +448,7 @@ RHPS1_ACTUATOR_SHOULDER_P = FiniteDifferencePdActuatorCfg(
   stiffness=15000.0,
   damping=240.0,
   effort_limit=50.0,
-  # Real armature: 0.0312
+  # Real armature: 0.1672
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
@@ -457,7 +463,7 @@ RHPS1_ACTUATOR_SHOULDER_R = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=50.0,
-  # Real armature: 0.02556
+  # Real armature: 0.0267
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
@@ -472,7 +478,7 @@ RHPS1_ACTUATOR_ELBOW_P = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=40.0,
-  # Real armature: 0.0264
+  # Real armature: 0.0281
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
@@ -487,7 +493,7 @@ RHPS1_ACTUATOR_ELBOW_Y = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=40.0,
-  # Real armature: 0.0264
+  # Real armature: 0.0281
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
@@ -502,7 +508,7 @@ RHPS1_ACTUATOR_WRIST = FiniteDifferencePdActuatorCfg(
   stiffness=14000.0,
   damping=240.0,
   effort_limit=30.0,
-  # Real armature: 0.01485
+  # Real armature: 0.0158
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=6.0,
@@ -531,7 +537,7 @@ RHPS1_ACTUATOR_HEAD = FiniteDifferencePdActuatorCfg(
   stiffness=2000.0,
   damping=50.0,
   effort_limit=13.0,
-  # Real armature: 0.00331
+  # Real armature: 0.0035
   armature=1.0,
   position_target_filter_alpha=0.0,
   velocity_target_limit=4.0,

@@ -1401,10 +1401,11 @@ def rhps1_flat_tracking_env_cfg(
       # Stiff structure unless RHPS1_SERIES_K_<GROUP> says otherwise.
       if _act.series_stiffness_range is None:
         _act.series_stiffness_range = (5e4, 5e4)
-      # RHPS1_DRIVE_ARMATURE=1: the motors' reflected inertia, 2 x JM x (dtheta_m/dq)^2
-      # at neutral (rotor only), instead of the 1.0 the PD was tuned with.
+      # RHPS1_DRIVE_ARMATURE=1: the motors' reflected inertia, 2 x (JM + JS) x (dtheta_m/dq)^2
+      # at neutral (rotor + encoder), instead of the 1.0 the PD was tuned with. Hip values were
+      # 0.078 / 0.038 before 2026-11-11 (brake inertia read as the R2AA04005F rotor's).
       if os.environ.get("RHPS1_DRIVE_ARMATURE") == "1":
-        _act.armature = {"ANKLE_P": 0.046, "ANKLE_R": 0.015, "CROTCH_P": 0.078, "CROTCH_R": 0.038}[_g]
+        _act.armature = {"ANKLE_P": 0.0477, "ANKLE_R": 0.0159, "CROTCH_P": 0.4152, "CROTCH_R": 0.2034}[_g]
 
   # RHPS1_SERIES_K="lo,hi" [N.m/rad]: hidden transmission compliance on the leg
   # joints, log-uniform per env and joint, the deflection added to the observed

@@ -65,7 +65,9 @@ class FiniteDifferencePdActuatorCfg(IdealPdActuatorCfg):
   [N.m.s/rad]; ``None`` keeps the kinematic motor. Needs ``series_stiffness_range``.
 
   Replaces the series model's kinematic motor by the drive cascade, motor
-  massless (reflected inertia ~0.05 kg.m^2 against loops of 30-800 N.m.s/rad):
+  massless: the velocity loop's own pole c/J_motor is 840 Hz on the ankle
+  cylinders (J 0.016-0.048 kg.m^2) and 107 Hz on the hip ones (J 0.20-0.42),
+  above what the 2.5 ms step resolves:
 
       e_v = drive_kp_pos*(q* - q_m) - qd_m
       c*(e_v + w_i*integral(e_v)) = k*(q_m - q) + c_s*(qd_m - qd)
