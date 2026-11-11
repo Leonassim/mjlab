@@ -2081,6 +2081,12 @@ def rhps1_flat_tracking_env_cfg(
       concatenate_terms=True, enable_corruption=False,
     )
 
+  # RHPS1_STAIRS=1: stairs on part of the terrain, the copy unchanged on flat tiles (stairs.py).
+  if os.environ.get("RHPS1_STAIRS", "0") == "1":
+    from . import stairs as _stairs
+
+    _stairs.apply(cfg, play)
+
   if play:
     cfg.episode_length_s = int(1e9)
     cfg.observations["actor"].enable_corruption = False

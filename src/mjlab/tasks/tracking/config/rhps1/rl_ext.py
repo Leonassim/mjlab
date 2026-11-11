@@ -38,6 +38,11 @@ _RULES = {
   # L <-> R, sagittal mirror: fy, mx, mz change sign.
   "foot_wrench": ([6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5], [1.0, -1.0, 1.0, -1.0, 1.0, -1.0] * 2),
 }
+# RHPS1_STAIRS: the height map flips left-right; the task flags do not change.
+from .stairs import scan_mirror_perm as _scan_perm  # noqa: E402
+
+_RULES["height_scan"] = (_scan_perm(), [1.0] * len(_scan_perm()))
+_RULES["stairs_state"] = ([0, 1, 2], [1.0, 1.0, 1.0])
 _JOINT_TERMS = ("joint_pos", "joint_vel", "actions")
 
 _specs: dict[int, dict] = {}

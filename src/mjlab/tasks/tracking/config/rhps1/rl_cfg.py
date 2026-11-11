@@ -21,6 +21,12 @@ def rhps1_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         "init_std": 1.0,
         "std_type": "scalar",
       },
+      # RHPS1_SCAN_ENC="128,32": stairs height scan through an encoder to a latent (scan_encoder.py).
+      class_name=(
+        "mjlab.tasks.tracking.config.rhps1.scan_encoder:ScanEncoderMLPModel"
+        if os.environ.get("RHPS1_SCAN_ENC")
+        else "MLPModel"
+      ),
     ),
     critic=RslRlModelCfg(
       hidden_dims=(512, 256, 128),
