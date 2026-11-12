@@ -76,6 +76,13 @@ CAD_C = float(_env("CAD_C", "0"))  # >0: two-sided cadence, min(gap/T_STEP, 1) -
 AIR_WIN = tuple(float(x) for x in _env("AIR_WIN", "0.05,0.6").split(","))  # s, swing time paid by stairs_air
 AIR_WIN0 = tuple(float(x) for x in _env("AIR_WIN0", _env("AIR_WIN", "0.05,0.6")).split(","))  # window at launch, ramped to AIR_WIN
 CLIMB_FRAC = float(_env("CLIMB_FRAC", "0.5"))  # share of stair spawns that climb
+# MODE_FIXED=1: each env keeps its mode, so climbs and descents each get their own curriculum level
+# (shared, rl40 settled at 5 cm where climbs arrived 44% and descents 12%: descents stopped learning).
+MODE_FIXED = _env("MODE_FIXED", "0") == "1"
+# REPLAY_P: share of stair episodes on a random level at or below the env's curriculum level, which
+# they leave unchanged (rl40 forgot 0.5 cm steps once the levels moved up: 2/2 at 11000, 0/2 after).
+REPLAY_P = float(_env("REPLAY_P", "0"))
+LVL_FILE = _env("LVL_FILE", "")  # per-env curriculum levels, saved during training and loaded on resume
 SCAN_SIZE = tuple(float(x) for x in _env("SCAN", "1.2,0.6").split(","))
 SCAN_RES = float(_env("SCAN_RES", "0.05"))
 SCAN_OFFSET = float(_env("SCAN_OFFSET", "0.84"))
@@ -83,6 +90,7 @@ SCAN_FWD = float(_env("SCAN_FWD", "0"))  # m, grid centre ahead of the pelvis (0
 SCAN_NOISE = float(_env("SCAN_NOISE", "0.02"))  # actor-scan uniform noise, m; 0 = exact teacher map
 BW = 57.64 * 9.81
 GAP = (0.15, 0.35)  # spawn distance from the first riser, m
+DESC_EDGE = tuple(float(x) for x in _env("DESC_EDGE", "0.25,0.5").split(","))  # top-start descents: distance to the edge, m
 ARRIVE = 0.2  # pelvis past the last edge, m
 ARRIVE_FEET = _env("ARRIVE_FEET", "0") == "1"  # arrival also needs both ankles past the last edge
 HOLD_S = float(_env("HOLD_S", "1.0"))  # arming hold on stair envs (copy: up to 3 s)
@@ -93,6 +101,7 @@ TEACHER = _env("TEACHER", "logs/rsl_rl/rhps1_tracking/2026-11-06_stairs_init/mod
 # Full RL (Leo, 2026-11-09): no copy term, the goal reached at the robot's own pace.
 RL = _env("RL", "0") == "1"
 STALL_S = float(_env("STALL_S", "3.0"))  # s without 1 cm of new progress before the stall cost
+STALL_DESC_X = float(_env("STALL_DESC_X", "1"))
 VMAX = float(_env("VMAX", "0.25"))  # m/s, smoothed; faster costs
 # rl1 ran the course at ~0.3 m/s and fell off the far edge: progress beyond VCAP on average is not paid.
 VCAP = float(_env("VCAP", "0"))  # m/s, 0 = off
@@ -188,6 +197,9 @@ class _State:
     self.goal = torch.zeros(n, device=dev)  # arrival when sign * (s - goal) > 0
     self.sign = torch.ones(n, device=dev)
     self.climb = torch.zeros(n, dtype=torch.bool, device=dev)
+    self.mode_climb = torch.rand(n, device=dev) < CLIMB_FRAC
+    self.lvl_cur = None
+    self.replayed = torch.zeros(n, dtype=torch.bool, device=dev)
     self.arrived = torch.zeros(n, dtype=torch.bool, device=dev)
     self.arrived_now = torch.zeros(n, dtype=torch.bool, device=dev)
     self.progress = torch.zeros(n, device=dev)  # fraction of the stairs crossed
@@ -233,10 +245,10 @@ class _State:
     ax = torch.randint(0, 4, (k,), device=dev)
     ang = ax.float() * (math.pi / 2)
     u = torch.stack([torch.cos(ang), torch.sin(ang)], 1)
-    climb = torch.rand(k, device=dev) < CLIMB_FRAC
+    climb = self.mode_climb[ids] if MODE_FIXED else torch.rand(k, device=dev) < CLIMB_FRAC
     span = PLATFORM / 2 + (self.nsteps[ids] - 1) * self.tread[ids]  # outer riser
     outside = span + GAP[0] + torch.rand(k, device=dev) * (GAP[1] - GAP[0])
-    inside = PLATFORM / 2 - 0.5 + torch.rand(k, device=dev) * 0.25
+    inside = PLATFORM / 2 - DESC_EDGE[1] + torch.rand(k, device=dev) * (DESC_EDGE[1] - DESC_EDGE[0])
     # climb: on the plane facing the center; descend: on the platform facing out.
     from_out = climb
     s0 = torch.where(from_out, outside, inside)
@@ -696,10 +708,12 @@ def stairs_stop(env, std: float) -> torch.Tensor:
 
 
 def stairs_stall(env) -> torch.Tensor:
-  """No centimetre gained for STALL_S while asked to go: pauses are free, standing is not."""
+  """No centimetre gained for STALL_S while asked to go: pauses are free, standing is not. STALL_DESC_X scales it on
+  descents: rl46 froze on the top platform, 8 s of stall (discounted ~-130) being cheaper than a fall (-200)."""
   st = env._stairs
   idle = (env.episode_length_buf - st.last_gain).float() * env.step_dt > STALL_S
-  return _stairs_only(idle.float(), env)
+  x = torch.where(st.climb, 1.0, STALL_DESC_X) if STALL_DESC_X != 1.0 else 1.0
+  return _stairs_only(idle.float() * x, env)
 
 
 def stairs_overspeed(env) -> torch.Tensor:
@@ -742,6 +756,103 @@ def _feet(env):
   found = s.found > 0
   fn = (f * n).sum(-1).abs() * found
   return s.pos, n, f, found, fn
+
+
+# Walking envelope of slot 18 (the best real-robot copy, 2026-10-29_06-55-45 model_12499) measured in this env
+# on flat tiles (training randomization, its KI 2 ankle plant): free inside, squared beyond, ramped over BWC_RAMP
+# env steps (Leo, 2026-11-11: guide the learning into a minimal admissible walking mode, freeze nothing).
+# Knee and hip positions stay free: stairs need more than flat walking. rl41 on 2-4 cm stairs: ankle pitch speed
+# p99 3.66 vs 1.41, hip pitch 2.1 vs 1.0, ankle pitch -82..-12 vs -36..-13 deg, swing sole 39 / 18 vs 12 / 5.5 deg.
+BWC_JV = {"KNEE_P": 1.76, "ANKLE_P": 1.41, "CROTCH_P": 1.00, "CROTCH_R": 0.71, "ANKLE_R": 1.10, "CROTCH_Y": 0.70}
+BWC_JV_MARGIN = float(_env("BWC_JV_MARGIN", "1.5"))
+BWC_ANKLE_P = (math.radians(-36.2 - float(_env("BWC_ANKLE_P_MARGIN", "12"))),
+               math.radians(-12.7 + float(_env("BWC_ANKLE_P_MARGIN", "12"))))
+BWC_ANKLE_R = math.radians(12.4 + 5.0)
+BWC_SWING_PITCH = math.radians(12.3 + 10.0)  # swing sole vs horizontal
+BWC_SWING_ROLL = math.radians(5.5 + 4.0)
+BWC_COP_X = (-0.009 - 0.02, 0.065 + 0.02)  # m, loaded foot's CoP in the ankle frame (BWC LIPM ZMP); slot 18 itself
+BWC_COP_Y = 0.048 + 0.015  # reaches the sole edges at heel strike / toe-off, so this one does not discriminate
+BWC_RAMP = float(_env("BWC_RAMP", "24000"))
+
+
+def _bwc_ramp(env, key: str) -> float:
+  c0 = getattr(env, key, None)
+  if c0 is None:
+    c0 = env.common_step_counter
+    setattr(env, key, c0)
+  return min(1.0, (env.common_step_counter - c0) / BWC_RAMP) if BWC_RAMP > 0 else 1.0
+
+
+def _leg_ids(env, groups):
+  key = "_bwc_ids_" + "_".join(groups)
+  if not hasattr(env, key):
+    names = env.scene["robot"].joint_names
+    ids = [i for i, n in enumerate(names) if any(n.endswith(g) for g in groups)]
+    grp = [next(g for g in groups if names[i].endswith(g)) for i in ids]
+    setattr(env, key, (torch.tensor(ids, device=env.device), grp))
+  return getattr(env, key)
+
+
+def stairs_bwc_jvel(env) -> torch.Tensor:
+  """Leg joint speed beyond BWC_JV_MARGIN x slot 18's p99, per joint, in units of that p99."""
+  ids, grp = _leg_ids(env, tuple(BWC_JV))
+  cap = getattr(env, "_bwc_jv_cap", None)
+  if cap is None:
+    cap = env._bwc_jv_cap = torch.tensor([BWC_JV[g] for g in grp], device=env.device)
+  qd = env.scene["robot"].data.joint_vel[:, ids].abs()
+  e = (torch.relu(qd - BWC_JV_MARGIN * cap) / cap) ** 2
+  return _stairs_only(e.sum(-1), env) * _bwc_ramp(env, "_bwc_c0_jv")
+
+
+def stairs_bwc_ankle(env) -> torch.Tensor:
+  """Ankle pitch outside slot 18's range + margin, roll beyond its p99 + 5 deg, per 10 / 5 deg."""
+  ip, _ = _leg_ids(env, ("ANKLE_P",))
+  ir, _ = _leg_ids(env, ("ANKLE_R",))
+  q = env.scene["robot"].data.joint_pos
+  p = q[:, ip]
+  ep = (torch.relu(BWC_ANKLE_P[0] - p) + torch.relu(p - BWC_ANKLE_P[1])) / math.radians(10.0)
+  er = torch.relu(q[:, ir].abs() - BWC_ANKLE_R) / math.radians(5.0)
+  return _stairs_only((ep**2).sum(-1) + (er**2).sum(-1), env) * _bwc_ramp(env, "_bwc_c0_ank")
+
+
+def _foot_tilt(env):
+  q = env.scene["robot"].data.body_link_quat_w[:, env._stairs.foot_ids]  # wxyz
+  w, x, y, z = q.unbind(-1)
+  return torch.asin((2 * (x * z - w * y)).clamp(-1, 1)), torch.asin((2 * (y * z + w * x)).clamp(-1, 1))
+
+
+def stairs_bwc_swing_foot(env) -> torch.Tensor:
+  """Swing sole tilted beyond slot 18's (pitch 22, roll 9.5 deg), per 10 / 5 deg: no toes-up riser dodging."""
+  st = env._stairs
+  pit, rol = _foot_tilt(env)
+  sw = (st.load < UP_LOAD).float() if hasattr(st, "load") and st.load is not None else 1.0
+  e = (torch.relu(pit.abs() - BWC_SWING_PITCH) / math.radians(10.0)) ** 2 + (
+    torch.relu(rol.abs() - BWC_SWING_ROLL) / math.radians(5.0)) ** 2
+  return _stairs_only((e * sw).sum(-1), env) * _bwc_ramp(env, "_bwc_c0_sw")
+
+
+def stairs_bwc_cop(env) -> torch.Tensor:
+  """Loaded foot's centre of pressure outside the BWC's ZMP zone (+2 cm fore-aft, +1.5 cm lateral), in the
+  ankle frame, per 2 / 1.5 cm."""
+  pos, _, _, _, fn = _feet(env)
+  b = fn.shape[0]
+  fn = fn.view(b, 2, -1)
+  pos = pos.view(b, 2, -1, 3)
+  load = fn.sum(-1)
+  cop = (pos * fn[..., None]).sum(-2) / load.clamp(min=1e-6)[..., None]
+  robot = env.scene["robot"]
+  idx = env._stairs.foot_ids
+  a = robot.data.body_link_pos_w[:, idx]
+  q = robot.data.body_link_quat_w[:, idx]
+  w, x, y, z = q.unbind(-1)
+  fx = torch.stack((1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)), -1)
+  fy = torch.stack((2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)), -1)
+  d = cop - a
+  rx, ry = (d * fx).sum(-1), (d * fy).sum(-1)
+  e = ((torch.relu(BWC_COP_X[0] - rx) + torch.relu(rx - BWC_COP_X[1])) / 0.02) ** 2 + (
+    torch.relu(ry.abs() - BWC_COP_Y) / 0.015) ** 2
+  on = (load > 0.15 * BW).float()
+  return _stairs_only((e * on).sum(-1), env) * _bwc_ramp(env, "_bwc_c0_cop")
 
 
 def stairs_riser_kick(env) -> torch.Tensor:
@@ -985,12 +1096,39 @@ def stairs_levels(env, env_ids: torch.Tensor) -> dict:
   if env.common_step_counter == 0:
     up = torch.zeros_like(up)
     down = torch.zeros_like(down)
-  terrain.update_env_origins(env_ids, up, down)
-  lv = terrain.terrain_levels.float()
+  if REPLAY_P > 0:
+    if st.lvl_cur is None:
+      st.lvl_cur = terrain.terrain_levels.clone()
+      if LVL_FILE and os.path.exists(LVL_FILE):
+        # A resumed run starts where the last one stopped: rl41-46 re-climbed from INIT_LEVEL for ~700 it each.
+        d = torch.load(LVL_FILE, map_location=env.device)
+        if d["lvl"].shape == st.lvl_cur.shape:
+          st.lvl_cur = d["lvl"].to(st.lvl_cur.dtype)
+          st.mode_climb = d["climb"].clone()
+    st.n_lvl_calls = getattr(st, "n_lvl_calls", 0) + 1
+    if LVL_FILE and st.n_lvl_calls % 2000 == 0:
+      torch.save({"lvl": st.lvl_cur, "climb": st.mode_climb}, LVL_FILE + ".tmp")
+      os.replace(LVL_FILE + ".tmp", LVL_FILE)
+    keep = st.replayed[env_ids]  # a replay episode moves nothing
+    cur = st.lvl_cur[env_ids] + (up & ~keep).long() - (down & ~keep).long()
+    top = terrain.max_terrain_level
+    cur = torch.where(cur >= top, torch.randint_like(cur, top), cur.clamp(min=0))
+    st.lvl_cur[env_ids] = cur
+    rep = (torch.rand(len(env_ids), device=env.device) < REPLAY_P) & s
+    lvl = torch.where(rep, (torch.rand(len(env_ids), device=env.device) * (cur + 1).float()).long(), cur)
+    terrain.terrain_levels[env_ids] = lvl.to(terrain.terrain_levels.dtype)
+    terrain.env_origins[env_ids] = terrain.terrain_origins[lvl, terrain.terrain_types[env_ids]]
+    st.replayed[env_ids] = rep
+  else:
+    terrain.update_env_origins(env_ids, up, down)
+  lv = (st.lvl_cur if st.lvl_cur is not None else terrain.terrain_levels).float()
   out = {}
   m = st.kind == 1
   if m.any():
     out["level"] = lv[m].mean()
+    if MODE_FIXED:
+      out["level_climb"] = lv[m & st.mode_climb].mean()
+      out["level_descend"] = lv[m & ~st.mode_climb].mean()
     out["step_height"] = (H_RANGE[0] + lv[m] / max(ROWS - 1, 1) * (H_RANGE[1] - H_RANGE[0])).mean()
   if s.any():
     out["arrival"] = st.arrived[env_ids][s].float().mean()
@@ -1178,6 +1316,10 @@ def apply(cfg, play: bool = False) -> None:
       "stairs_overspeed": RewardTermCfg(func=stairs_overspeed, weight=w("OVERSPEED", "-10")),
       "stairs_fall_cost": RewardTermCfg(func=stairs_fall_cost, weight=w("FALL", "-30")),
       "stairs_upright": RewardTermCfg(func=envs_mdp.flat_orientation_l2, weight=w("UPRIGHT", "-2")),
+      "stairs_bwc_jvel": RewardTermCfg(func=stairs_bwc_jvel, weight=w("BWC_JV", "0")),
+      "stairs_bwc_ankle": RewardTermCfg(func=stairs_bwc_ankle, weight=w("BWC_ANKLE", "0")),
+      "stairs_bwc_swing_foot": RewardTermCfg(func=stairs_bwc_swing_foot, weight=w("BWC_SWING", "0")),
+      "stairs_bwc_cop": RewardTermCfg(func=stairs_bwc_cop, weight=w("BWC_COP", "0")),
       "stairs_joint_vel": RewardTermCfg(func=envs_mdp.joint_vel_l2, weight=w("JVEL", "-0.005"),
                                         params={"asset_cfg": legs}),
     })
