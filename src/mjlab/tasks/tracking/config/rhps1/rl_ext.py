@@ -180,8 +180,47 @@ class _MirrorAndLipschitz:
     return loss + self.coeff * gp
 
 
+class _BoundLoss:
+  """Penalty on the action mean beyond +-bound, chained after the mirror / Lipschitz losses.
+
+  Past the env's action clip every sample gives the same clipped action, so PPO has no
+  gradient there: rl40-43 armed on flat ground with means near 130 (clip 12) and fell
+  without learning. Hold steps, whose actions are ignored, let the mean drift there.
+  """
+
+  use_mirror_loss = True
+  mirror_loss_coeff = 1.0
+
+  def __init__(self, inner, coeff: float, bound: float):
+    self.inner = inner
+    self.coeff = coeff
+    self.bound = bound
+    self.use_data_augmentation = bool(inner and inner.use_data_augmentation)
+    self.sum = self.frac = 0.0
+    self.n = 0
+
+  def augment_batch(self, batch, original_batch_size):
+    if self.inner:
+      self.inner.augment_batch(batch, original_batch_size)
+
+  def compute_loss(self, actor, batch, original_batch_size):
+    # Read the update's own forward pass before the inner losses run the actor again.
+    mu = actor.output_distribution_params[0][:original_batch_size]
+    ex = torch.relu(mu.abs() - self.bound)
+    b = ex.pow(2).sum(-1).mean()
+    self.sum += float(b.detach())
+    self.frac += float((ex > 0).any(-1).float().mean())
+    self.n += 1
+    loss = self.coeff * b
+    if self.inner:
+      m = self.inner.compute_loss(actor, batch, original_batch_size)
+      if self.inner.use_mirror_loss:
+        loss = loss + self.inner.mirror_loss_coeff * m
+    return loss
+
+
 class RHPS1PPO(_PPO):
-  """PPO with the optional Lipschitz gradient penalty above."""
+  """PPO with the optional Lipschitz gradient penalty and action-mean bound above."""
 
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
@@ -191,10 +230,29 @@ class RHPS1PPO(_PPO):
       ranges = [tuple(int(v) for v in r.split(":")) for r in spec.split(",")]
       samples = int(_os.environ.get("RHPS1_LIPSCHITZ_SAMPLES", "4096"))
       self.symmetry = _MirrorAndLipschitz(self.symmetry, coeff, ranges, samples)
+    bw = float(_os.environ.get("RHPS1_BOUND_W", "0"))
+    if bw > 0:
+      self.symmetry = _BoundLoss(self.symmetry, bw, float(_os.environ.get("RHPS1_BOUND", "8")))
+    kc = float(_os.environ.get("RHPS1_KL_CLIP", "0"))
+    if kc > 0:
+      # Adaptive LR on the executed actions: moves of a mean past the env's clip change nothing, yet they kept
+      # the KL above target and the LR at its 1e-5 floor from rl40 on.
+      kl = self.actor.get_kl_divergence
+
+      def _clipped_kl(old, new):
+        return kl((old[0].clamp(-kc, kc), *old[1:]), (new[0].clamp(-kc, kc), *new[1:]))
+
+      self.actor.get_kl_divergence = _clipped_kl
 
   def update(self):
     loss = super().update()
-    if isinstance(self.symmetry, _MirrorAndLipschitz) and self.symmetry.gp_n:
-      loss["lipschitz_gp"] = self.symmetry.gp_sum / self.symmetry.gp_n
-      self.symmetry.gp_sum, self.symmetry.gp_n = 0.0, 0
+    if isinstance(self.symmetry, _BoundLoss) and self.symmetry.n:
+      loss["action_bound"] = self.symmetry.sum / self.symmetry.n
+      loss["action_bound_frac"] = self.symmetry.frac / self.symmetry.n
+      self.symmetry.sum = self.symmetry.frac = 0.0
+      self.symmetry.n = 0
+    sym = self.symmetry.inner if isinstance(self.symmetry, _BoundLoss) else self.symmetry
+    if isinstance(sym, _MirrorAndLipschitz) and sym.gp_n:
+      loss["lipschitz_gp"] = sym.gp_sum / sym.gp_n
+      sym.gp_sum, sym.gp_n = 0.0, 0
     return loss
