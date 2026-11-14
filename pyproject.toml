@@ -1,5 +1,5 @@
 [build-system]
-requires = ["uv_build>=0.12.1,<0.13.0"]
+requires = ["uv_build>=0.13.7,<0.14.0"]
 build-backend = "uv_build"
 
 [project]
@@ -17,10 +17,10 @@ classifiers = [
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: 3 :: Only",
   "Typing :: Typed",
   "Environment :: GPU :: NVIDIA CUDA",
@@ -28,33 +28,28 @@ classifiers = [
   "Natural Language :: English",
 ]
 description = "Isaac Lab API, powered by MuJoCo-Warp, for RL and robotics research."
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.15"
 dependencies = [
   "prettytable",
   "tqdm",
   "tyro>=1.0.1",
-  # Fige a 2.9.x : la fusion amont du 2026-09-15 a fait remonter le verrou a
-  # torch 2.11, et `uv run` synchronise l'environnement tout seul -- la mise a
-  # jour se serait produite en pleine session, avec un entrainement en cours et
-  # un pipeline d'export ONNX valide sur 2.9. A relever deliberement, pas par
-  # effet de bord.
-  "torch>=2.9.0,<2.10",
+  "torch>=2.14.0",
   "torchrunx>=0.3.4",
-  "warp-lang>=1.14.0",
-  "mujoco-warp~=3.11.0",
-  "mujoco~=3.11.0",
+  "warp-lang>=1.15.0",
+  "mujoco-warp~=4.0.1",
+  "mujoco-core[rendering]~=4.0.1",
   "trimesh>=4.8.3",
   "scipy>=1.15",
-  "viser>=1.0.27",
-  "mjviser>=0.0.14",
+  "viser>=1.1.1",
+  "mjviser>=0.0.17",
   "mediapy>=1.2.7",
   "numpy",
-  "imageio-ffmpeg",
+  "imageio-ffmpeg<0.8",
   "tensordict",
-  "rsl-rl-lib==5.5.0",
+  "rsl-rl-lib==5.5.2",
   "tensorboard>=2.20.0",
   "onnxscript>=0.5.4",
-  "wandb>=0.22.3,<0.29",
+  "wandb>=0.22.3",
 ]
 
 [project.urls]
@@ -73,11 +68,10 @@ export-scene = "mjlab.scripts.export_scene:main"
 dev = [
   "ipdb>=0.13.13",
   "pre-commit>=4.3.0",
-  "pyright>=1.1.408",
   "onnxruntime>=1.19.0; python_version >= '3.11'",
   "pytest>=v9.0.3",
-  "ruff>=0.16.1",
-  "ty>=v0.0.14",
+  "ruff>=0.17.4",
+  "ty>=0.0.101",
 ]
 docs = [
   "myst-parser>=4.0.1",
@@ -96,15 +90,16 @@ docs = [
 ]
 
 [project.optional-dependencies]
-cu128 = ["torch>=2.7.0"]
-cpu = ["torch>=2.7.0"]
+cu130 = ["torch>=2.14.0"]
+cu126 = ["torch>=2.14.0"]
+cpu = ["torch>=2.14.0"]
 
 [tool.uv]
 conflicts = [
-  [{extra = "cu128"}, {extra = "cpu"}],
+  [{extra = "cu130"}, {extra = "cu126"}, {extra = "cpu"}],
 ]
 constraint-dependencies = [
-  "GitPython>=3.1.57",
+  "GitPython>=3.1.59",
   "lxml>=6.1.0",
 ]
 required-environments = [
@@ -121,8 +116,13 @@ url = "https://pypi.nvidia.com/"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
 [[tool.uv.index]]
@@ -133,7 +133,8 @@ explicit = true
 [tool.uv.sources]
 warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
 torch = [
-  { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform != 'darwin'" },
+  { index = "pytorch-cu130", extra = "cu130", marker = "sys_platform != 'darwin'" },
+  { index = "pytorch-cu126", extra = "cu126", marker = "sys_platform != 'darwin'" },
   { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform != 'darwin'" },
 ]
 
@@ -148,13 +149,6 @@ exclude = [
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "B"]
 ignore = ["B011"]
-
-[tool.pyright]
-pythonVersion = "3.10"
-venvPath = "."
-venv = ".venv"
-ignore = ["./typings", "./src/mjlab/utils/lab_api", "./docs"]
-stubPath = "typings"
 
 [tool.ty.environment]
 extra-paths = ["typings"]

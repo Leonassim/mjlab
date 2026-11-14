@@ -315,6 +315,8 @@ class HfPyramidSlopedTerrainCfg(SubTerrainCfg):
 
       noise = np.rint(hf_raw).astype(np.int16)
 
+    # MuJoCo hfields lay rows along y and columns along x.
+    noise = np.ascontiguousarray(noise.T)
     elevation_min = np.min(noise)
     elevation_max = np.max(noise)
     elevation_range = (
@@ -494,6 +496,8 @@ class HfRandomUniformTerrainCfg(SubTerrainCfg):
       z_upsampled = func(x_upsampled, y_upsampled)
       noise = np.rint(z_upsampled).astype(np.int16)
 
+    # MuJoCo hfields lay rows along y and columns along x.
+    noise = np.ascontiguousarray(noise.T)
     elevation_min = np.min(noise)
     elevation_max = np.max(noise)
     elevation_range = (
@@ -622,6 +626,8 @@ class HfWaveTerrainCfg(SubTerrainCfg):
       hf_raw = amplitude_pixels * (np.cos(yy * wave_number) + np.sin(xx * wave_number))
       noise = np.rint(hf_raw).astype(np.int16)
 
+    # MuJoCo hfields lay rows along y and columns along x.
+    noise = np.ascontiguousarray(noise.T)
     elevation_min = np.min(noise)
     elevation_max = np.max(noise)
     elevation_range = (
@@ -786,6 +792,8 @@ class HfDiscreteObstaclesTerrainCfg(SubTerrainCfg):
       ] = noise
       noise = outer_noise
 
+    # MuJoCo hfields lay rows along y and columns along x.
+    noise = np.ascontiguousarray(noise.T)
     elevation_min = np.min(noise)
     elevation_max = np.max(noise)
     elevation_range = (
@@ -817,9 +825,9 @@ class HfDiscreteObstaclesTerrainCfg(SubTerrainCfg):
     # For "choice" mode, obstacles can be negative (pits), so offset the
     # geom down so that the zero-level of the noise aligns with z=0.
     if self.obstacle_height_mode == "choice":
-      hfield_z_offset = elevation_min * self.vertical_scale
+      hfield_z_offset = float(elevation_min) * self.vertical_scale
     else:
-      hfield_z_offset = 0
+      hfield_z_offset = 0.0
 
     # Physical surface height per cell (pits negative, bumps positive about z=0).
     physical_heights = hfield_z_offset + normalized_elevation * max_physical_height
@@ -926,6 +934,9 @@ class HfPerlinNoiseTerrainCfg(SubTerrainCfg):
       noise_min, noise_max = noise_raw.min(), noise_raw.max()
       noise_range = noise_max - noise_min if noise_max > noise_min else 1.0
       normalized_elevation = ((noise_raw - noise_min) / noise_range).astype(np.float32)
+
+    # MuJoCo hfields lay rows along y and columns along x.
+    normalized_elevation = np.ascontiguousarray(normalized_elevation.T)
 
     # MuJoCo requires positive hfield elevation and base sizes. At difficulty 0
     # (target_height == 0) the surface is flat; clamp to a small positive height

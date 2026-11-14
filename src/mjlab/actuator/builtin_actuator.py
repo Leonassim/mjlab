@@ -175,6 +175,9 @@ class BuiltinPdActuator(Actuator[BuiltinPdActuatorCfg]):
         transmission_type=self.cfg.transmission_type,
       )
       self._mjs_actuators.append(vel_act)
+    # Entity(sort_actuators=True) calls this once per target, which would
+    # interleave pos/vel. A stable sort restores the [pos..., vel...] layout.
+    self._mjs_actuators.sort(key=lambda a: a.name.endswith("_pd_vel"))
     # Effort limit: sum-clamp on the joint/tendon, not on each element.
     if self.cfg.effort_limit is not None:
       lim = self.cfg.effort_limit
@@ -248,12 +251,13 @@ def _or_zeros(t: tuple[float, ...] | None, n: int) -> list[float]:
 class DcMotorInputMode(IntEnum):
   """What the ``ctrl`` signal of a ``<dcmotor>`` represents.
 
-  Values match MuJoCo's enum, consumed by mjs_setToDCMotor and read as gainprm[8].
+  Values match mjtCtrlInput, consumed by mjs_setToDCMotor and stored in
+  actuator_ctrlspec.
   """
 
-  VOLTAGE = 0
-  POSITION = 1
-  VELOCITY = 2
+  VOLTAGE = mujoco.mjtCtrlInput.mjINPUT_VOLTAGE.value
+  POSITION = mujoco.mjtCtrlInput.mjINPUT_POS.value
+  VELOCITY = mujoco.mjtCtrlInput.mjINPUT_VEL.value
 
 
 @dataclass(frozen=True)
@@ -304,8 +308,10 @@ class BuiltinDcMotorActuatorCfg(ActuatorCfg):
   Three input modes select what ctrl carries:
 
   * VOLTAGE: ctrl is the drive voltage. cmd.effort_target carries volts, not torque.
-  * POSITION / VELOCITY: an internal PID closes on the setpoint and the motor produces
-    torque from its (Vmax-clamped) voltage output.
+  * POSITION / VELOCITY: an internal PID closes on the setpoint with torque-space
+    gains, stiffness on the position error and damping on the velocity error. The
+    driver compensates back-EMF, so the commanded torque is delivered until the
+    drive voltage reaches Vmax.
 
   Motor characterization: pass either DcMotorDatasheetParams or DcMotorPhysicalParams
   as motor_params. mjs_setToDCMotor derives K and R (including the viscous-damping
@@ -326,28 +332,28 @@ class BuiltinDcMotorActuatorCfg(ActuatorCfg):
   """ctrl input semantics. See class docstring."""
 
   stiffness: float = 0.0
-  """PID proportional gain kp. Required in POSITION / VELOCITY mode; must be
-  0 in VOLTAGE mode."""
+  """PID gain kp on the position error, in torque space. Required in POSITION
+  mode; must be 0 otherwise."""
 
   damping: float = 0.0
-  """PID derivative gain kd. Used in POSITION / VELOCITY mode; must be 0 in
-  VOLTAGE mode."""
+  """PID gain kd on the velocity error, in torque space. Required in VELOCITY
+  mode, optional in POSITION mode; must be 0 in VOLTAGE mode."""
 
   voltage_limit: float = 0.0
   """Max drive voltage Vmax. Required in POSITION / VELOCITY mode (clamps the
-  PID output). In VOLTAGE mode it is an optional clamp on ctrl; 0 disables."""
+  PID's drive voltage); must be 0 in VOLTAGE mode."""
 
   integral_gain: float = 0.0
-  """PID integral gain ki. In position mode the integrator tracks
-  ki * integral(target - q); in velocity mode, ki * (integral(target) - q).
-  Must be 0 in VOLTAGE mode."""
+  """PID integral gain ki on the accumulated position error. POSITION mode
+  only."""
 
   integral_limit: float = 0.0
   """Anti-windup clamp Imax on the integrator state. 0 disables (the
   integrator can run away)."""
 
   slew_rate: float = 0.0
-  """Max rate of change of ctrl per second. 0 disables."""
+  """Max rate of change of the setpoint per second. Must be 0 in VOLTAGE mode.
+  0 disables."""
 
   effort_limit: float | None = None
   """Continuous torque cap [N*m]. Sets actuator_forcerange. None leaves the
@@ -396,15 +402,20 @@ class BuiltinDcMotorActuatorCfg(ActuatorCfg):
       )
 
     if self.mode in (DcMotorInputMode.POSITION, DcMotorInputMode.VELOCITY):
-      if self.stiffness <= 0.0:
-        raise ValueError(f"{self.mode.name} mode requires stiffness > 0.")
+      if self.mode == DcMotorInputMode.POSITION and self.stiffness <= 0.0:
+        raise ValueError("POSITION mode requires stiffness > 0.")
+      if self.mode == DcMotorInputMode.VELOCITY and (
+        self.stiffness != 0.0 or self.damping <= 0.0
+      ):
+        raise ValueError("VELOCITY mode requires damping > 0 and stiffness = 0.")
       if self.voltage_limit <= 0.0:
         raise ValueError(f"{self.mode.name} mode requires voltage_limit > 0.")
-    else:
-      if self.stiffness != 0.0 or self.damping != 0.0 or self.integral_gain != 0.0:
-        raise ValueError(
-          "stiffness, damping, and integral_gain are unused in VOLTAGE mode."
-        )
+    elif any((self.stiffness, self.damping, self.voltage_limit, self.slew_rate)):
+      raise ValueError(
+        "stiffness, damping, voltage_limit, and slew_rate are unused in VOLTAGE mode."
+      )
+    if self.integral_gain != 0.0 and self.mode != DcMotorInputMode.POSITION:
+      raise ValueError("integral_gain requires POSITION mode.")
 
     for name in (
       "integral_gain",
@@ -460,7 +471,7 @@ class BuiltinDcMotorActuator(Actuator[BuiltinDcMotorActuatorCfg]):
         inductance=[cfg.inductance, cfg.electrical_time_constant],
         thermal=_or_zeros(cfg.thermal, 6),
         lugre=_or_zeros(cfg.lugre, 5),
-        input_mode=cfg.mode,
+        ctrlspec=cfg.mode,
       )
 
       apply_target_overrides(

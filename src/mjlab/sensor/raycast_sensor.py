@@ -59,8 +59,11 @@ class GridPatternCfg:
   size: tuple[float, float] = (1.0, 1.0)
   """Grid size (length, width) in meters."""
 
-  resolution: float = 0.1
-  """Spacing between rays in meters."""
+  resolution: float | tuple[float, float] = 0.1
+  """Spacing between rays in meters, either shared or per axis as ``(x, y)``."""
+
+  offset: tuple[float, float] = (0.0, 0.0)
+  """Grid center offset in frame-local XY (meters), rotated by ``ray_alignment``."""
 
   direction: tuple[float, float, float] = (0.0, 0.0, -1.0)
   """Ray direction in frame-local coordinates."""
@@ -79,20 +82,24 @@ class GridPatternCfg:
     """
     del mj_model  # Unused for grid pattern
     size_x, size_y = self.size
+    center_x, center_y = self.offset
     res = self.resolution
+    if isinstance(res, (int, float)):
+      res = (res, res)
+    res_x, res_y = res
 
     x = torch.arange(
-      -size_x / 2, size_x / 2 + res * 0.5, res, device=device, dtype=torch.float32
+      -size_x / 2, size_x / 2 + res_x * 0.5, res_x, device=device, dtype=torch.float32
     )
     y = torch.arange(
-      -size_y / 2, size_y / 2 + res * 0.5, res, device=device, dtype=torch.float32
+      -size_y / 2, size_y / 2 + res_y * 0.5, res_y, device=device, dtype=torch.float32
     )
     grid_x, grid_y = torch.meshgrid(x, y, indexing="xy")
 
     num_rays = grid_x.numel()
     local_offsets = torch.zeros((num_rays, 3), device=device, dtype=torch.float32)
-    local_offsets[:, 0] = grid_x.flatten()
-    local_offsets[:, 1] = grid_y.flatten()
+    local_offsets[:, 0] = grid_x.flatten() + center_x
+    local_offsets[:, 1] = grid_y.flatten() + center_y
 
     # All rays share the same direction for grid pattern.
     direction = torch.tensor(self.direction, device=device, dtype=torch.float32)
@@ -198,12 +205,14 @@ class PinholeCameraPatternCfg:
       aspect = width / height
       h_fov_rad = 2 * math.atan(math.tan(v_fov_rad / 2) * aspect)
 
-    # Create normalized pixel coordinates [-1, 1].
-    u = torch.linspace(-1, 1, width, device=device, dtype=torch.float32)
-    v = torch.linspace(-1, 1, height, device=device, dtype=torch.float32)
+    # Normalized pixel centers, row-major with row 0 at the top (MuJoCo's layout).
+    cols = torch.arange(width, device=device, dtype=torch.float32)
+    rows = torch.arange(height, device=device, dtype=torch.float32)
+    u = (cols + 0.5) / width * 2 - 1
+    v = 1 - (rows + 0.5) / height * 2
     grid_u, grid_v = torch.meshgrid(u, v, indexing="xy")
 
-    # Convert to ray directions (MuJoCo camera: -Z forward, +X right, +Y down).
+    # Convert to ray directions (MuJoCo camera: -Z forward, +X right, +Y up).
     ray_x = grid_u.flatten() * math.tan(h_fov_rad / 2)
     ray_y = grid_v.flatten() * math.tan(v_fov_rad / 2)
     ray_z = -torch.ones_like(ray_x)  # Negative Z for MuJoCo camera forward
@@ -758,16 +767,16 @@ class RayCastSensor(Sensor[RayCastData]):
     assert self._ray_geomid is not None
     assert self._ray_normal is not None
     rays(
-      m=self._model.struct,  # type: ignore[attr-defined]
-      d=self._data.struct,  # type: ignore[attr-defined]
-      pnt=self._ray_pnt,  # type: ignore[invalid-argument-type]
-      vec=self._ray_vec,  # type: ignore[invalid-argument-type]
-      geomgroup=self._geomgroup,  # pyright: ignore[reportArgumentType]
+      m=self._model.struct,  # ty: ignore[missing-attribute]
+      d=self._data.struct,  # ty: ignore[missing-attribute]
+      pnt=self._ray_pnt,  # ty: ignore[invalid-argument-type]
+      vec=self._ray_vec,  # ty: ignore[invalid-argument-type]
+      geomgroup=self._geomgroup,
       flg_static=True,
       bodyexclude=self._ray_bodyexclude,
-      dist=self._ray_dist,  # type: ignore[invalid-argument-type]
-      geomid=self._ray_geomid,  # type: ignore[invalid-argument-type]
-      normal=self._ray_normal,  # type: ignore[invalid-argument-type]
+      dist=self._ray_dist,  # ty: ignore[invalid-argument-type]
+      geomid=self._ray_geomid,  # ty: ignore[invalid-argument-type]
+      normal=self._ray_normal,  # ty: ignore[invalid-argument-type]
       rc=rc,
     )
 
@@ -809,14 +818,6 @@ class RayCastSensor(Sensor[RayCastData]):
     assert self._frame_pos_w is not None and self._frame_quat_w is not None
     self._pos_w = self._frame_pos_w[:, 0]
     self._quat_w = self._frame_quat_w[:, 0]
-
-    # ``sense()`` runs after the decimation loop (which invalidates the cache)
-    # and after rewards may have already read ``.data``, repopulating the cache
-    # with pre-sense hit positions. Rebinding the tensors above leaves that
-    # cache pointing at the previous step's data, so invalidate here to force a
-    # recompute on the next ``.data`` access. Otherwise observations and debug
-    # visualization would lag one step behind the freshly sensed hits (#998).
-    self._invalidate_cache()
 
   def _compute_alignment_rotation(self, frame_mat: torch.Tensor) -> torch.Tensor:
     """Compute rotation matrix based on ray_alignment setting."""

@@ -16,7 +16,12 @@ from mjlab.sensor import BuiltinSensor, RayCastSensor, Sensor, SensorCfg
 from mjlab.sensor.camera_sensor import CameraSensor
 from mjlab.sensor.sensor_context import SensorContext
 from mjlab.terrains.terrain_entity import TerrainEntity, TerrainEntityCfg
-from mjlab.utils.spec import export_spec, non_default_option_fields
+from mjlab.utils.spec import (
+  attach_unprefixed,
+  compile_spec,
+  export_spec,
+  non_default_option_fields,
+)
 
 _SCENE_XML = Path(__file__).parent / "scene.xml"
 
@@ -69,7 +74,7 @@ class Scene:
       self._cfg.spec_fn(self._spec)
 
   def compile(self) -> mujoco.MjModel:
-    return self._spec.compile()
+    return compile_spec(self._spec)
 
   def write(self, output_dir: Path, *, zip: bool = False) -> None:
     """Write the scene XML and mesh assets to a directory.
@@ -83,7 +88,14 @@ class Scene:
       output_dir: Destination directory (created if it doesn't exist).
       zip: If True, produce ``<output_dir>.zip`` instead of a directory.
     """
-    export_spec(self._spec, output_dir, zip=zip)
+    spec = self._spec.copy()
+    # Entity meshes compile straight from disk, so spec.assets holds no mesh bytes.
+    for ent in self._entities.values():
+      for mesh in ent.spec.meshes:
+        path = Path(ent.spec.modelfiledir) / mesh.compiler.meshdir / mesh.file
+        if mesh.file and mesh.file not in spec.assets and path.is_file():
+          spec.assets[mesh.file] = path.read_bytes()
+    export_spec(spec, output_dir, zip=zip)
 
   def to_zip(self, path: Path) -> None:
     """Deprecated. Use ``write(output_dir, zip=True)`` instead."""
@@ -199,9 +211,15 @@ class Scene:
     for sensor in self._sensors.values():
       sensor.update(dt)
 
-  def write_data_to_sim(self) -> None:
+  def invalidate_sensor_caches(self) -> None:
+    """Drop every sensor's cached data, e.g. after the sim data changed."""
+    for sensor in self._sensors.values():
+      sensor._invalidate_cache()
+
+  def write_data_to_sim(self, env_ids: torch.Tensor | None = None) -> None:
+    """Write controls for a physics step, or initialize env_ids after a reset."""
     for ent in self._entities.values():
-      ent.write_data_to_sim()
+      ent.write_data_to_sim(env_ids)
 
   # Private methods.
 
@@ -261,7 +279,7 @@ class Scene:
         stacklevel=2,
       )
     frame = self._spec.worldbody.add_frame()
-    self._spec.attach(terrain.spec, prefix="", frame=frame)
+    attach_unprefixed(self._spec, terrain.spec, frame)
 
   def _add_sensors(self) -> None:
     for sensor_cfg in self._cfg.sensors:

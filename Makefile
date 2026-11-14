@@ -1,6 +1,6 @@
 .PHONY: sync
 sync:
-	uv sync --all-packages --extra cu128 --group dev
+	uv sync --all-packages --extra cu130 --group dev
 
 .PHONY: sync-cpu
 sync-cpu:
@@ -14,7 +14,6 @@ format:
 .PHONY: type
 type:
 	uv run ty check
-	uv run pyright
 
 .PHONY: stubs
 stubs:
