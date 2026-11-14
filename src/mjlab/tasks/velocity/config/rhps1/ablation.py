@@ -232,7 +232,12 @@ def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
   # grace_period 0 makes this exactly July's
   # cost = (one_foot + 4*no_feet) * standing. At 1.5 s the penalty simply does
   # not apply for the first 1.5 s of every standing episode.
-  r["standing_single_support"].weight = -4.0
+  # Poids pilotable : etait -4.0 en dur, donc RHPS1_W_STANDSS et toute autre
+  # variable etaient mortes -- _revert_to_policy0 tourne APRES la construction
+  # de la config et ecrasait la valeur en silence. Trois heures de GPU perdues
+  # le 2026-09-10 a croire tester -24 alors que le run tournait a -4.
+  # RHPS1_W_standing_single_support, ou `sss@<poids>`.
+  _w(cfg, "standing_single_support", -4.0)
   r["standing_single_support"].params["grace_period"] = 0.0
   # air_time weight and threshold_max are driven by curriculum below; these are
   # the step-0 values it starts from.
@@ -397,13 +402,25 @@ def _revert_to_policy0(cfg: ManagerBasedRlEnvCfg) -> None:
   # Knee effort limit 100 N.m, and the action scale that encodes it. The L/R
   # split is representation only -- policy 0 had one `.*_KNEE_P` group, same
   # velocity limits.
+  # 108.0 = la valeur URDF (RHPS1main.urdf), pas les 100 de policy 0 ni les 70 du
+  # fichier de constantes. Leo, 2026-08-26 : "les limites urdf sont les bonnes".
+  # Le genou etait le seul ecart notable -- 70 contre 108, soit 35 % sous la
+  # valeur de reference -- sur l articulation qui porte le lever de pied.
+  # Pilotable par RHPS1_KNEE_EFFORT pour pouvoir revenir en arriere.
+  _knee_eff = float(os.environ.get("RHPS1_KNEE_EFFORT", "108.0"))
   for act in ent.articulation.actuators:
     if any("KNEE_P" in e for e in act.target_names_expr):
-      act.effort_limit = 100.0
+      act.effort_limit = _knee_eff
   scale = cfg.actions["joint_pos"].scale
   for j in ("L_KNEE_P", "R_KNEE_P"):
     scale.pop(j, None)
-  scale[r".*_KNEE_P"] = 0.0075
+  # 0.0075 = 1.5 * 100/20000, soit le multiplicateur de jambe applique a la
+  # limite de couple du genou. Ecrit en dur, il court-circuitait
+  # RHPS1_LEG_SCALE : les cinq autres articulations de jambe suivaient le
+  # multiplicateur et le genou restait seul en arriere, ce qui deforme la
+  # coordination au lieu de changer l amplitude.
+  scale[r".*_KNEE_P"] = (float(os.environ.get("RHPS1_LEG_SCALE", "1.5"))
+                         * _knee_eff / 20000.0)
 
 
 ##
@@ -524,6 +541,7 @@ RUNG_TERM = {
   "imp": "impact_vel", "tq": "joint_torques_l2",
   "swt": "foot_swing_height", "mfhr": "min_foot_height",
   "airtc": "air_time", "airT": "air_time",
+  "sjv": "standing_joint_vel",
 }
 
 _INLINE_WEIGHTS: dict[str, float] = {}
@@ -2201,6 +2219,110 @@ def _periodlive(cfg, full) -> None:
     st["target_period"] = per
 
 
+def _actunits(cfg, full) -> None:
+  """Recale les penalites quadratiques en action sur l'echelle d'action.
+
+  action_rate_l2, stance_action_acc_l2 et upper_body_action_acc_l2 sont des L2
+  sur l'action ou ses differences. Multiplier RHPS1_LEG_SCALE par k multiplie
+  donc leur valeur BRUTE par k^2, a poids inchange : ce n'est pas un arbitrage
+  qu'on a choisi, c'est un changement d'unite qu'on a subi.
+
+  Mesure sur 2026-09-11_01-50-50 (echelle 7, soit k = 7/1.5 = 4.67, k^2 = 21.8),
+  au plateau de l'iteration 5029 :
+
+    upper_body_action_acc_l2  -4.445      gait_phase             +3.195
+    action_rate_l2            -1.492      upright                +2.866
+    stance_action_acc_l2      -1.294      track_linear_velocity  +2.446
+                              -------                            ------
+    mur de lissage total      ~-19.5      incitations totales    ~+11.3
+
+  et sole_height_p50 plat a 0.008 sur 4000 iterations. Meme defaut que la
+  regression flat_touchdown/step_dt : une unite qui change rend un terme
+  beaucoup plus cher sans que personne ne l'ait decide.
+
+  Les poids sont donc divises par k^2. Les termes en COUPLE (joint_torques_l2,
+  ankle_*_torque, torque_limit_margin) ne sont PAS touches : leur unite n'a pas
+  bouge, ils ont grossi parce que le robot bouge plus -- ca, c'est un vrai
+  arbitrage, et le corriger serait masquer une contrainte materielle.
+  """
+  del full
+  k = float(os.environ.get("RHPS1_LEG_SCALE", "1.5")) / 1.5
+  for term in ("action_rate_l2", "stance_action_acc_l2", "upper_body_action_acc_l2"):
+    if term in cfg.rewards:
+      cfg.rewards[term].weight /= k * k
+
+
+def _c7(cfg, full) -> None:
+  """Aucun cout attache a l'atterrissage, aucune cible hors d'atteinte.
+
+  Mesure sur le run 2026-09-10_20-22-11, depart a zero, 1539 iterations :
+  sole_height_p50 plat a 0.9 mm, Episode_Reward/air_time passe de +0.046 a
+  -0.179, foot_swing_height reduit son cout en swinguant MOINS, et le reward
+  global monte quand meme. La politique converge vers une statue.
+
+  Les quatre termes censes faire lever le pied etaient :
+    air_time          +2.0 mais touchdown_cost 0.15 -> incitation NETTE NEGATIVE
+    foot_swing_height -1.0 cible 32 mm              -> penalite, evitee en restant au sol
+    min_foot_height   -5.0 cible 8 cm               -> BWC mesure 3.2 cm de MEDIANE
+    foot_clearance    -4.0 cible 15 cm              -> BWC mesure 7.1 cm de MAXIMUM
+
+  Une cible loin de la demarche mesuree n'est pas un objectif, c'est une
+  constante ; et la seule facon d'echapper a une constante negative est de ne
+  jamais entrer dans le regime qui la declenche.
+
+  Ce rung fait donc trois choses, qui sont la meme :
+    - touchdown_cost a 0 : air_time redevient une vraie prime au vol
+    - min_foot_height retire : penalite sur une cible x2.5 la mediane du BWC
+    - foot_clearance retire : penalite sur une cible x2 le MAXIMUM du BWC
+
+  Reste foot_swing_height, seul terme adosse a une hauteur mesuree (32 mm), et
+  dont le cout DECROIT quand le pied monte -- il a un gradient utile, les autres
+  n'en avaient pas.
+  """
+  del full
+  cfg.rewards["air_time"].params["touchdown_cost"] = 0.0
+  cfg.rewards.pop("min_foot_height", None)
+  cfg.rewards.pop("foot_clearance", None)
+
+
+def _sjv(cfg, full) -> None:
+  """standing_joint_vel : le seul terme qui taxe le MOUVEMENT a commande nulle.
+
+  Leo, 2026-09-10, apres avoir teste le creneau 2 : "elle fait des petits pas a
+  zero vitesse alors qu'elle devrait etre parfaitement stable".
+
+  Mesure au checkpoint : standing_single_support rend -0.27 sur un budget de
+  +11, standing_single_support_rate 0.766, standing_in_grace_rate 0.000 -- donc
+  la penalite est bien percue a chaque pas et le robot la paie sans corriger. Et
+  les trois termes concus pour le repos (standing_pose, standing_joint_vel,
+  standing_base_motion) sont ABSENTS du run : _revert_to_policy0 les retire,
+  parce que policy 0 ne les avait pas.
+
+  Celui-ci revient SEUL, et c'est le bon des trois : standing_base_motion mesure
+  la derive du bassin, quasi nulle quand on pietine sur place, et standing_pose
+  la posture, pas sa vitesse. Un petit pas, lui, est du mouvement articulaire
+  rapide -- exactement ce qu'un L2 sur joint_vel portillonne a commande <= 0.1
+  attrape.
+
+  Poids PAR MESURE et non par formule : lancer, lire Episode_Reward vers 200
+  iterations, puis fixer. `sjv@<poids>` ou RHPS1_W_standing_joint_vel.
+  """
+  # Reconstruit, pas restaure depuis `full` : env_cfgs.py retire deja les trois
+  # termes de repos AVANT que apply_env prenne son instantane, donc ils n'y sont
+  # pas. Meme definition qu'a la ligne 889 d'env_cfgs.py.
+  del full
+  cfg.rewards["standing_joint_vel"] = RewardTermCfg(
+    func=mdp.standing_joint_vel_l2,
+    weight=-0.7,
+    params={
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot"),
+    },
+  )
+  _w(cfg, "standing_joint_vel", -0.7)
+
+
 def _standfirm(cfg, full) -> None:
   """Train standing still more often. The sweep says that is where it falls.
 
@@ -2390,6 +2512,9 @@ DECOMPOSED = {
   "impactladder": _impactladder, "standfirm": _standfirm, "wide": _wide, "mid": _mid, "mass3": _mass3, "masscom": _masscom,
   "periodlive": _periodlive, "flatpay": _flatpay, "stepladder": _stepladder,
   "swt": _swt, "mfhr": _mfhr, "fclr": _fclr, "airtc": _airtc, "airT": _airT,
+  "sjv": _sjv,
+  "c7": _c7,
+  "actunits": _actunits,
 }
 
 DELTAS = {

@@ -707,7 +707,15 @@ def rhps1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["standing_single_support"] = RewardTermCfg(
     func=mdp.standing_single_support_penalty,
-    weight=-6.0,
+    # -6.0 par defaut, surchargeable. A commande nulle la politique passe 74 %
+    # du temps sur UNE SEULE jambe (Metrics/standing_single_support_rate 0.7436)
+    # contre 2 % pour la policy 0 : elle ne se tient pas debout, elle se balance
+    # d'un pied sur l'autre. C'est la cause de la derive de 2 cm/s a l'arret et
+    # de l'oscillation a 1 Hz que Leo observe.
+    #
+    # Le terme le constate sans l'empecher : il coute -0.30 face a un budget
+    # positif de 21. Meme panne que flat_support pour les pieds a plat.
+    weight=float(os.environ.get("RHPS1_W_STANDSS", "-6.0")),
     params={
       "sensor_name": feet_ground_split_cfg.name,
       "command_name": "twist",

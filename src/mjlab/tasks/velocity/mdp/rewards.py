@@ -3577,6 +3577,17 @@ class bwc_reference_tracking:
     self._prof = prof.t().contiguous()  # [N, J]
     self._n = self._prof.shape[0]
     self._period = float(data["period_s"])
+    # Posture d'arret du BWC, mesuree sur les fenetres ou il est pose sur
+    # deux pieds sans bouger. Sert de cible a commande nulle : la reference
+    # parle alors dans les DEUX regimes, et la transition devient une
+    # interpolation entre deux cibles distantes de 2-3 deg au lieu d'un
+    # comportement a decouvrir. Absente des anciens profils -> on retombe
+    # sur la premiere ligne du profil, ce qui reproduit l'ancien comportement.
+    st = data.get("standing")
+    self._stand = (
+      torch.tensor([st[n] for n in joints], dtype=torch.float, device=env.device)
+      if st else self._prof[0].clone()
+    )
 
   def __call__(
     self,
@@ -3590,6 +3601,7 @@ class bwc_reference_tracking:
     command_threshold: float = 0.05,
     lateral_std: float = 0.15,
     phase_offset: float = 0.5,
+    command_ref: float = 0.25,
   ) -> torch.Tensor:
     del profile_path, joint_names
     gait = env.reward_manager.get_term_cfg(reward_name).func
@@ -3624,7 +3636,17 @@ class bwc_reference_tracking:
       .long()
       .clamp(0, self._n - 1)
     )
-    ref = self._prof[idx]  # [B, J]
+    # AMPLITUDE PILOTEE PAR LA COMMANDE. A commande nulle la cible est la
+    # posture d'arret ; a command_ref elle est le profil complet ; entre les deux
+    # une interpolation. Mesure du 2026-09-12 : les deux postures ne different
+    # que de 2-3 deg (genou 26.4 a l'arret contre 29.2 en marche), donc c'est bien
+    # une amplitude qui s'ouvre, pas deux regimes distincts.
+    #
+    # Avant, le terme se taisait sous 0.05 de commande avant : il ne disait rien
+    # de l'immobilite ni des transitions, qui sont precisement ce qu'on veut.
+    cmd_fwd = env.command_manager.get_command(command_name)[:, 0]
+    amp = torch.clamp(cmd_fwd / max(command_ref, 1e-6), 0.0, 1.0).unsqueeze(1)
+    ref = self._stand.unsqueeze(0) + amp * (self._prof[idx] - self._stand.unsqueeze(0))
 
     asset: Entity = env.scene[asset_cfg.name]
     q = asset.data.joint_pos[:, self._ids]
@@ -3644,9 +3666,13 @@ class bwc_reference_tracking:
     command = env.command_manager.get_command(command_name)
     assert command is not None
     off = torch.square(command[:, 1]) + torch.square(command[:, 2])
-    active = (command[:, 0] > command_threshold).float() * torch.exp(
-      -off / (lateral_std * lateral_std)
-    )
+    # Plus de porte "command_x > seuil" : elle rendait le terme muet a l'arret,
+    # donc incapable de dire quoi que ce soit sur l'immobilite. L'attenuation
+    # laterale/lacet reste -- on ne sait pas decrire ces demarches -- et la marche
+    # ARRIERE eteint le terme, le profil etant une marche avant.
+    active = torch.exp(-off / (lateral_std * lateral_std)) * (
+      command[:, 0] > -command_threshold
+    ).float()
     w = active.sum()
     env.extras["log"]["Metrics/bwc_ref_err_rad"] = torch.sqrt(
       (err * active).sum() / torch.clamp(w, min=1.0)
