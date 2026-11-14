@@ -1572,3 +1572,131 @@ lever de pied du BWC   mediane 3.2 cm   max 7.1 cm
 La fourchette de Leo -- "3 a 5 cm minimum" -- etait donc la bonne reference
 depuis le debut, et l'index 11 avec ses 4.4 cm y etait deja. Cible ramenee de
 0.060 a 0.045.
+
+---
+
+## 12. L'ecart entre les videos wandb et mc_mujoco : audit complet du chemin de deploiement
+
+Leo, 2026-09-10 : *"ya l'air d'avoir un souci entre les videos que je vois dans
+wandb et le comportement dans mc mujoco, alors tu va bien regarder toutes les
+differences potentielles entre les deux [...] le implicit fast doit pas changer
+enormement"*.
+
+Il avait raison de refuser l'integrateur, et pour une raison ecrite dans notre
+propre fichier de constantes : **MuJoCo n'integre pas implicitement un couple
+fourni par `ctrl`**, donc `implicitfast` ne peut rien changer a un plant ou le
+PD est calcule a l'exterieur. Piste abandonnee sans essai.
+
+### 12.1 Ce qui est identique des deux cotes, donc hors de cause
+
+Verifie ligne a ligne, pas suppose :
+
+```
+kp / kd                 les 30 articulations, identiques
+q0                      identique
+ordre des articulations identique (le decalage apparent etait le joint flottant)
+observation             530 dims, V7 = V5 + horloge, historique du plus ancien
+                        au plus recent des deux cotes
+periode de politique    5 ms des deux cotes (mc_rtc Timestep 0.005 =
+                        policy_step_size = mjlab timestep 0.0025 x decimation 2)
+horloge de demarche     0.9 / 0.9 des deux cotes (verifie dans params/env.yaml)
+armature                1.0 des deux cotes
+amortissement articulaire 0.2 des deux cotes
+vel_target_filter_alpha 0.8 des deux cotes
+```
+
+### 12.2 Trois ecarts reels, et leur racine commune pour deux d'entre eux
+
+**A. Les echelles d'action des jambes.** Le YAML de deploiement portait des
+valeurs arrondies sur les index 4, 9, 10, 11, 12 et 13 -- tous les recents :
+
+```
+joint        entraine   deploye   rapport
+CROTCH_Y     0.002625   0.003     x1.143
+CROTCH_R     0.0075     0.007     x0.933
+CROTCH_P     0.0105     0.010     x0.952
+KNEE_P       0.0075     0.007     x0.933
+ANKLE_R      0.00675    0.007     x1.037
+ANKLE_P      0.00975    0.010     x1.026
+```
+
+L'erreur n'est pas uniforme : +14.3 % au lacet de hanche contre -6.7 % au genou,
+soit 23 % d'ecart relatif entre deux articulations qui travaillent ensemble --
+une deformation de la COORDINATION, pas de l'amplitude. Les index 0, 3 et 5
+(policy 0 et ses reproductions, les seules a transferer) portent les valeurs
+exactes.
+
+**Racine.** `list_to_csv_str` de `mjlab/rl/exporter_utils.py` formatait les
+metadonnees ONNX en `{:.3f}` -- des DECIMALES, sur des grandeurs en 1e-3. Il
+restait un a deux chiffres significatifs : 0.002625 devenait "0.003", 0.0105
+"0.010", l'echelle de bras 0.0007 "0.001", et `joint_damping` "-0.000". Le YAML
+a recopie ces valeurs. Corrige en `{:.10g}` (round-trip exact sur du float32).
+
+**B. Le damper de vitesse, desarme des DEUX cotes de la lecture.**
+`velocity_damper_progress` monte de 0 a 1 par un CURRICULUM, entre les pas
+360000 et 612000 (iterations 7500 a 12750 a 48 pas/env). Un curriculum ne tourne
+qu'a l'entrainement, et son etat n'est pas sauve dans le checkpoint :
+
+```
+                       progress au checkpoint    di applique
+entrainement (wandb)          1.000                 0.400
+uv run play                   remis a 0             0.000
+mc_mujoco (YAML)              --                    0.000
+```
+
+C'est le seul ecart qui separe wandb (bon) de `play` ET de mc_mujoco (mauvais
+tous les deux), ce qui est exactement la forme du symptome que Leo decrit.
+
+Par index, la valeur effective a l'entrainement :
+
+```
+idx  checkpoint  progress   di effectif   di au YAML (avant correction)
+  9    3150        0.000       0.0000        0.0   correct
+ 10    8100        0.114       0.0457        0.0
+ 11   12099        0.876       0.3504        0.0
+ 12   19799        1.000       0.4000        0.0
+ 13   25950        1.000       0.4000        0.0
+```
+
+Les index 12 et 13 sont precisement les deux que Leo a testes et trouves
+mauvais.
+
+**C. Aucun ecretage de couple dans mc_mujoco.** mjlab borne chaque couple PD a
+`effort_limit` cote Python (`IdealPdActuator.compute`, `torch.clamp`).
+`MjRobot::PD()` renvoie la somme brute, le XML declare `forcelimited="false"`,
+et le bloc index 13 ne declarant pas d'`effort_limit`, l'anti-windup du
+controleur (`maxTargetDev_`) reste a zero. Comme `torque_feasibility_ratio` vaut
+`None` a l'entrainement, la politique **s'appuie** sur cet ecretage.
+
+### 12.3 Mesure : l'ecart d'echelle seul ne casse rien
+
+`scripts/tools/scale_fidelity.py`, meme reseau, trois jeux d'echelles :
+
+```
+2026-09-10_09-47-21 model_25950   commande 0.20 m/s   32 envs, 400 pas
+  train    avance +0.1421 m/s   tremor 0.0647 mrad   chutes 0.000
+  head     avance +0.1485 m/s   tremor 0.0611 mrad   chutes 0.000
+  deploy   avance +0.1761 m/s   tremor 0.0644 mrad   chutes 0.000
+```
+
+Verdict : **A est un defaut de fidelite reel mais n'explique pas le symptome.**
+Corrige quand meme -- il se cumule au reste et comptera davantage sur le robot.
+
+### 12.4 Ce que ce chapitre ajoute a la methode
+
+Trois grandeurs necessaires au deploiement ne voyagent PAS avec le checkpoint :
+
+```
+echelle d'action        play la reconstruit depuis le code courant
+etat de curriculum      non sauve, remis a zero en lecture
+progression de damper   idem
+```
+
+`play.py` appelle `load_env_cfg(task, play=True)` et non la configuration du run.
+Toute constante modifiee apres un run desaccorde silencieusement sa relecture :
+l'echelle du genou est passee de 0.0075 a 0.00525 apres le run de l'index 13,
+donc mes propres mesures `direction_check` sur cette politique tournaient le
+genou a 70 %.
+
+**Regle : une mesure de relecture doit charger `params/env.yaml` du run, pas le
+code courant. Un verdict pris autrement mesure une politique qui n'existe pas.**
