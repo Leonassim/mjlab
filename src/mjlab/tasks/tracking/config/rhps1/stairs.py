@@ -66,6 +66,9 @@ UP_LOAD = float(_env("UP_LOAD", "0"))  # BW fraction, >0: a foot counts as down 
 UP_T = float(_env("UP_T", "0.1"))
 MID_DESC_P = float(_env("MID_DESC_P", "0"))  # share of descents spawned on an inner tread, facing down
 PAUSE_P = float(_env("PAUSE_P", "0"))  # per-episode chance of a 1.5-3.5 s command pause mid-walk (stop on two feet)
+# Leo 2026-11-14: stick released on the stairs. Per-episode chance of a 2-5 s stop triggered when the pelvis passes a
+# random point of the flight (replaces the timed pause): time-drawn pauses landed on the flat approach.
+STAIR_PAUSE_P = float(_env("STAIR_PAUSE_P", "0"))
 SETTLE_T = float(_env("SETTLE_T", "0"))  # s, >0: the arrival bonus waits until still on two feet (25% BW each) this long
 SETTLE_V = float(_env("SETTLE_V", "0.05"))  # m/s, v_ema bound for "settled"
 ONE_LEG_OFF = float(_env("ONE_LEG_OFF", "0"))  # s, >0: one-leg termination threshold while the command is off
@@ -89,13 +92,31 @@ SCAN_OFFSET = float(_env("SCAN_OFFSET", "0.84"))
 SCAN_FWD = float(_env("SCAN_FWD", "0"))  # m, grid centre ahead of the pelvis (0.3: -0.3 to +0.9 m)
 SCAN_NOISE = float(_env("SCAN_NOISE", "0.02"))  # actor-scan uniform noise, m; 0 = exact teacher map
 BW = 57.64 * 9.81
-GAP = (0.15, 0.35)  # spawn distance from the first riser, m
+GAP = tuple(float(x) for x in _env("GAP", "0.15,0.35").split(","))  # climb spawn distance from the first riser, m
+# Leo 2026-11-14: approach from flat ground at an angle, place the feet before the first step. Spawn heading
+# spread around the stairs axis (+-, deg) and a yaw command (sign, as the direction command) toward that axis.
+YAW_SPAWN = math.radians(float(_env("YAW_SPAWN", str(math.degrees(0.15)))))
+HEAD_CMD = _env("HEAD_CMD", "0") == "1"
+HEAD_DB = math.radians(float(_env("HEAD_DB", "10")))  # no yaw command inside this heading error
+# ap2 43000 froze on the run-up: flat ground in the scan had only ever meant "arrived, stand". GAP, YAW_SPAWN and
+# DESC_EDGE open from the old spawn (0.15-0.35 m, +-0.15 rad, 0.05-0.5 m) over APPROACH_RAMP env steps.
+APPROACH_RAMP = int(_env("APPROACH_RAMP", "0"))
+APPROACH_OFF = int(_env("APPROACH_OFF", "0"))  # env steps of the ramp already done (resume)
+# ap4 43250 drifted to +-60 deg on the run-up: exp(-e^2/0.3^2) is ~0 past 25 deg, no pull back from 30 deg spawns.
+HEADING_STD = float(_env("HEADING_STD", "0.3"))
 DESC_EDGE = tuple(float(x) for x in _env("DESC_EDGE", "0.25,0.5").split(","))  # top-start descents: distance to the edge, m
 ARRIVE = 0.2  # pelvis past the last edge, m
+ARRIVE_DESC = float(_env("ARRIVE_DESC", str(ARRIVE)))  # descents: flat ground walked past the last edge before the stop, m
 ARRIVE_FEET = _env("ARRIVE_FEET", "0") == "1"  # arrival also needs both ankles past the last edge
 HOLD_S = float(_env("HOLD_S", "1.0"))  # arming hold on stair envs (copy: up to 3 s)
 EPISODE_S = float(_env("EPISODE_S", "0"))  # stair-env episode length, 0 = the copy's
 HELD_ARRIVAL = _env("HELD_ARRIVAL", "1") == "1"  # curriculum promotes only arrivals without a fall
+# rl48b/49 sat at the level where half the climbs fall (one held arrival up, one failure down).
+PROMOTE_N = int(_env("PROMOTE_N", "1"))  # consecutive held arrivals at a level before promotion
+# rl53 39000: once the knee cost cut the falls the curriculum climbed 3.8 -> 4.9 in 500 its and the falls came back:
+# the frontier keeps every env at ~50 %. LVL_MAX caps it (an env past the cap is redrawn uniformly below it), so the
+# training mass stays on the heights the robot must master (Leo: 5 cm reliable first).
+LVL_MAX = int(_env("LVL_MAX", "-1"))
 TEACHER_MASK = _env("TEACHER_MASK", "flat")  # flat: only where the scan is flat; all: whole stair tile
 TEACHER = _env("TEACHER", "logs/rsl_rl/rhps1_tracking/2026-11-06_stairs_init/model_13498.pt")
 # Full RL (Leo, 2026-11-09): no copy term, the goal reached at the robot's own pace.
@@ -129,6 +150,19 @@ TRUNK_DEAD = math.radians(float(_env("TRUNK_DEAD", "0")))  # tilt allowed for fr
 FALL_S0 = float(_env("FALL_S0", "1"))  # fall cost fraction at launch, ramped to 1 with the regularizers
 FCLEAR_RAMP = _env("FCLEAR_RAMP", "0") == "1"
 _TRQ_LIM = {"KNEE": 108.0, "ANKLE_P": 65.0, "ANKLE_R": 45.0, "CROTCH_P": 140.0, "CROTCH_R": 100.0, "CROTCH_Y": 35.0}
+# rl48b sat at the clip (knee 12 % of the time at 108, over 70 18 %): a cost that starts below the clip and grows
+# linearly, so saturation is never free. TRQ_LIM="KNEE=70": per-joint maxima (the robot's knee reducer is 70).
+_TRQ_LIM.update({k: float(v) for k, v in (x.split("=") for x in _env("TRQ_LIM", "").split(",") if x)})
+TRQ_SHAPE = _env("TRQ_SHAPE", "sq")  # "lin": linear excess, nonzero slope at the threshold
+# rl50 in mc_mujoco: the stance knee pinned at 108 N.m for 0.7-1 s on a step-up, then the robot fell backward.
+SAT_T = float(_env("SAT_T", "0"))  # s, >0: a leg joint at >=97 % of its limit this long ends the episode (CaT)
+SAT_T0 = float(_env("SAT_T0", "0"))  # s, >SAT_T: threshold at launch, ramped down to SAT_T over SAT_RAMP env steps
+# rl51 36000 at 1.4 cm: ~35 cm lunges landing on a 55-60 deg knee, which then lifted the body at 108 N.m for
+# 0.5-1 s per step and buckled (forward falls) or pushed the robot back. A saturated torque is flat in the
+# flexion, the angle is not. Allowance: KNEE_FLEX deg + KNEE_FLEX_H deg per cm of riser (static study: 55-80 at 18 cm).
+KNEE_FLEX = math.radians(float(_env("KNEE_FLEX", "40")))
+KNEE_FLEX_H = math.radians(float(_env("KNEE_FLEX_H", "2")))
+SAT_RAMP = int(_env("SAT_RAMP", "0"))
 
 # Reference terms: meaningless on stairs, kept on flat tiles only.
 _FLAT_ONLY = ("contact_schedule", "double_support", "heading_hold", "still_when_reference_still",
@@ -203,6 +237,9 @@ class _State:
     self.arrived = torch.zeros(n, dtype=torch.bool, device=dev)
     self.arrived_now = torch.zeros(n, dtype=torch.bool, device=dev)
     self.progress = torch.zeros(n, device=dev)  # fraction of the stairs crossed
+    self.s0 = torch.zeros(n, device=dev)  # spawn position along u
+    self.sp_trig = torch.full((n,), float("nan"), device=dev)  # STAIR_PAUSE_P trigger along u, nan = none
+    self.sp_dur = torch.zeros(n, dtype=torch.long, device=dev)
     self.cmd_on = torch.zeros(n, dtype=torch.long, device=dev)
     self.hold_end = torch.zeros(n, dtype=torch.long, device=dev)
     self.pause0 = torch.full((n,), 10**9, dtype=torch.long, device=dev)  # command pause [pause0, pause1), steps
@@ -247,8 +284,16 @@ class _State:
     u = torch.stack([torch.cos(ang), torch.sin(ang)], 1)
     climb = self.mode_climb[ids] if MODE_FIXED else torch.rand(k, device=dev) < CLIMB_FRAC
     span = PLATFORM / 2 + (self.nsteps[ids] - 1) * self.tread[ids]  # outer riser
-    outside = span + GAP[0] + torch.rand(k, device=dev) * (GAP[1] - GAP[0])
-    inside = PLATFORM / 2 - DESC_EDGE[1] + torch.rand(k, device=dev) * (DESC_EDGE[1] - DESC_EDGE[0])
+    r = 1.0
+    if APPROACH_RAMP > 0:
+      c0 = getattr(env, "_ap_c0", None)
+      if c0 is None:
+        c0 = env._ap_c0 = env.common_step_counter
+      r = min(1.0, (env.common_step_counter - c0 + APPROACH_OFF) / APPROACH_RAMP)
+    g0, g1 = 0.15 + (GAP[0] - 0.15) * r, 0.35 + (GAP[1] - 0.35) * r
+    outside = span + g0 + torch.rand(k, device=dev) * (g1 - g0)
+    e0, e1 = 0.05 + (DESC_EDGE[0] - 0.05) * r, 0.5 + (DESC_EDGE[1] - 0.5) * r  # ramped from rl54's 0.05-0.5 m
+    inside = PLATFORM / 2 - e1 + torch.rand(k, device=dev) * (e1 - e0)
     # climb: on the plane facing the center; descend: on the platform facing out.
     from_out = climb
     s0 = torch.where(from_out, outside, inside)
@@ -270,7 +315,7 @@ class _State:
     self.center[ids] = c
     self.u[ids] = u
     self.face[ids] = face
-    self.goal[ids] = torch.where(from_out, PLATFORM / 2 - ARRIVE, span + ARRIVE)
+    self.goal[ids] = torch.where(from_out, PLATFORM / 2 - ARRIVE, span + ARRIVE_DESC)
     self.sign[ids] = torch.where(from_out, -1.0, 1.0)
     self.climb[ids] = climb
     self.arrived[ids] = False
@@ -278,7 +323,8 @@ class _State:
     self.p_on[ids] = False
     self.settled[ids] = False
     self.progress[ids] = 0.0
-    yaw = torch.atan2(face[:, 1], face[:, 0]) + (torch.rand(k, device=dev) - 0.5) * 0.3
+    self.s0[ids] = s0
+    yaw = torch.atan2(face[:, 1], face[:, 0]) + (torch.rand(k, device=dev) * 2 - 1) * (0.15 + (YAW_SPAWN - 0.15) * r)
     return xy, ground, yaw
 
   def update(self, env):
@@ -290,6 +336,12 @@ class _State:
     end = torch.where(self.sign < 0, PLATFORM / 2, span)
     frac = ((s - start) / (end - start)).clamp(0.0, 1.0)
     self.progress = torch.where(self.is_stairs, torch.maximum(self.progress, frac), self.progress)
+    if STAIR_PAUSE_P > 0:
+      ep = env.episode_length_buf
+      trig = ~torch.isnan(self.sp_trig) & (self.sign * (s - self.sp_trig) > 0) & (ep >= self.cmd_on) & ~self.arrived
+      self.pause0 = torch.where(trig, ep, self.pause0)
+      self.pause1 = torch.where(trig, ep + self.sp_dur, self.pause1)
+      self.sp_trig = torch.where(trig, torch.full_like(self.sp_trig, float("nan")), self.sp_trig)
     win = (env.episode_length_buf >= self.pause0) & (env.episode_length_buf < self.pause1)
     if ARRIVE_LOADED:
       # The command used to drop mid-swing and the policy froze that swing (front foot up after the goal).
@@ -415,6 +467,16 @@ class StairsMotionCommand(StandingStartMotionCommand):
         yes = torch.rand(k, device=self.device) < PAUSE_P
         st.pause0[sid] = torch.where(yes, p0, torch.full_like(p0, 10**9))
         st.pause1[sid] = torch.where(yes, p1, torch.full_like(p1, 10**9))
+      if STAIR_PAUSE_P > 0:
+        k = len(sid)
+        span = PLATFORM / 2 + (st.nsteps[sid] - 1) * st.tread[sid]
+        lo = torch.where(st.climb[sid], torch.full_like(span, PLATFORM / 2), st.s0[sid].clamp(min=PLATFORM / 2))
+        trig = lo + torch.rand(k, device=self.device) * (span - lo).clamp(min=0.0)
+        yes = torch.rand(k, device=self.device) < STAIR_PAUSE_P
+        st.sp_trig[sid] = torch.where(yes, trig, torch.full_like(trig, float("nan")))
+        st.sp_dur[sid] = ((2.0 + 3.0 * torch.rand(k, device=self.device)) / dt).long()
+        st.pause0[sid] = torch.where(yes, torch.full_like(st.pause0[sid], 10**9), st.pause0[sid])
+        st.pause1[sid] = torch.where(yes, torch.full_like(st.pause1[sid], 10**9), st.pause1[sid])
     elif saved is not None:
       hold[sid] = saved[sid]  # a clip wrap must not re-hold a walking stair env
 
@@ -484,6 +546,12 @@ def _command_wrapper(orig):
     on = ~st.arrived & ~st.paused & (env.episode_length_buf >= st.cmd_on)
     forced = torch.zeros_like(u)
     forced[:, 0] = on.to(u.dtype)
+    if HEAD_CMD:
+      q = env.scene["robot"].data.root_link_quat_w
+      yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+      d = torch.atan2(st.face[:, 1], st.face[:, 0]) - yaw
+      e = torch.atan2(torch.sin(d), torch.cos(d))
+      forced[:, 2] = (torch.sign(e) * (e.abs() > HEAD_DB) * on).to(u.dtype)
     return torch.where(st.is_stairs[:, None], forced, u)
 
   cmd.__name__ = orig.__name__
@@ -636,14 +704,26 @@ def stairs_vinst(env) -> torch.Tensor:
 
 
 def stairs_torque(env) -> torch.Tensor:
-  """Leg torque beyond TRQ_FRAC of the drive limit, squared and normalized to 1 at the limit (ramped)."""
+  """Leg torque beyond TRQ_FRAC of the per-joint maximum, normalized to 1 there, squared or linear (ramped)."""
   robot = env.scene["robot"]
   lim = getattr(env, "_st_trq_lim", None)
   if lim is None:
     lim = env._st_trq_lim = torch.tensor(
       [next((v for g, v in _TRQ_LIM.items() if g in n), float("inf")) for n in robot.joint_names], device=env.device)
   r = torch.relu(robot.data.qfrc_actuator.abs() / lim - TRQ_FRAC) / (1 - TRQ_FRAC)
-  return (r**2).sum(-1) * _land_ramp(env)
+  return (r if TRQ_SHAPE == "lin" else r**2).sum(-1) * _land_ramp(env)
+
+
+def stairs_knee_flex(env) -> torch.Tensor:
+  """Flexion of a loaded knee (> 0.1 BW on its foot) beyond the step's allowance, rad, linear."""
+  robot = env.scene["robot"]
+  ids = getattr(env, "_st_knee_ids", None)
+  if ids is None:
+    ids = env._st_knee_ids = [robot.joint_names.index(n) for n in ("L_KNEE_P", "R_KNEE_P")]
+  lvl = env.scene.terrain.terrain_levels.float()
+  h_cm = 100 * (H_RANGE[0] + lvl / max(ROWS - 1, 1) * (H_RANGE[1] - H_RANGE[0]))
+  e = torch.relu(robot.data.joint_pos[:, ids] - (KNEE_FLEX + KNEE_FLEX_H * h_cm)[:, None])
+  return _stairs_only((e * (env._stairs.load > 0.1 * BW)).sum(-1), env)
 
 
 def stairs_feet_clear(env) -> torch.Tensor:
@@ -697,7 +777,7 @@ def stairs_air(env) -> torch.Tensor:
 def stairs_stop(env, std: float) -> torch.Tensor:
   st = env._stairs
   still = st.arrived
-  if PAUSE_P > 0:
+  if PAUSE_P > 0 or STAIR_PAUSE_P > 0:
     still = st.arrived | st.paused | ((env.episode_length_buf < st.cmd_on) & (env.episode_length_buf >= st.hold_end))
   r = still * torch.exp(-(st.v_ema**2).sum(-1) / std**2)
   if STOP_DS:
@@ -705,6 +785,17 @@ def stairs_stop(env, std: float) -> torch.Tensor:
     # Graded on the lighter foot's load (full at 25% BW): rl30's binary gate was never reached.
     r = r * (st.load.min(-1).values / (0.25 * BW)).clamp(0.0, 1.0)
   return _stairs_only(r, env)
+
+
+def stairs_same_tread(env) -> torch.Tensor:
+  """Stopped with both feet loaded on one tread (Leo: preferred, one foot per tread allowed)."""
+  st = env._stairs
+  robot = env.scene["robot"]
+  span = PLATFORM / 2 + (st.nsteps - 1) * st.tread
+  sf = ((robot.data.body_link_pos_w[:, st.foot_ids, :2] - st.center[:, None]) * st.u[:, None]).sum(-1) - span[:, None]
+  lvl = (-sf / st.tread.clamp(min=1e-3)[:, None]).ceil().clamp(0, NSTEPS)
+  both = (st.load > 0.25 * BW).all(-1)
+  return _stairs_only((st.paused & both & (lvl[:, 0] == lvl[:, 1])).float(), env)
 
 
 def stairs_stall(env) -> torch.Tensor:
@@ -735,6 +826,17 @@ def stairs_heading(env, std: float) -> torch.Tensor:
   e = torch.atan2(torch.sin(yaw - torch.atan2(st.face[:, 1], st.face[:, 0])),
                   torch.cos(yaw - torch.atan2(st.face[:, 1], st.face[:, 0])))
   return _stairs_only(torch.exp(-(e**2) / std**2), env)
+
+
+def stairs_heading_err(env) -> torch.Tensor:
+  """Heading error to the stairs axis beyond HEAD_DB, rad, linear (weight < 0). ap5's stronger heading reward (W 2, std 0.7)
+  paid standing aligned at 2/s and froze the run: a cost has no value for standing still."""
+  st = env._stairs
+  q = env.scene["robot"].data.root_link_quat_w
+  yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+  d = yaw - torch.atan2(st.face[:, 1], st.face[:, 0])
+  e = torch.atan2(torch.sin(d), torch.cos(d)).abs()
+  return _stairs_only(torch.relu(e - HEAD_DB), env)
 
 
 def stairs_alive(env) -> torch.Tensor:
@@ -1080,6 +1182,24 @@ def stairs_one_leg(env) -> torch.Tensor:
   return st.is_stairs & (st.up.max(-1).values > lim) & (env.episode_length_buf >= st.hold_end)
 
 
+def stairs_saturation(env) -> torch.Tensor:
+  """Constraint as termination: a leg joint held at its torque limit longer than the (ramped) threshold."""
+  robot = env.scene["robot"]
+  if not hasattr(env, "_st_sat_lim"):
+    env._st_sat_lim = torch.tensor([next((v for g, v in _TRQ_LIM.items() if g in n), float("inf"))
+                                    for n in robot.joint_names], device=env.device)
+    env._st_sat_run = torch.zeros(env.num_envs, device=env.device)
+    env._st_sat_c0 = env.common_step_counter
+  sat = (robot.data.qfrc_actuator.abs() >= 0.97 * env._st_sat_lim).any(-1)
+  fresh = env.episode_length_buf <= 1
+  env._st_sat_run = torch.where(sat & ~fresh, env._st_sat_run + env.step_dt, torch.zeros_like(env._st_sat_run))
+  t = SAT_T
+  if SAT_T0 > SAT_T and SAT_RAMP > 0:
+    r = min(1.0, (env.common_step_counter - env._st_sat_c0) / SAT_RAMP)
+    t = SAT_T0 + (SAT_T - SAT_T0) * r
+  return env._stairs.is_stairs & (env._st_sat_run > t) & (env.episode_length_buf >= env._stairs.hold_end)
+
+
 def stairs_time_out(env) -> torch.Tensor:
   lim = torch.where(env._stairs.is_stairs, math.ceil(EPISODE_S / env.step_dt), env.max_episode_length)
   return env.episode_length_buf >= lim
@@ -1110,8 +1230,15 @@ def stairs_levels(env, env_ids: torch.Tensor) -> dict:
       torch.save({"lvl": st.lvl_cur, "climb": st.mode_climb}, LVL_FILE + ".tmp")
       os.replace(LVL_FILE + ".tmp", LVL_FILE)
     keep = st.replayed[env_ids]  # a replay episode moves nothing
+    if PROMOTE_N > 1:
+      if getattr(st, "streak", None) is None:
+        st.streak = torch.zeros_like(st.lvl_cur)
+      k = st.streak[env_ids]
+      k = torch.where(keep, k, torch.where(up, k + 1, torch.zeros_like(k)))
+      up = up & (k >= PROMOTE_N)
+      st.streak[env_ids] = torch.where(up, torch.zeros_like(k), k)
     cur = st.lvl_cur[env_ids] + (up & ~keep).long() - (down & ~keep).long()
-    top = terrain.max_terrain_level
+    top = terrain.max_terrain_level if LVL_MAX < 0 else min(terrain.max_terrain_level, LVL_MAX + 1)
     cur = torch.where(cur >= top, torch.randint_like(cur, top), cur.clamp(min=0))
     st.lvl_cur[env_ids] = cur
     rep = (torch.rand(len(env_ids), device=env.device) < REPLAY_P) & s
@@ -1336,7 +1463,8 @@ def apply(cfg, play: bool = False) -> None:
     if w("IMP", "0") != 0:
       cfg.rewards["stairs_impact"] = RewardTermCfg(func=stairs_impact, weight=w("IMP", "0"))
     for k, f in (("TRUNK", stairs_trunk), ("VZ", stairs_vz), ("TRQ", stairs_torque), ("FCLEAR", stairs_feet_clear),
-                 ("TREAD", stairs_tread), ("VINST", stairs_vinst)):
+                 ("TREAD", stairs_tread), ("VINST", stairs_vinst), ("KNEE", stairs_knee_flex),
+                 ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
@@ -1345,7 +1473,7 @@ def apply(cfg, play: bool = False) -> None:
   else:
     cfg.rewards["stairs_lin_vel"] = RewardTermCfg(func=stairs_lin_vel, weight=w("VEL", "4"), params={"std": VEL_STD})
   cfg.rewards.update({
-    "stairs_heading": RewardTermCfg(func=stairs_heading, weight=w("HEADING", "1"), params={"std": 0.3}),
+    "stairs_heading": RewardTermCfg(func=stairs_heading, weight=w("HEADING", "1"), params={"std": HEADING_STD}),
     "stairs_alive": RewardTermCfg(func=stairs_alive, weight=w("ALIVE", "3")),
     "stairs_arrival": RewardTermCfg(func=stairs_arrival, weight=w("ARRIVAL", "20")),
     "stairs_riser_kick": RewardTermCfg(func=stairs_riser_kick, weight=w("KICK", "-10")),
@@ -1365,6 +1493,8 @@ def apply(cfg, play: bool = False) -> None:
   cfg.terminations["stairs_fall"] = TerminationTermCfg(func=stairs_fall)
   if RL and ONE_LEG_T > 0:
     cfg.terminations["stairs_one_leg"] = TerminationTermCfg(func=stairs_one_leg)
+  if SAT_T > 0:
+    cfg.terminations["stairs_saturation"] = TerminationTermCfg(func=stairs_saturation)
   if EPISODE_S > 0:
     cfg.terminations["time_out"].func = stairs_time_out
   if cfg.curriculum is None:
