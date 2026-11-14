@@ -72,8 +72,15 @@ def main():
 
   robot = env.unwrapped.scene["robot"]
   acts = [x for x in robot.actuators if hasattr(x, "_raw_torque_peak")]
-  names = list(robot.joint_names)
   assert acts, "aucun FiniteDifferencePdActuator"
+  # Les noms viennent des ACTIONNEURS, dans leur ordre de concatenation -- pas de
+  # robot.joint_names. Les deux listes ont la meme longueur et un ordre
+  # COMPLETEMENT different (joint_names commence par CHEST_Y, les actionneurs par
+  # L_CROTCH_Y), donc l'ancienne version etiquetait chaque colonne avec le nom
+  # d'une autre articulation. Elle a fait conclure le 2026-08-26 que "le genou ne
+  # depasse jamais, ce sont les bras" : c'etait l'inverse.
+  names = [n for x in acts for n in x._target_names]
+  assert len(names) == sum(x._raw_torque_peak.shape[1] for x in acts), "desalignement"
 
   obs, _ = env.reset()
   _fixed(slice(None))

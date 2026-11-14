@@ -216,6 +216,14 @@ def main():
   rows = []
   for name, worst_v, thr, want_low in [
     ("ne jamais tomber", worst.get("falls"), 0.01, True),
+    # SUIVRE LA COMMANDE. Ce critere manquait, et c'est le plus elementaire.
+    # L'index 12 a ete installe pour essai sur mc_mujoco sans avancer du tout
+    # (0.002 m/s mesures pour 0.30 commandes) alors qu'il passait tous les
+    # criteres existants. Seuil = la policy 0, seule politique dont on sait
+    # qu'elle marche sur le robot : 0.1451 m/s d'erreur, contre 0.49 pour la 6/6
+    # et l'index 11. Une erreur superieure a la plage de commande (+/-0.30)
+    # signifie que la politique ne suit rien.
+    ("suivre la commande", worst.get("yaw_err_xy"), 0.15, True),
     # 0.03 et non 0.25. mc_mujoco N'ECRETE PAS le couple : la projection qui
     # borne |tau| <= effort_limit est sautee au deploiement, parce que sous QP
     # elle epingle la cible a 0.0018 rad sur CROTCH_Y et rend le robot mou

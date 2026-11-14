@@ -26,8 +26,22 @@ export RHPS1_CROTCH_MINDIST=${RHPS1_CROTCH_MINDIST:-0.04}
 # le robot fait un calcul rationnel : il piaffe joliment sur place plutot que
 # d'avancer. Erreur mesuree 0.35 m/s pour une plage de +/-0.30, contre 0.145
 # pour la policy 0.
-export RHPS1_W_TRACK_LIN=${RHPS1_W_TRACK_LIN:-12.0}
-export RHPS1_W_TRACK_ANG=${RHPS1_W_TRACK_ANG:-12.0}
+# STABILITE A L'ARRET, la troisieme exigence de Leo et la seule qui echoue
+# encore. Banc direction_check.py, meme protocole :
+#
+#                     avance a 0    derive laterale a 0
+#   policy 0             -0.0000                 0.0004
+#   P4                   +0.0183                 0.0263
+#
+# Cause : 74 % du temps sur une seule jambe a commande nulle contre 2 % pour la
+# policy 0. Le terme qui l'interdit coute -0.30 sur un budget de 21.
+export RHPS1_W_STANDSS=${RHPS1_W_STANDSS:--24.0}
+# Suivi ramene a 7 : le banc montre que P4 avance, recule et suit deja mieux que
+# la policy 0 en marche avant pure. L'erreur de 0.29 que je poursuivais etait
+# une moyenne sur TOUTES les commandes, laterales et rotations comprises, qui ne
+# disait rien du cas qui interesse Leo.
+export RHPS1_W_TRACK_LIN=${RHPS1_W_TRACK_LIN:-7.0}
+export RHPS1_W_TRACK_ANG=${RHPS1_W_TRACK_ANG:-7.0}
 export WANDB_INIT_TIMEOUT=300 WANDB__SERVICE_WAIT=300
 mkdir -p logs/probes
 exec .venv/bin/train Mjlab-Velocity-Flat-RHPS1 \
