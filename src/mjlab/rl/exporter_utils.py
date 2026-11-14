@@ -9,16 +9,24 @@ from mjlab.envs.mdp.actions import JointPositionAction
 
 
 def list_to_csv_str(
-  arr, *, decimals: int = 3, delimiter: str = ",", sub_delimiter: str = ";"
+  arr, *, sig: int = 10, delimiter: str = ",", sub_delimiter: str = ";"
 ) -> str:
-  """Convert list to CSV string with specified decimal precision.
+  """Convert list to CSV string with significant-digit precision.
 
   Elements that are themselves sequences (e.g. a per-dimension scale or a
   [min, max] clip range) are joined with `sub_delimiter` instead of being
   `str()`-formatted, which would otherwise embed a second, ambiguous set of
   commas inside the top-level comma-delimited string.
+
+  Significant digits, not decimals. This used to be `{:.3f}`, which silently
+  destroyed every quantity of order 1e-3: action_scale 0.002625 was written as
+  "0.003", 0.0105 as "0.010", the 0.0007 arm scale as "0.001", and joint_damping
+  as "-0.000". Those rounded numbers were then copied into the mc_rtc deployment
+  config, so indices 4 and 9-13 ran the robot with leg scales off by -7% to +14%,
+  non-uniformly -- a distortion of the coordination between joints, not of the
+  gait amplitude. 10 significant digits round-trips float32 exactly.
   """
-  fmt = f"{{:.{decimals}f}}"
+  fmt = f"{{:.{sig}g}}"
 
   def format_scalar(x) -> str:
     return fmt.format(x) if isinstance(x, (int, float)) else str(x)

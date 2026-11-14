@@ -305,8 +305,16 @@ def run_sim(
         ):
           log[k] = np.stack(log[k], axis=0)
 
-        print("Saving to /tmp/motion.npz...")
-        np.savez("/tmp/motion.npz", **log)
+        out_path = output_name if output_name.endswith(".npz") else "/tmp/motion.npz"
+        print(f"Saving to {out_path}...")
+        np.savez(out_path, **log)
+
+        # Un output_name qui se termine par .npz est un chemin local : on ecrit et
+        # on s'arrete. Le registre wandb reste le comportement par defaut, mais il
+        # exigeait un compte et un reseau pour produire un fichier qu'on a deja.
+        if out_path != "/tmp/motion.npz":
+          print(f"[INFO]: Motion ecrite localement : {out_path}")
+          return
 
         print("Uploading to Weights & Biases...")
         import wandb
@@ -341,6 +349,7 @@ def main(
   output_name: str,
   input_fps: float = 30.0,
   output_fps: float = 50.0,
+  robot: str = "g1",
   device: str = "cuda:0",
   render: bool = False,
   line_range: tuple[int, int] | None = None,
@@ -363,7 +372,19 @@ def main(
   sim_cfg = SimulationCfg()
   sim_cfg.mujoco.timestep = 1.0 / output_fps
 
-  scene = Scene(unitree_g1_flat_tracking_env_cfg().scene, device=device)
+  # Scene selectionnable : le G1 etait code en dur, ce qui rendait le script
+  # inutilisable pour tout autre robot alors que le reste est generique.
+  if robot == "g1":
+    scene_cfg = unitree_g1_flat_tracking_env_cfg().scene
+  elif robot == "rhps1":
+    from mjlab.tasks.tracking.config.rhps1.env_cfgs import (
+      rhps1_flat_tracking_env_cfg,
+    )
+
+    scene_cfg = rhps1_flat_tracking_env_cfg().scene
+  else:
+    raise SystemExit(f"robot inconnu : {robot}")
+  scene = Scene(scene_cfg, device=device)
   model = scene.compile()
 
   sim = Simulation(num_envs=1, cfg=sim_cfg, model=model, device=device)
@@ -388,10 +409,17 @@ def main(
     )
     renderer.initialize()
 
-  run_sim(
-    sim=sim,
-    scene=scene,
-    joint_names=[
+  # L'ordre des colonnes articulaires du CSV. Il etait code en dur sur le G1 ;
+  # pour le RHPS1 il vient du modele lui-meme, donc il ne peut pas diverger
+  # de ce que la scene attend.
+  if robot == "rhps1":
+    # scene["robot"].joint_names, PAS mj_id2name : la scene prefixe les noms du
+    # modele ("robot/CHEST_Y"), alors que find_joints attend les noms nus. Lire
+    # le modele donnait 31 motifs prefixes dont aucun ne correspondait, y compris
+    # le joint flottant qu'un filtre sur le nom nu ne retirait pas.
+    joint_names = list(scene["robot"].joint_names)
+  else:
+    joint_names = [
       "left_hip_pitch_joint",
       "left_hip_roll_joint",
       "left_hip_yaw_joint",
@@ -421,7 +449,12 @@ def main(
       "right_wrist_roll_joint",
       "right_wrist_pitch_joint",
       "right_wrist_yaw_joint",
-    ],
+    ]
+
+  run_sim(
+    sim=sim,
+    scene=scene,
+    joint_names=joint_names,
     input_fps=input_fps,
     input_file=input_file,
     output_fps=output_fps,

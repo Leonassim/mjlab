@@ -18,6 +18,12 @@ if TYPE_CHECKING:
 IdealPdCfgT = TypeVar("IdealPdCfgT", bound="IdealPdActuatorCfg")
 
 
+import os as _os
+
+# Multiple de force_limit auquel l'ecretage physique intervient. La limite
+# "vraie" reste force_limit : metriques et penalites s'y referent toujours.
+_EFFORT_CLAMP_MARGIN = float(_os.environ.get("RHPS1_EFFORT_CLAMP", "1.0"))
+
 def pd_torque(
   stiffness: torch.Tensor, damping: torch.Tensor, cmd: ActuatorCmd
 ) -> torch.Tensor:
@@ -65,6 +71,25 @@ class IdealPdActuator(Actuator, Generic[IdealPdCfgT]):
   def control_law(params: dict[str, torch.Tensor], cmd: ActuatorCmd) -> torch.Tensor:
     torque = pd_torque(params["stiffness"], params["damping"], cmd)
     force_limit = params["force_limit"]
+    # RHPS1_EFFORT_CLAMP fixe la marge d'ecretage en MULTIPLES de force_limit.
+    # 1.0 = comportement historique. Au-dessus, l'ecretage devient un garde-fou
+    # numerique et la limite est portee par la recompense, pas par la physique.
+    #
+    # Pourquoi : a 1.0 tout depassement produit exactement le meme couple, donc
+    # la meme dynamique et la meme recompense -- aucun gradient ne traverse
+    # l'ecretage et PPO random-walke dans la zone saturee (plateau mesure de
+    # 4000 iterations sur 2026-09-11_01-50-50, jambes saturees a 97 %). Pire, il
+    # rend le depassement INVISIBLE : joint_torque_limit_margin_penalty lit
+    # data.actuator_force, donc un ratio <= 1 par construction, et
+    # Metrics/torque_limit_ratio_max vaut 1.0000 a chaque iteration pendant que
+    # la demande reelle est a 55x la limite.
+    #
+    # Et mc_mujoco n'ecrete pas du tout (XML forcelimited="false", MjRobot::PD
+    # renvoie la somme brute) : desserrer l'ecretage RAPPROCHE l'entrainement du
+    # deploiement.
+    margin = _EFFORT_CLAMP_MARGIN
+    if margin != 1.0:
+      force_limit = force_limit * margin
     return torch.clamp(torque, -force_limit, force_limit)
 
   def __init__(
