@@ -45,7 +45,7 @@ class ScanEncoderMLPModel(MLPModel):
   def as_jit(self) -> nn.Module:
     return _ExportScanModel(self)
 
-  def as_onnx(self, verbose: bool) -> nn.Module:
+  def as_onnx(self, verbose: bool = False) -> nn.Module:  # rsl-rl 5.5.2 calls as_onnx() without it
     m = _ExportScanModel(self)
     m.verbose = verbose
     return m
