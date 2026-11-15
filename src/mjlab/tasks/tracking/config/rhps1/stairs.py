@@ -121,6 +121,10 @@ TEACHER_MASK = _env("TEACHER_MASK", "flat")  # flat: only where the scan is flat
 TEACHER = _env("TEACHER", "logs/rsl_rl/rhps1_tracking/2026-11-06_stairs_init/model_13498.pt")
 # Full RL (Leo, 2026-11-09): no copy term, the goal reached at the robot's own pace.
 RL = _env("RL", "0") == "1"
+# Leo 2026-11-14, from-scratch 50 Hz run: flat tiles run the RL task (walk to a goal, stop), not the copy; STAND_P of
+# the episodes get no command at all (stand still). Both stay out of the curriculum.
+FLAT_RL = _env("FLAT_RL", "0") == "1"
+STAND_P = float(_env("STAND_P", "0"))
 STALL_S = float(_env("STALL_S", "3.0"))  # s without 1 cm of new progress before the stall cost
 STALL_DESC_X = float(_env("STALL_DESC_X", "1"))
 VMAX = float(_env("VMAX", "0.25"))  # m/s, smoothed; faster costs
@@ -163,6 +167,9 @@ SAT_T0 = float(_env("SAT_T0", "0"))  # s, >SAT_T: threshold at launch, ramped do
 KNEE_FLEX = math.radians(float(_env("KNEE_FLEX", "40")))
 KNEE_FLEX_H = math.radians(float(_env("KNEE_FLEX_H", "2")))
 SAT_RAMP = int(_env("SAT_RAMP", "0"))
+# 50 Hz: a policy step spans 8 physics steps and the sampled foot load misses 5-15 ms impact peaks. FPEAK_SUB=1
+# keeps the feet sensor's substep history and takes the landing peak over it.
+FPEAK_SUB = _env("FPEAK_SUB", "0") == "1"
 
 # Reference terms: meaningless on stairs, kept on flat tiles only.
 _FLAT_ONLY = ("contact_schedule", "double_support", "heading_hold", "still_when_reference_still",
@@ -222,7 +229,9 @@ class _State:
     kind = torch.tensor([{"flat": 0, "up": 1}[k] for k in kinds], device=dev)
     tread = torch.tensor(treads, device=dev)
     self.kind = kind[types]
-    self.is_stairs = self.kind > 0
+    self.pyr = self.kind > 0  # pyramid tiles (stair geometry)
+    self.is_stairs = self.pyr | ((self.kind == 0) & RL & FLAT_RL)  # every env run by the RL task
+    self.standing = torch.zeros(n, dtype=torch.bool, device=dev)
     self.tread = tread[types]
     self.nsteps = torch.tensor([NSTEPS if t > 0 else 0 for t in treads], device=dev)[types]
     self.center = torch.zeros(n, 2, device=dev)
@@ -264,7 +273,8 @@ class _State:
     self.since_land = torch.full((n,), 10.0, device=dev)  # time since the last landing of either foot, s
     self.land_gap = torch.zeros(n, device=dev)  # that time at this step's landing
     self.swing_land = torch.zeros(n, 2, device=dev)  # landing foot's swing time at this step's landing
-    self.vz_buf = torch.zeros(n, 11, 2, device=dev)
+    # Landing speed = fastest descent over the last 50 ms (11 samples at 200 Hz, 3 at 50 Hz).
+    self.vz_buf = torch.zeros(n, int(round(0.05 / env.step_dt)) + 1, 2, device=dev)
     self.land = torch.zeros(n, 2, dtype=torch.bool, device=dev)
     self.v_land = torch.zeros(n, 2, device=dev)
     self.f_t = torch.ones(n, 2, device=dev)
@@ -334,8 +344,9 @@ class _State:
     span = PLATFORM / 2 + (self.nsteps - 1) * self.tread
     start = torch.where(self.sign < 0, span, PLATFORM / 2)
     end = torch.where(self.sign < 0, PLATFORM / 2, span)
-    frac = ((s - start) / (end - start)).clamp(0.0, 1.0)
-    self.progress = torch.where(self.is_stairs, torch.maximum(self.progress, frac), self.progress)
+    den = end - start
+    frac = ((s - start) / torch.where(den.abs() > 1e-6, den, torch.ones_like(den))).clamp(0.0, 1.0)
+    self.progress = torch.where(self.pyr, torch.maximum(self.progress, frac), self.progress)
     if STAIR_PAUSE_P > 0:
       ep = env.episode_length_buf
       trig = ~torch.isnan(self.sp_trig) & (self.sign * (s - self.sp_trig) > 0) & (ep >= self.cmd_on) & ~self.arrived
@@ -382,7 +393,11 @@ class _State:
     self.land = ld & (self.air >= LAND_AIR) & ~fresh
     self.v_land = (-self.vz_buf.min(1).values).clamp(min=0.0)
     t = torch.where(self.land, torch.zeros_like(self.f_t), (self.f_t + env.step_dt).clamp(max=1.0))
-    self.f_peak = torch.where(self.land, fl, torch.maximum(self.f_peak, fl * (t < 0.06)))
+    fpk = fl
+    if FPEAK_SUB:
+      h = env.scene["stairs_feet"].data.force_history  # [B, 2 feet x slots, substeps, 3], global frame
+      fpk = torch.maximum(fl, h.norm(dim=-1).view(h.shape[0], 2, -1, h.shape[2]).sum(2).max(-1).values)
+    self.f_peak = torch.where(self.land, fpk, torch.maximum(self.f_peak, fpk * (t < 0.06)))
     self.f_close = (self.f_t < 0.06) & (t >= 0.06)
     self.f_t = torch.where(fresh, torch.ones_like(t), t)
     self.swing_land = torch.where(self.land, self.air, torch.zeros_like(self.air))
@@ -459,6 +474,9 @@ class StairsMotionCommand(StandingStartMotionCommand):
       hold[sid] = h
       st.hold_end[sid] = h
       st.cmd_on[sid] = h + (torch.rand(len(sid), device=self.device) * 0.6 / dt + 0.2 / dt).long()
+      stand = torch.rand(len(sid), device=self.device) < STAND_P
+      st.standing[sid] = stand
+      st.cmd_on[sid] = torch.where(stand, torch.full_like(st.cmd_on[sid], 10**9), st.cmd_on[sid])
       if PAUSE_P > 0:
         # Stop and stand mid-walk, then go on: the only stop rl21-31 saw was the arrival, and they balanced on one leg.
         k = len(sid)
@@ -721,7 +739,7 @@ def stairs_knee_flex(env) -> torch.Tensor:
   if ids is None:
     ids = env._st_knee_ids = [robot.joint_names.index(n) for n in ("L_KNEE_P", "R_KNEE_P")]
   lvl = env.scene.terrain.terrain_levels.float()
-  h_cm = 100 * (H_RANGE[0] + lvl / max(ROWS - 1, 1) * (H_RANGE[1] - H_RANGE[0]))
+  h_cm = 100 * (H_RANGE[0] + lvl / max(ROWS - 1, 1) * (H_RANGE[1] - H_RANGE[0])) * env._stairs.pyr  # flat tiles: no riser
   e = torch.relu(robot.data.joint_pos[:, ids] - (KNEE_FLEX + KNEE_FLEX_H * h_cm)[:, None])
   return _stairs_only((e * (env._stairs.load > 0.1 * BW)).sum(-1), env)
 
@@ -756,7 +774,7 @@ def stairs_tread(env) -> torch.Tensor:
   if best is None or best.shape != lvl.shape:
     best = lvl.clone()
   best = torch.where(fresh, lvl, best)
-  new = torch.where(loaded & st.is_stairs[:, None], torch.maximum(best, lvl), best)
+  new = torch.where(loaded & st.pyr[:, None], torch.maximum(best, lvl), best)
   gain = (new - best).sum(-1)
   env._tread_best = new
   return gain / env.step_dt
@@ -1208,7 +1226,7 @@ def stairs_time_out(env) -> torch.Tensor:
 def stairs_levels(env, env_ids: torch.Tensor) -> dict:
   st = env._stairs
   terrain = env.scene.terrain
-  s = st.is_stairs[env_ids]
+  s = st.pyr[env_ids] & ~st.standing[env_ids]
   # Promote on an arrival the robot survives (descents used to "arrive" and fall off the last step).
   held = st.arrived[env_ids] & ~env.termination_manager.terminated[env_ids]
   up = (held if HELD_ARRIVAL else st.arrived[env_ids]) & s
@@ -1383,6 +1401,7 @@ def apply(cfg, play: bool = False) -> None:
       secondary=ContactMatch(mode="body", pattern="terrain"),
       fields=("found", "force", "pos", "normal", "tangent"),
       reduce="maxforce", num_slots=8, global_frame=True,
+      history_length=cfg.decimation if FPEAK_SUB else 0,
     ),
     ContactSensorCfg(
       name="stairs_legs",

@@ -1172,7 +1172,9 @@ def rhps1_flat_tracking_env_cfg(
   # 200 Hz, comme la tache velocity et comme le deploiement. Le defaut de la
   # tache tracking est 0.005 x 4 = 50 Hz.
   cfg.sim.mujoco.timestep = 0.0025
-  cfg.decimation = 2
+  # RHPS1_DECIMATION=8: 50 Hz policy (Leo, 2026-11-14), physics unchanged. The controller holds the target
+  # between inferences (policy_step_size 0.02), as the substeps do here.
+  cfg.decimation = int(os.environ.get("RHPS1_DECIMATION", "2"))
 
   # Meme budget de contacts que la tache velocity : les sept capteurs de
   # proximite ajoutent leurs paires, et le defaut deborde des la mise en donnees
