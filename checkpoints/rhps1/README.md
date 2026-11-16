@@ -18,10 +18,12 @@ mètre de l'escalier ; « descente » = arrivé en bas de l'autre côté.
 | `rl54_200hz` | `2026-11-14_05-51-13` model_42500 | 200 Hz | + coût sur le genou trop plié en appui, curriculum plafonné à 6 cm. | palier 5/12, sans chute 4/12, genou 13 % |
 | `ap7_200hz_approach` | `2026-11-14_19-41-37` model_47000 | 200 Hz | Tâche d'approche (départ sur le plat à 0,5-1,5 m, ±30°, arrêts sur l'escalier), mjlab fusionné. Trop prudent sans bruit d'exploration. | palier 0/12, sans chute 4/12 |
 | `s50_50hz_scratch` | `2026-11-14_22-21-43` model_3000 | 50 Hz | Départ de zéro à 50 Hz (plat RL, envs debout, approche). | palier 0/12, sans chute 7/12 |
-| `s50e_50hz` | `2026-11-15_10-23-12` model_3500 | 50 Hz | s50 repris avec entropie 0. **Meilleur résultat à ce jour.** | **palier 7/12, sans chute 10/12, 2 descentes complètes, 5 cm : palier 4/4** ; genou 5 % |
+| `s50e_50hz_3500` | `2026-11-15_10-23-12` model_3500 | 50 Hz | s50 repris avec entropie 0, 500 itérations après la reprise. | palier 7/12, sans chute 10/12, 2 descentes complètes, 5 cm : palier 4/4 ; genou 5 % |
+| `s50e_50hz_10500` | `2026-11-15_10-23-12` model_10500 | 50 Hz | Même run, 7500 itérations plus loin (16 novembre). **Meilleur résultat à ce jour.** | **palier 12/12, descente complète 12/12, sans chute 11/12** (une chute à 5 cm après 4,2 m) ; genou 2,7-7,9 % |
 
 Rollouts déterministes mjlab (32 envs × 24 s, départ proche) : rl54 42750 20 arrivées / 26 chutes / 0,066 m/s ;
-s50 3000 29 / 19 / 0,060 ; s50e 3500 30 / 11 / 0,053.
+s50 3000 29 / 19 / 0,060 ; s50e 3500 30 / 11 / 0,053 ; s50e 10500 32 / 16 / 0,048 (départ lointain 29 / 17 / 0,082).
+De 7000 à 10500 itérations, s50e reste à 10-12 paliers et 8-11 essais sans chute sur 12 à chaque contrôle.
 
 Pas encore testés sur le vrai robot : slot 22 et les suivants. Les politiques 50 Hz demandent un slot
 `policy_step_size: 0.02` dans rl_controller.

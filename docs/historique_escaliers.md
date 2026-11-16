@@ -161,6 +161,12 @@ rampées sur 3000 itérations, chutes peu coûteuses au début, curriculum de 0,
   sans chute 10 fois sur 12, deux traversées complètes avec descente de l'autre côté. **À 5 cm : palier 4/4**
   (une chute après 2,7 m) ; à 6 cm, arrêt sans tentative ni chute ; genou ≥ 105 N·m seulement 5 % du temps.
 
+- **s50e à 10500 (16 novembre, après un week-end d'entraînement)** : palier 12 fois sur 12, descente complète
+  de l'autre côté 12 fois sur 12, sans chute 11 fois sur 12, à 4, 5 et 6 cm. La seule chute survient à 5 cm
+  après 4,2 m. Genou ≥ 105 N·m 2,7-7,9 % du temps. Stable depuis 7000 itérations (10-12 paliers et 8-11 sans
+  chute sur 12 à chaque contrôle). Curriculum ~4 cm en moyenne sur 0,5-6 cm, arrivées tenues 52 %, écart-type
+  encore 1,43 et en baisse lente.
+
 Coût : 13,8 s par itération à 50 Hz contre 4,3 s à 200 Hz, mais chaque itération couvre 4 fois plus de temps
 simulé, soit ~24 % de marche simulée en plus par heure de calcul.
 
@@ -184,7 +190,7 @@ simulé, soit ~24 % de marche simulée en plus par heure de calcul.
 ## 10. État au 15 novembre et pistes
 
 - **En cours** : s50e (50 Hz), juge mc_mujoco toutes les 500 itérations. Meilleur checkpoint :
-  `checkpoints/rhps1/s50e_50hz` (model_3500).
+  `checkpoints/rhps1/s50e_50hz_10500` (12/12 paliers et descentes, 11/12 sans chute en mc_mujoco).
 - **Pour le vrai robot** : créer un slot 50 Hz (`policy_step_size: 0.02`) dans rl_controller, vérifier les
   limites (vitesses articulaires, couples, impacts) sur les logs mc_mujoco, comme pour les slots précédents.
 - **Pistes** :
