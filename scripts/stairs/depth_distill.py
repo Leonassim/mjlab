@@ -104,7 +104,7 @@ for it in range(it0, it0 + args.iters):
   t0 = time.time()
   beta = max(0.0, 1.0 - it / max(args.beta_iters, 1))
   P = torch.zeros(T, args.envs, n_prop, device=dev)
-  I = torch.zeros(T, args.envs, D.H * D.W, device=dev)
+  I = torch.zeros(T, args.envs, D.H * D.W, device=dev, dtype=torch.float16)  # half: 96-step rollouts
   A = torch.zeros(T, args.envs, n_act, device=dev)
   Dn = torch.zeros(T, args.envs, device=dev)
   h0 = h.detach().clone()
@@ -127,7 +127,7 @@ for it in range(it0, it0 + args.iters):
   tot, nb = 0.0, 0
   for _ in range(args.epochs):
     for idx in torch.randperm(args.envs, device=dev).chunk(args.mb):
-      pred, _ = student.seq(P[:, idx], I[:, idx], h0[:, idx], Dn[:, idx])
+      pred, _ = student.seq(P[:, idx], I[:, idx].float(), h0[:, idx], Dn[:, idx])
       loss = torch.nn.functional.mse_loss(pred, A[:, idx])
       opt.zero_grad()
       loss.backward()

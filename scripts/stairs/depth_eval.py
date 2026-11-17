@@ -1,6 +1,10 @@
-"""depth_eval.py: pinned stairs rollouts of the depth-image student alone (or of the teacher, for reference).
+"""depth_eval.py: stairs rollouts of the depth-image student alone (or of the teacher, for reference).
 
-Same pinning as kneestat.py: each stair env gets a fixed level and mode (climb / descend), PER per cell, plus
+Default (vismoke protocol, comparable with tardis's numbers): the training env as is, with resets, SMOKE_N envs
+x SMOKE_T s, STAIRS_FRAC from the recipe (RHPS1_STAIRS_STAIRS_FRAC=1.0 for stairs only); counts arrivals
+(st.arrived_now) and stairs_fall terminations. Deterministic actions.
+
+PINNED=1, same pinning as kneestat.py (severe, its flat envs all fall on the copy): each stair env gets a fixed level and mode (climb / descend), PER per cell, plus
 flat envs. No resets: a real fall (pelvis low, tilt, body contact) ends the env. Deterministic actions. The
 depth image keeps its training degradations unless RHPS1_DEPTH_CLEAN=1.
 
@@ -31,6 +35,44 @@ NFLAT = int(os.environ.get("BENCH_FLAT", "16"))
 T = float(os.environ.get("BENCH_T", "24"))
 dev = os.environ.get("BENCH_DEV", "cpu")
 torch.manual_seed(int(os.environ.get("BENCH_SEED", "0")))
+
+PINNED = os.environ.get("PINNED", "0") == "1"
+if not PINNED:
+  cfg = load_env_cfg(TASK)
+  cfg.commands["motion"].motion_file = os.environ.get("MJLAB_MOTION_FILE", "docs/bwc_motion_v3.npz")
+  cfg.scene.num_envs = int(os.environ.get("SMOKE_N", "32"))
+  env = RslRlVecEnvWrapper(ManagerBasedRlEnv(cfg, device=dev), clip_actions=12.0)
+  u = env.unwrapped
+  st = u._stairs
+  runner = load_runner_cls(TASK)(env, asdict(load_rl_cfg(TASK)), device=dev)
+  runner.load(TEACHER, load_cfg={"actor": True}, strict=True, map_location=dev)
+  teacher = runner.get_inference_policy(device=dev)
+  obs = env.get_observations()
+  n_prop = obs["actor"].shape[-1] - ST.scan_dim()
+  if which == "teacher":
+    m = None
+  else:
+    ck = torch.load(which, map_location=dev)
+    m = D.DepthStudent(ck["n_prop"], ck["n_act"], torch.zeros(ck["n_prop"]), torch.ones(ck["n_prop"])).to(dev)
+    m.load_state_dict(ck["student"])
+    m.eval()
+    h = torch.zeros(1, u.num_envs, m.gru_dim, device=dev)
+  arr = falls = 0
+  steps = int(float(os.environ.get("SMOKE_T", "24")) / u.step_dt)
+  for i in range(steps):
+    with torch.no_grad():
+      if m is None:
+        a = teacher(obs)
+      else:
+        a, h = m.step(obs["actor"][:, :n_prop], obs["depth"], h)
+      obs, _, dones, _ = env.step(a)
+      if m is not None:
+        h = h * (1 - dones.float())[None, :, None]
+    arr += int(st.arrived_now.sum())
+    if "stairs_fall" in u.termination_manager.active_terms:
+      falls += int(u.termination_manager.get_term("stairs_fall").sum())
+  print(f"DEPTHEVAL {label}: arrivals {arr} falls {falls} over {u.num_envs} envs x {steps * u.step_dt:.0f} s")
+  sys.exit(0)
 
 cells = [(lv, climb) for lv in LEVELS for climb in (True, False)]
 NST = len(cells) * PER
