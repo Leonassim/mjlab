@@ -17,11 +17,11 @@ if [ -z "$LR" ]; then
 else
   RESUME=(--agent.resume True --agent.load-run "$LR" --agent.load-checkpoint "$LC")
 fi
-[ -n "${DRY:-}" ] && { echo "DRY: $(env | grep -c "^RHPS1_") RHPS1 vars, LVL_MAX ${RHPS1_STAIRS_LVL_MAX:-}, env ${STAIRS_ENV:-s50e.env}, entropy $ENT, resume ${RESUME[*]:-none}, lvl $RHPS1_STAIRS_LVL_FILE, decimation $RHPS1_DECIMATION"; exit 0; }
+[ -n "${DRY:-}" ] && { echo "DRY: $(env | grep -c "^RHPS1_") RHPS1 vars, LVL_MAX ${RHPS1_STAIRS_LVL_MAX:-}, env ${STAIRS_ENV:-s50e.env}, entropy $ENT, resume ${RESUME[*]:-none}, lvl $RHPS1_STAIRS_LVL_FILE, decimation $RHPS1_DECIMATION, extra ${EXTRA_ARGS:-none}"; exit 0; }
 nohup uv run train Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start --env.scene.num-envs "${NUM_ENVS:-3584}" \
   --env.commands.motion.motion-file "$REPO/$MJLAB_MOTION_FILE" \
   --video True --video-interval 6000 --video-length 150 "${RESUME[@]}" \
   --agent.max-iterations "${ITERS:-20000}" --agent.seed "${SEED:-11}" --agent.save-interval 250 \
   --agent.algorithm.gamma 0.99 --agent.algorithm.lam 0.95 --agent.algorithm.entropy-coef $ENT \
-  --agent.clip-actions 12 > "$RUNS/$TAG.log" 2>&1 &
+  --agent.clip-actions 12 ${EXTRA_ARGS:-} > "$RUNS/$TAG.log" 2>&1 &   # EXTRA_ARGS: more train CLI flags
 echo "$TAG PID $! log $RUNS/$TAG.log"
