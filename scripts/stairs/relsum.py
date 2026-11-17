@@ -2,7 +2,9 @@
 import sys, os, numpy as np
 from mc_log_ui import read_log
 lab = sys.argv[1]; rows = []
-for f in sys.argv[2:]:
+logs = [f for f in sys.argv[2:] if os.path.isfile(f)]
+skipped = len(sys.argv[2:]) - len(logs)
+for f in logs:
     d = read_log(f); t = np.array(d['t'])
     px, pz = np.array(d['FloatingBase_position_x']), np.array(d['FloatingBase_position_z'])
     act = np.abs(np.array(d['NewRLQPController_RL_currentAction_0'])) > 0
@@ -16,4 +18,4 @@ for f in sys.argv[2:]:
     rows.append((tf is None, plat, down, tf, xm, 100 * (kn[m] >= 105).mean(), np.abs(v[m]).max()))
     print(f"  {os.path.basename(f)[-23:-4]} fall {('%.1f' % (tf - t0)) + ' s after arm' if tf else 'none':18s} max x {xm:4.2f} platform {int(plat)} down {int(down)} | knee>=105 {rows[-1][5]:4.1f}% | leg vmax {rows[-1][6]:.1f} rad/s")
 n = len(rows)
-print(f"RELBENCH {lab}: no-fall {sum(r[0] for r in rows)}/{n}, platform {sum(r[1] for r in rows)}/{n}, down {sum(r[2] for r in rows)}/{n} | knee>=105 {np.mean([r[5] for r in rows]):.1f}% | leg vmax {max(r[6] for r in rows):.1f}")
+print(f"RELBENCH {lab}: {'SKIPPED ' + str(skipped) + ' runs, ' if skipped else ''}no-fall {sum(r[0] for r in rows)}/{n}, platform {sum(r[1] for r in rows)}/{n}, down {sum(r[2] for r in rows)}/{n} | knee>=105 {np.mean([r[5] for r in rows]):.1f}% | leg vmax {max(r[6] for r in rows):.1f}")

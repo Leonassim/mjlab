@@ -3,11 +3,13 @@
 # after arming (default 2). Prints the mc_rtc log path. RLQP_BENCH_POLICY_PATH / RLQP_BENCH_POLICY_STEP pass through.
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+for _ in $(seq 60); do pgrep -x mc_mujoco >/dev/null || break; sleep 1; done  # previous run still closing
 pgrep -x mc_mujoco >/dev/null && { echo "mc_mujoco already running: bench skipped"; exit 3; }
 H=$1; VX=$2; SECS=$3; T=${4:-0.27}
 export RLQP_BENCH_AUTO_ARM=3.0 RLQP_BENCH_VELOCITY="$VX 0 0" RLQP_BENCH_VEL_START_S=${VST:-2.0}
 touch "$RUNS/headless.start"
-setsid "$RLC/scripts/mc_mujoco_stairs.sh" $H $T -- --sync --without-visualization --without-mc-rtc-gui > "$RUNS/headless.log" 2>&1 &
+# timeout: the run ends even when the group kill below misses it (setsid may fork, then $! is not the group).
+setsid timeout -k 10 $((SECS + 360)) "$RLC/scripts/mc_mujoco_stairs.sh" $H $T -- --sync --without-visualization --without-mc-rtc-gui > "$RUNS/headless.log" 2>&1 &
 PGID=$!
 for _ in $(seq 1 60); do
   sleep 5
