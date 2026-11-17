@@ -12,6 +12,7 @@ fell on flat box tiles (box-box contact) where it stands on the plane it was
 trained on (2026-11-06, 3-4 falls in 2 s vs 0).
 """
 
+import dataclasses
 import math
 import os
 
@@ -1524,6 +1525,15 @@ def apply(cfg, play: bool = False) -> None:
               clip=(-1.0, 1.0))
   cfg.observations["actor"].terms["height_scan"] = ObservationTermCfg(
     **scan, noise=None if play or SCAN_NOISE == 0 else Unoise(n_min=-SCAN_NOISE, n_max=SCAN_NOISE))
+  from mjlab.tasks.tracking.config.rhps1 import vision_map
+
+  if vision_map.VIS:
+    # Student: the actor reads the onboard map, the critic keeps the exact scan. Head held pitched down.
+    cfg.scene.sensors = cfg.scene.sensors + (vision_map.camera_sensor_cfg(),)
+    cfg.observations["actor"].terms["height_scan"] = ObservationTermCfg(func=vision_map.vision_scan)
+    rob = cfg.scene.entities["robot"]
+    rob.init_state = dataclasses.replace(
+      rob.init_state, joint_pos={**rob.init_state.joint_pos, "HEAD_P": vision_map.HEAD_P})
   cfg.observations["critic"].terms["height_scan"] = ObservationTermCfg(**scan)
   cfg.observations["critic"].terms["stairs_state"] = ObservationTermCfg(func=stairs_state)
   if RL:

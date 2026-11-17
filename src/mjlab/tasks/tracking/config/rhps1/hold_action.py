@@ -33,6 +33,10 @@ class HoldableJointPositionAction(JointPositionAction):
     if cylinder_limits_enabled():
       lim = self._entity.data.joint_pos_limits[0, self._target_ids]
       self._cyl = cylinder_limit_tensors(list(self.target_names), lim, self.device)
+    from mjlab.tasks.tracking.config.rhps1 import vision_map
+
+    names = list(self.target_names)
+    self._fixed = [(names.index("HEAD_P"), vision_map.HEAD_P)] if vision_map.VIS and "HEAD_P" in names else []
 
   def process_actions(self, actions: torch.Tensor) -> None:
     hold = getattr(self._env, "_action_hold_steps", None)
@@ -46,6 +50,8 @@ class HoldableJointPositionAction(JointPositionAction):
       from mjlab.asset_zoo.robots.RHPS1.rhps1_cylinders import project_cylinder_limits
 
       self._processed_actions = project_cylinder_limits(self._processed_actions, *self._cyl)
+    for i, v in self._fixed:  # joint held by the controller, whatever the policy outputs
+      self._processed_actions[:, i] = v
 
 
 @dataclass(kw_only=True)
