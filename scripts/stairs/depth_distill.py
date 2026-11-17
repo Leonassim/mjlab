@@ -37,9 +37,9 @@ ap.add_argument("--envs", type=int, default=2048)
 ap.add_argument("--iters", type=int, default=6000)
 ap.add_argument("--steps", type=int, default=24)
 ap.add_argument("--lr", type=float, default=3e-4)
-ap.add_argument("--beta-iters", type=int, default=300)
-ap.add_argument("--mb", type=int, default=4, help="minibatches (over envs) per update")
-ap.add_argument("--epochs", type=int, default=1)
+ap.add_argument("--beta-iters", type=int, default=1000)
+ap.add_argument("--mb", type=int, default=8, help="minibatches (over envs) per update")
+ap.add_argument("--epochs", type=int, default=4)
 ap.add_argument("--save", type=int, default=250)
 ap.add_argument("--resume", default="")
 ap.add_argument("--wandb", type=int, default=1)
@@ -95,7 +95,7 @@ def export(path: Path) -> None:
   dummy = (torch.zeros(1, n_prop), torch.zeros(1, D.H * D.W), torch.zeros(1, 1, student.gru_dim))
   torch.onnx.export(m, dummy, str(path), input_names=["obs", "depth", "h_in"], output_names=["actions", "h_out"],
                     dynamo=False, opset_version=17)
-  student.to(dev)
+  student.to(dev).train()  # .eval() above: cuDNN refuses the GRU backward outside training mode
 
 
 h = torch.zeros(1, args.envs, student.gru_dim, device=dev)
