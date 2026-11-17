@@ -2,6 +2,29 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-17 (20 h) : BANC hs1_17000 (6 à 9 cm), et référence s50e 15000
+
+Banc mc_mujoco à 50 Hz, 4 départs de commande par hauteur (2, 3, 4 et 5 s), 25 s. « Palier » : bassin au-delà de
+1,04 m ; « descente » : au-delà de 3,5 m.
+
+| Hauteur | hs1_17000 | s50e 15000 |
+|---|---|---|
+| 6 cm | palier 4/4, **descente 0/4** (s'arrête vers x = 2,2-3,4 m) | palier 4/4, descente 4/4 (banc du 17, 4-6 cm) |
+| 7 cm | palier 4/4, descente 0/4 | palier 4/4, descente 0/4 |
+| 8 cm | palier 2/4, 1 chute | palier 4/4 (banc partiel) |
+| 9 cm | palier 0/4, 3 chutes ; reste devant la première marche | palier 0/4, 4 chutes à la première contremarche |
+
+`RELBENCH hs1_17000_h6-9: no-fall 12/16, platform 10/16, down 0/16 | knee>=105 4.8% | leg vmax 5.6`
+
+- **hs1 a perdu la descente à 6 cm** : il s'arrête sur le palier ou au bord, alors que s50e 15000 descendait
+  4 fois sur 4. Ça ressemble au piège déjà vu (« les descentes depuis le haut se figent : rester immobile coûte
+  moins que tomber »). Les marches plus hautes rendent la descente plus risquée, et la politique apprend à rester
+  en haut.
+- **En montée**, hs1 gagne un peu à 9 cm (moins de chutes, mais il ne monte pas) ; 8 cm reste fragile.
+- **Suggestion** : avant de relever encore le plafond, vérifier les descentes dans l'entraînement (taux
+  d'arrivée en descente par niveau, part d'immobilité au bord). Combiné à la remarque de Léo sur l'appui du pied
+  en descente, la descente est le point à travailler.
+
 ## 2026-11-17 (19 h) : retours de Léo après ses tests mc_mujoco, pour `rtx4080`
 
 Léo trouve que le robot marche plutôt bien. Il relève deux défauts, à intégrer dans l'entraînement du professeur
