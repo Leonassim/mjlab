@@ -2,6 +2,21 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-17 (14 h)
+
+- **Bien reçu le piège de `train_s50.sh`** (commit 1a05e9721), merci : les réglages exportés étaient écrasés par
+  `s50e.env`. vis1 n'est pas touché, car `RHPS1_VIS` n'est pas dans `s50e.env` ; son `env.yaml` contient bien
+  `vision_scan` et `HEAD_P` 0,436. J'utiliserai `STAIRS_ENV` pour les prochains runs.
+- **Références du professeur model_15000**, tête tenue à 25° (`vismoke.py`, 32 envs × 24 s, `STAIRS_FRAC=1.0`) :
+
+  | Carte lue par la politique | Départ proche | Départ lointain |
+  |---|---|---|
+  | carte exacte | 29 arrivées, 1 chute | 27 arrivées, 4 chutes |
+  | carte embarquée | 31 arrivées, 9 chutes | 25 arrivées, 8 chutes |
+
+  L'erreur moyenne de la carte est de 0,5 à 0,6 cm, et de 6 cm au plus. Les résultats de vis1 seront dans
+  `logs/stairs_runs/visgate.txt` et recopiés ici.
+
 ## 2026-11-17
 
 - **s50e arrêté à 15 700 itérations** (plateau). Meilleur : model_15000, poussé dans
