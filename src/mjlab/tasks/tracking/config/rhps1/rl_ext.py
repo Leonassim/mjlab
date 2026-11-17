@@ -243,6 +243,20 @@ class RHPS1PPO(_PPO):
         return kl((old[0].clamp(-kc, kc), *old[1:]), (new[0].clamp(-kc, kc), *new[1:]))
 
       self.actor.get_kl_divergence = _clipped_kl
+    self._kl_log = _os.environ.get("RHPS1_KL_LOG", "0") == "1"
+    if self._kl_log:
+      # Diagnostics for the adaptive-LR floor: the KL seen by each minibatch (the first one comes before any
+      # gradient step of this update), and its mean-shift part alone.
+      self._kl_vals, self._kl_mu = [], []
+      kl_fn = self.actor.get_kl_divergence
+
+      def _logged_kl(old, new):
+        k = kl_fn(old, new)
+        self._kl_vals.append(float(k.mean()))
+        self._kl_mu.append(float((((old[0] - new[0]) ** 2) / (2 * new[1] ** 2)).sum(-1).mean()))
+        return k
+
+      self.actor.get_kl_divergence = _logged_kl
 
   def update(self):
     loss = super().update()
@@ -255,4 +269,8 @@ class RHPS1PPO(_PPO):
     if isinstance(sym, _MirrorAndLipschitz) and sym.gp_n:
       loss["lipschitz_gp"] = sym.gp_sum / sym.gp_n
       sym.gp_sum, sym.gp_n = 0.0, 0
+    if self._kl_log and self._kl_vals:
+      loss["kl_first"], loss["kl_mean"] = self._kl_vals[0], sum(self._kl_vals) / len(self._kl_vals)
+      loss["kl_mu_first"], loss["kl_mu_mean"] = self._kl_mu[0], sum(self._kl_mu) / len(self._kl_mu)
+      self._kl_vals, self._kl_mu = [], []
     return loss
