@@ -117,6 +117,9 @@ EPISODE_S = float(_env("EPISODE_S", "0"))  # stair-env episode length, 0 = the c
 HELD_ARRIVAL = _env("HELD_ARRIVAL", "1") == "1"  # curriculum promotes only arrivals without a fall
 # rl48b/49 sat at the level where half the climbs fall (one held arrival up, one failure down).
 PROMOTE_N = int(_env("PROMOTE_N", "1"))  # consecutive held arrivals at a level before promotion
+# LVL_FREEZE=1: levels never move (loaded from LVL_FILE). For distillation: the student's failures must not pull the
+# level mix away from the teacher's, the teacher labels the hard levels whatever the student does.
+LVL_FREEZE = _env("LVL_FREEZE", "0") == "1"
 # rl53 39000: once the knee cost cut the falls the curriculum climbed 3.8 -> 4.9 in 500 its and the falls came back:
 # the frontier keeps every env at ~50 %. LVL_MAX caps it (an env past the cap is redrawn uniformly below it), so the
 # training mass stays on the heights the robot must master (Leo: 5 cm reliable first).
@@ -1238,7 +1241,7 @@ def stairs_levels(env, env_ids: torch.Tensor) -> dict:
   held = st.arrived[env_ids] & ~env.termination_manager.terminated[env_ids]
   up = (held if HELD_ARRIVAL else st.arrived[env_ids]) & s
   down = ~st.arrived[env_ids] & (st.progress[env_ids] < 0.5) & s
-  if env.common_step_counter == 0:
+  if env.common_step_counter == 0 or LVL_FREEZE:
     up = torch.zeros_like(up)
     down = torch.zeros_like(down)
   if REPLAY_P > 0:

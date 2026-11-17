@@ -42,6 +42,7 @@ ap.add_argument("--mb", type=int, default=8, help="minibatches (over envs) per u
 ap.add_argument("--epochs", type=int, default=4)
 ap.add_argument("--save", type=int, default=250)
 ap.add_argument("--resume", default="")
+ap.add_argument("--init", default="", help="start from this student checkpoint (weights + optimizer), new run")
 ap.add_argument("--wandb", type=int, default=1)
 ap.add_argument("--device", default="cuda:0")
 args = ap.parse_args()
@@ -73,6 +74,10 @@ if args.resume:
   opt.load_state_dict(ck["opt"])
   it0 = ck["iter"] + 1
   out = Path(args.resume).parent
+if args.init:
+  ck = torch.load(args.init, map_location=dev)
+  student.load_state_dict(ck["student"])
+  opt.load_state_dict(ck["opt"])
 out.mkdir(parents=True, exist_ok=True)
 rhps1_env = {k: v for k, v in os.environ.items() if k.startswith(("RHPS1_", "MJLAB_"))}
 (out / "env.txt").write_text("\n".join(f"{k}={v}" for k, v in sorted(rhps1_env.items())) + "\n")
