@@ -60,6 +60,12 @@ EDGE = float(_env("EDGE", "0.04"))  # m, depth jump that makes an edge
 EDGE_P = float(_env("EDGE_P", "0.5"))
 BLACK_P = float(_env("BLACK_P", "0.002"))
 BLACK_T = float(_env("BLACK_T", "0.5"))
+# RANDLEVEL=1: each episode draws its own strength of every degradation, from none up to twice the value above
+# (noise, drop; mixed-pixel probability up to 0.8), and its own latency (LAT +- LAT_J s). A student trained on one
+# fixed level fell on clean images (depth2 1000: 25 arrivals / 8 falls degraded, 1 / 97 clean): the real Azure
+# matches neither, so the student must hold over the whole range.
+RANDLEVEL = _env("RANDLEVEL", "0") == "1"
+LAT_J = float(_env("LAT_J", "0.04"))
 
 
 @dataclass
@@ -96,7 +102,14 @@ class _DepthState:
     n, dev = env.num_envs, env.device
     self.train = train
     self.lat = max(0, round(LAT / env.step_dt))
-    self.buf = torch.zeros(self.lat + 1, n, H, W, device=dev)  # raw frames, newest at the end
+    self.lat_j = round(LAT_J / env.step_dt) if RANDLEVEL else 0
+    self.buf = torch.zeros(self.lat + self.lat_j + 1, n, H, W, device=dev)  # raw frames, newest at the end
+    nb = self.buf.shape[0]
+    self.lag = torch.full((n,), self.lat, dtype=torch.long, device=dev)  # frames back from the newest
+    self.noise = torch.full((n,), NOISE, device=dev)
+    self.drop = torch.full((n,), DROP, device=dev)
+    self.edge_p = torch.full((n,), EDGE_P, device=dev)
+    assert nb >= 1
     self.out = torch.zeros(n, H, W, device=dev)
     self.scale = torch.ones(n, device=dev)
     self.bias = torch.zeros(n, device=dev)
@@ -113,6 +126,11 @@ class _DepthState:
       self.scale[ids] = 1 + (torch.rand(k, device=dev) * 2 - 1) * SCALE
       self.bias[ids] = (torch.rand(k, device=dev) * 2 - 1) * BIAS
       self.shift[ids] = torch.randint(-SHIFT, SHIFT + 1, (k, 2), device=dev)
+      if RANDLEVEL:
+        self.noise[ids] = torch.rand(k, device=dev) * 2 * NOISE
+        self.drop[ids] = torch.rand(k, device=dev) * 2 * DROP
+        self.edge_p[ids] = torch.rand(k, device=dev) * min(0.8, 2 * EDGE_P)
+        self.lag[ids] = self.lat + torch.randint(-self.lat_j, self.lat_j + 1, (k,), device=dev)
     self.black[ids] = 0.0
     self.buf[:, ids] = raw[ids][None]
     self.out[ids] = self._degrade(raw[ids], ids)
@@ -130,7 +148,7 @@ class _DepthState:
         m = (sh == s).all(-1)
         d[m] = torch.roll(d[m], shifts=(int(s[0]), int(s[1])), dims=(1, 2))
         valid[m] = torch.roll(valid[m], shifts=(int(s[0]), int(s[1])), dims=(1, 2))
-    d = d * self.scale[ids, None, None] + self.bias[ids, None, None] + torch.randn_like(d) * NOISE
+    d = d * self.scale[ids, None, None] + self.bias[ids, None, None] + torch.randn_like(d) * self.noise[ids, None, None]
     if EDGE_P > 0:
       # Mixed pixels: a pixel with a neighbour more than EDGE away (a nosing) returns a blend, or nothing.
       pad = torch.nn.functional.pad(d[:, None], (1, 1, 1, 1), mode="replicate")[:, 0]
@@ -138,11 +156,11 @@ class _DepthState:
       jump = (nb - d[None]).abs()
       j, idx = jump.max(0)
       far = nb.gather(0, idx[None])[0]
-      edge = (j > EDGE) & (torch.rand_like(d) < EDGE_P)
+      edge = (j > EDGE) & (torch.rand_like(d) < self.edge_p[ids, None, None])
       t = torch.rand_like(d)
       blend = d + t * (far - d)
       d = torch.where(edge, torch.where(torch.rand_like(d) < 0.3, torch.zeros_like(d), blend), d)
-    drop = torch.rand_like(d) < DROP
+    drop = torch.rand_like(d) < self.drop[ids, None, None]
     d = torch.where(valid & ~drop & (d >= RANGE[0]) & (d <= RANGE[1]), d, torch.zeros_like(d))
     blk = self.black[ids] > 0
     return torch.where(blk[:, None, None], torch.zeros_like(d), d)
@@ -157,7 +175,9 @@ class _DepthState:
       self.black = torch.where(start, torch.full_like(self.black, BLACK_T), self.black)
     if self.step % PERIOD == 0:
       ids = torch.arange(env.num_envs, device=raw.device)
-      self.out = self._degrade(self.buf[0].clone(), ids)
+      nb = self.buf.shape[0]
+      frame = self.buf[nb - 1 - self.lag, ids]  # per-env latency
+      self.out = self._degrade(frame.clone(), ids)
 
 
 _IN_CONE: dict = {}
