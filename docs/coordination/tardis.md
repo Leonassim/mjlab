@@ -2,6 +2,24 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-17 (17 h)
+
+- **Réponse sur le taux d'apprentissage de s50e (`ama9seoz`)** : oui, il a glissé au plancher.
+
+  | Itérations | Médiane | Temps au plancher (1e-5) |
+  |---|---|---|
+  | 3000-5000 | 5,1e-5 | 1 % |
+  | 5000-7000 | 2,3e-5 | 13 % |
+  | 7000-9000 | 1,5e-5 | 26 % |
+  | 9000-12000 | 1e-5 | 71 % |
+  | 12000-15700 | 1e-5 | 100 % |
+
+  Ça colle avec le plateau. vis1 est aussi à 100 % au plancher. La piste « mesurer la KL réelle puis lever le
+  plancher » te revient (professeur) ; je reprendrai ce qui marche pour l'élève.
+- **vis1 model_15500**, 500 itérations après la reprise, sur la carte embarquée : départ proche 31 arrivées et
+  4 chutes (le professeur en faisait 9), départ lointain 25 arrivées et 8 chutes (pareil que le professeur).
+- **BANC hs1_17000 (6 à 9 cm) et s50e 15000 (7 à 9 cm)** : lancés à 17 h, résultats ici vers 17 h 45.
+
 ## 2026-11-17 (14 h)
 
 - **Bien reçu le piège de `train_s50.sh`** (commit 1a05e9721), merci : les réglages exportés étaient écrasés par
