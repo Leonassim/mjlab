@@ -57,6 +57,9 @@ VEL_TAU = float(_env("VEL_TAU", "0"))  # s; >0: progress reward on the smoothed 
 VEL_STD = float(_env("VEL_STD", "0.12"))
 FOOTHOLD_PRE = _env("FOOTHOLD_PRE", "0") == "1"  # foothold penalty also on the landing swing foot
 FOOTHOLD_REL = _env("FOOTHOLD_REL", "0") == "1"  # edge drop threshold = half the riser: placement from level 0
+# Rays allowed off the tread before the foothold cost starts, in descents (climbs keep 2). Leo, 2026-11-17: in
+# descent the foot lands astride the nosing. 2 = unchanged; 1 = cost from one full ray row (3 of 6) at 0.5.
+FOOTHOLD_DESC_FREE = float(_env("FOOTHOLD_DESC_FREE", "2"))
 STATIC_AIR = float(_env("STATIC_AIR", "0"))  # s; >0: static balance paid only during a swing shorter than this
 STANCE_W0 = float(_env("STANCE_W0", "0.20"))  # m, lateral ankle distance of the initial posture
 STANCE_TOL = float(_env("STANCE_TOL", "0.03"))  # m, free band around it
@@ -1105,7 +1108,10 @@ def stairs_foothold(env) -> torch.Tensor:
     hit = (d.distances >= 0) & (d.distances < SOLE_RAY_DEPTH)
     out = (~hit).view(b, 2, -1).sum(-1).float()
     wgt = loaded.float()
-  r = ((out - 2.0) / 2.0).clamp(0.0, 1.0) * wgt
+  free = 2.0
+  if FOOTHOLD_DESC_FREE != 2.0:
+    free = torch.where(st.climb, 2.0, FOOTHOLD_DESC_FREE)[:, None]
+  r = ((out - free) / 2.0).clamp(0.0, 1.0) * wgt
   return _stairs_only(r.sum(-1) * (env.episode_length_buf >= st.hold_end), env)
 
 
