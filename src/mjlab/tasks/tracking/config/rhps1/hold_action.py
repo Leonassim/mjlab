@@ -36,7 +36,7 @@ class HoldableJointPositionAction(JointPositionAction):
     from mjlab.tasks.tracking.config.rhps1 import vision_map
 
     names = list(self.target_names)
-    self._fixed = [(names.index("HEAD_P"), vision_map.HEAD_P)] if vision_map.VIS and "HEAD_P" in names else []
+    self._fixed = [(names.index("HEAD_P"), vision_map.HEAD_P)] if vision_map.HEAD_HOLD and "HEAD_P" in names else []
 
   def process_actions(self, actions: torch.Tensor) -> None:
     hold = getattr(self._env, "_action_hold_steps", None)

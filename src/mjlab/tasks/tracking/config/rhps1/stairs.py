@@ -1537,9 +1537,14 @@ def apply(cfg, play: bool = False) -> None:
     # Student: the actor reads the onboard map, the critic keeps the exact scan. Head held pitched down.
     cfg.scene.sensors = cfg.scene.sensors + (vision_map.camera_sensor_cfg(),)
     cfg.observations["actor"].terms["height_scan"] = ObservationTermCfg(func=vision_map.vision_scan)
+  if vision_map.HEAD_HOLD:
     rob = cfg.scene.entities["robot"]
     rob.init_state = dataclasses.replace(
       rob.init_state, joint_pos={**rob.init_state.joint_pos, "HEAD_P": vision_map.HEAD_P})
+  from mjlab.tasks.tracking.config.rhps1 import depth_student
+
+  if depth_student.DEPTH:
+    depth_student.apply(cfg, play=play)
   cfg.observations["critic"].terms["height_scan"] = ObservationTermCfg(**scan)
   cfg.observations["critic"].terms["stairs_state"] = ObservationTermCfg(func=stairs_state)
   if RL:

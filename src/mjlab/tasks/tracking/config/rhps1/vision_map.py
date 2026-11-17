@@ -28,6 +28,8 @@ def _env(k: str, d: str) -> str:
 
 
 VIS = os.environ.get("RHPS1_VIS", "0") == "1"
+# Head held at HEAD_P without the onboard map (depth-image student, depth_student.py). VIS implies it.
+HEAD_HOLD = VIS or os.environ.get("RHPS1_HEAD_HOLD", "0") == "1"
 HEAD_P = math.radians(float(_env("HEAD_P_DEG", "25")))  # head pitch held during walking (Leo, 2026-11-17)
 CAM_POS = (0.071, 0.0017, 0.1558)  # azure_depth_frame in HEAD_P_LINK (URDF), MuJoCo camera axes (-z forward)
 CAM_RPY = (1.46608, 1.45688e-06, -1.5708)
