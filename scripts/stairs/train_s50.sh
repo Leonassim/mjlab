@@ -7,7 +7,7 @@ set -eu
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 TAG=$1; LR=${2:-}; LC=${3:-}
 cd "$REPO"
-stairs_env
+stairs_env "${STAIRS_ENV:-}"   # STAIRS_ENV: another recipe file (default s50e.env)
 export RHPS1_STAIRS_LVL_FILE=$RUNS/${TAG}_lvl.pt
 RESUME=(); ENT=0.0
 if [ -z "$LR" ]; then
@@ -17,7 +17,7 @@ if [ -z "$LR" ]; then
 else
   RESUME=(--agent.resume True --agent.load-run "$LR" --agent.load-checkpoint "$LC")
 fi
-[ -n "${DRY:-}" ] && { echo "DRY: $(env | grep -c "^RHPS1_") RHPS1 vars, entropy $ENT, resume ${RESUME[*]:-none}, lvl $RHPS1_STAIRS_LVL_FILE, decimation $RHPS1_DECIMATION"; exit 0; }
+[ -n "${DRY:-}" ] && { echo "DRY: $(env | grep -c "^RHPS1_") RHPS1 vars, LVL_MAX ${RHPS1_STAIRS_LVL_MAX:-}, env ${STAIRS_ENV:-s50e.env}, entropy $ENT, resume ${RESUME[*]:-none}, lvl $RHPS1_STAIRS_LVL_FILE, decimation $RHPS1_DECIMATION"; exit 0; }
 nohup uv run train Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start --env.scene.num-envs "${NUM_ENVS:-3584}" \
   --env.commands.motion.motion-file "$REPO/$MJLAB_MOTION_FILE" \
   --video True --video-interval 6000 --video-length 150 "${RESUME[@]}" \
