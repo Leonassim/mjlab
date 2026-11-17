@@ -2,6 +2,42 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-18 (2 h) : chaîne vision dans mc_mujoco, deux défauts corrigés ; vis2 lancé
+
+Banc habituel (`relbench`, 12 essais à 4, 5 et 6 cm), avec vis1 17500 sur le slot 23 et `RLQP_VISION=1`.
+
+| Entrée de vis1 | sans chute | palier |
+|---|---|---|
+| scan exact | 12/12 | 12/12 |
+| carte, avant correctifs (MCWaiko 6D) | 5/12 | 5/12 |
+| carte, vraie pose, avant correctif des empreintes | 8/12 | 10/12 |
+| carte, vraie pose, **après correctif des empreintes** | **12/12** | **12/12** |
+| carte, MCWaiko (z compris) | 6/12 | 8/12 |
+| carte, x/y/lacet de MCWaiko + **z par odométrie des jambes** | 9/12 | 12/12 |
+| idem + recalage de la carte à chaque contact (`--align`) | 10/12 | 10/12 |
+
+- **Défaut 1, mon code (corrigé dans `rl_controller` 19fa3c5) : les empreintes.** Le capteur de cheville lit -10 à
+  -19 N sur un pied en vol, à cause de son poids et de son inertie. Le seuil |Fz| > 10 N marquait donc le pied en
+  vol comme appuyé 91 % du temps, et son empreinte rehaussait la carte derrière le robot d'environ 3 cm. Le seuil
+  passe à Fz > 100 N. Avec la vraie pose, la carte vaut maintenant le scan exact.
+  - **À vérifier chez vous** : `vision_map.py` prend la force de contact (> 10 N), qui est nulle en vol. Pas de
+    problème donc, mais un futur modèle de capteur de cheville aurait le même piège.
+- **Défaut 2 : la hauteur de MCWaiko.** Son inclinaison est juste à 0,1° près, mais son z 6D surestime les montées
+  (+5 à +13 cm pour 12 cm montés). La vision prend maintenant le z de l'odométrie des jambes : la semelle la plus
+  chargée garde sa hauteur, ancrée **sur son coin le plus bas**. Le centre de la semelle remonte à chaque attaque
+  du talon, d'environ 1 cm par pas.
+- **Ce qu'il reste** : la dérive en z sur 1 s de l'odométrie des jambes, rejouée hors ligne avec la vraie
+  orientation, vaut 0,6 cm en médiane et 1,5 cm au p95, toujours vers le haut. Le modèle d'entraînement de
+  `vision_map` ne prévoyait que 0,2 cm de marche aléatoire en 1 s et ±10 % de la montée.
+- **vis2** :
+  - départ : vis1b 18000 (vis1 reprise après le disque plein) ;
+  - **seule modification** : `RHPS1_VIS_ODO_ZRW=0.012` (au lieu de 0,002) et `RHPS1_VIS_ODO_ZSCALE=0.3` (au lieu de
+    0,1) ;
+  - dossier `2026-11-18_01-44-00`, portes `vis_gate_loop`.
+- **Pour l'élève par l'image (depth1)** : il n'a pas besoin de cette odométrie. En revanche, l'`obs_format` 13 côté
+  contrôleur devra garder l'état caché du GRU entre les pas et le remettre à zéro à l'armement. Je le ferai quand
+  vous pousserez un candidat.
+
 ## 2026-11-18 (1 h) : BANC hs2_19000 avec porte-à-faux, chaîne vision dans mc_mujoco, prochaine tâche
 
 ### Banc hs2_19000
