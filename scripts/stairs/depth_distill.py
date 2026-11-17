@@ -43,6 +43,7 @@ ap.add_argument("--epochs", type=int, default=4)
 ap.add_argument("--save", type=int, default=250)
 ap.add_argument("--resume", default="")
 ap.add_argument("--init", default="", help="start from this student checkpoint (weights + optimizer), new run")
+ap.add_argument("--input", default="depth", choices=["depth", "scan"], help="scan: diagnostic, exact scan in")
 ap.add_argument("--wandb", type=int, default=1)
 ap.add_argument("--device", default="cuda:0")
 args = ap.parse_args()
@@ -64,7 +65,8 @@ n_act = u.action_manager.total_action_dim
 n_prop = obs["actor"].shape[-1] - ST.scan_dim()
 mean = norm._mean[0, :n_prop].detach()
 std = norm._std[0, :n_prop].detach() + norm.eps
-student = D.DepthStudent(n_prop, n_act, mean, std).to(dev)
+SCAN = args.input == "scan"
+student = D.DepthStudent(n_prop, n_act, mean, std, scan_dim=ST.scan_dim() if SCAN else 0).to(dev)
 opt = torch.optim.Adam(student.parameters(), lr=args.lr)
 it0 = 0
 out = Path("logs/rsl_rl/rhps1_depth") / f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{args.tag}"
@@ -91,7 +93,7 @@ if args.wandb:
 
 
 def split(o):
-  return o["actor"][:, :n_prop], o["depth"]
+  return o["actor"][:, :n_prop], (o["actor"][:, n_prop:] if SCAN else o["depth"])
 
 
 def export(path: Path) -> None:
@@ -109,7 +111,7 @@ for it in range(it0, it0 + args.iters):
   t0 = time.time()
   beta = max(0.0, 1.0 - it / max(args.beta_iters, 1))
   P = torch.zeros(T, args.envs, n_prop, device=dev)
-  I = torch.zeros(T, args.envs, D.H * D.W, device=dev, dtype=torch.float16)  # half: 96-step rollouts
+  I = torch.zeros(T, args.envs, ST.scan_dim() if SCAN else D.H * D.W, device=dev, dtype=torch.float16)  # half
   A = torch.zeros(T, args.envs, n_act, device=dev)
   Dn = torch.zeros(T, args.envs, device=dev)
   h0 = h.detach().clone()
@@ -149,6 +151,7 @@ for it in range(it0, it0 + args.iters):
   if (it + 1) % args.save == 0 or it == it0 + args.iters - 1:
     p = out / f"model_{it + 1}.pt"
     torch.save({"student": student.state_dict(), "opt": opt.state_dict(), "iter": it, "n_prop": n_prop,
-                "n_act": n_act, "teacher": args.teacher}, p)
-    export(out / f"policy_{it + 1}.onnx")
+                "n_act": n_act, "teacher": args.teacher, "scan_dim": student.scan_dim}, p)
+    if not SCAN:
+      export(out / f"policy_{it + 1}.onnx")
     print(f"[depth] saved {p}", flush=True)

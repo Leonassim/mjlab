@@ -235,19 +235,24 @@ class DepthStudent(nn.Module):
   """
 
   def __init__(self, n_prop: int, n_act: int, mean: torch.Tensor, std: torch.Tensor, gru: int = 256,
-               cnn_out: int = 64) -> None:
+               cnn_out: int = 64, scan_dim: int = 0) -> None:
     super().__init__()
     self.n_prop, self.h, self.w = n_prop, H, W
+    self.scan_dim = scan_dim  # > 0: diagnostic student reading the teacher's exact scan through an MLP
     self.register_buffer("mean", mean.clone())
     self.register_buffer("std", std.clone())
-    self.cnn = nn.Sequential(
-      nn.Conv2d(1, 16, 5, stride=2, padding=2), nn.ELU(),
-      nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ELU(),
-      nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ELU(),
-      nn.Flatten(),
-    )
-    with torch.no_grad():
-      nf = self.cnn(torch.zeros(1, 1, H, W)).shape[-1]
+    if scan_dim:
+      self.cnn = nn.Sequential(nn.Linear(scan_dim, 128), nn.ELU())
+      nf = 128
+    else:
+      self.cnn = nn.Sequential(
+        nn.Conv2d(1, 16, 5, stride=2, padding=2), nn.ELU(),
+        nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ELU(),
+        nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ELU(),
+        nn.Flatten(),
+      )
+      with torch.no_grad():
+        nf = self.cnn(torch.zeros(1, 1, H, W)).shape[-1]
     self.cnn_fc = nn.Sequential(nn.Linear(nf, cnn_out), nn.ELU())
     self.gru = nn.GRU(n_prop + cnn_out, gru, batch_first=False)
     self.mlp = nn.Sequential(nn.Linear(gru + n_prop, 256), nn.ELU(), nn.Linear(256, 128), nn.ELU(),
@@ -264,7 +269,8 @@ class DepthStudent(nn.Module):
     """prop [T, B, P], depth [T, B, H*W], dones [T, B] (reset AFTER step t) -> actions [T, B, A], h."""
     t, b = prop.shape[:2]
     x = ((prop - self.mean) / self.std).clamp(-5, 5)
-    z = self.cnn_fc(self.cnn(depth.reshape(t * b, 1, self.h, self.w))).view(t, b, -1)
+    img = depth.reshape(t * b, -1) if self.scan_dim else depth.reshape(t * b, 1, self.h, self.w)
+    z = self.cnn_fc(self.cnn(img)).view(t, b, -1)
     inp = torch.cat([x, z], -1)
     if dones is None:
       y, h = self.gru(inp, h)

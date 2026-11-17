@@ -53,7 +53,8 @@ if not PINNED:
     m = None
   else:
     ck = torch.load(which, map_location=dev)
-    m = D.DepthStudent(ck["n_prop"], ck["n_act"], torch.zeros(ck["n_prop"]), torch.ones(ck["n_prop"])).to(dev)
+    m = D.DepthStudent(ck["n_prop"], ck["n_act"], torch.zeros(ck["n_prop"]), torch.ones(ck["n_prop"]),
+                     scan_dim=ck.get("scan_dim", 0)).to(dev)
     m.load_state_dict(ck["student"])
     m.eval()
     h = torch.zeros(1, u.num_envs, m.gru_dim, device=dev)
@@ -64,7 +65,7 @@ if not PINNED:
       if m is None:
         a = teacher(obs)
       else:
-        a, h = m.step(obs["actor"][:, :n_prop], obs["depth"], h)
+        a, h = m.step(obs["actor"][:, :n_prop], obs["actor"][:, n_prop:] if m.scan_dim else obs["depth"], h)
       obs, _, dones, _ = env.step(a)
       if m is not None:
         h = h * (1 - dones.float())[None, :, None]
@@ -134,13 +135,14 @@ if which == "teacher":
   h = None
 else:
   ck = torch.load(which, map_location=dev)
-  m = D.DepthStudent(ck["n_prop"], ck["n_act"], torch.zeros(ck["n_prop"]), torch.ones(ck["n_prop"])).to(dev)
+  m = D.DepthStudent(ck["n_prop"], ck["n_act"], torch.zeros(ck["n_prop"]), torch.ones(ck["n_prop"]),
+                     scan_dim=ck.get("scan_dim", 0)).to(dev)
   m.load_state_dict(ck["student"])
   m.eval()
   h = torch.zeros(1, u.num_envs, m.gru_dim, device=dev)
 
   def act(o, h):
-    return m.step(o["actor"][:, :n_prop], o["depth"], h)
+    return m.step(o["actor"][:, :n_prop], o["actor"][:, n_prop:] if m.scan_dim else o["depth"], h)
 
 N = u.num_envs
 alive = torch.ones(N, dtype=torch.bool, device=u.device)
