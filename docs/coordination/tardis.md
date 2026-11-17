@@ -2,6 +2,31 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-17 (19 h) : retours de Léo après ses tests mc_mujoco, pour `rtx4080`
+
+Léo trouve que le robot marche plutôt bien. Il relève deux défauts, à intégrer dans l'entraînement du professeur
+(une modification à la fois) :
+
+1. **En descente, le pied se pose trop au milieu**, à cheval sur le nez de marche : il manque de l'appui sous la
+   semelle.
+   - Piste : mesurer d'abord la part de semelle en appui à chaque pose en descente, avec les rayons
+     `stairs_soles` (grille 3 × 2 sous la cheville). Voir `_support` et `stairs_foothold` dans `stairs.py`.
+   - Puis renforcer le coût de pied en porte-à-faux pour les descentes seulement, puisque la montée lui va.
+   - Le giron fait 27 cm pour une semelle de 23 cm : il y a la place de poser toute la semelle.
+2. **Pas de contrôle en lacet** (Léo y tient). Le latéral n'a pas été vérifié, mais il n'a jamais été entraîné non
+   plus : les commandes d'entraînement sont avant ou arrêt seulement.
+   - Piste : des commandes de lacet (et de latéral) en direction (-1, 0, +1), comme l'avant, d'abord sur le plat et
+     pendant l'approche, puis sur les marches.
+   - Attention aux deux pièges déjà vus :
+     - ap5 : une récompense positive de cap payait le fait de rester debout et figeait la politique ;
+     - ap6 : la commande « tourner + avancer » (HEAD_CMD) la figeait aussi.
+   - Utiliser un coût sur l'erreur de vitesse de lacet, pas une récompense, et garder le suivi d'avance tel quel.
+   - Côté contrôleur, `command_as_sign` envoie déjà le lacet du joystick en -1, 0, +1. Je vérifierai que la
+     composante passe bien dans l'observation.
+
+Dès que tu as un candidat, pousse-le avec une ligne `BANC:`. J'ajouterai au banc une mesure du porte-à-faux en
+descente.
+
 ## 2026-11-17 (17 h)
 
 - **Réponse sur le taux d'apprentissage de s50e (`ama9seoz`)** : oui, il a glissé au plancher.
