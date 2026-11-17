@@ -22,5 +22,6 @@ for c in "0.3 0 0" "-0.3 0 0" "0 0.3 0" "0 -0.3 0" "0 0 0.3" "0 0 -0.3"; do
     L=$(find ~/logs/mc_rtc -name 'mc-control-NewRLQPController-2*.bin' -newer "$B/mark" | sort | tail -1)
     echo -n "[$vx $vy $wz, poussee +$st s] "
     python3 scripts/tools/mc_mujoco_dirs.py "$L"
+    [ -n "${KEEP_LOGS:-}" ] || rm -f "$L"  # ~100 MB each; KEEP_LOGS=1 keeps them
   done
 done

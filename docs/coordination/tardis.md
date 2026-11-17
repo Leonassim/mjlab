@@ -2,6 +2,95 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-18 (1 h) : BANC hs2_19000 avec porte-à-faux, chaîne vision dans mc_mujoco, prochaine tâche
+
+### Banc hs2_19000
+
+`scripts/stairs/ohbench.sh` reprend le banc habituel : 12 essais à 4, 5 et 6 cm, avec des départs à 2, 3, 4 et 5 s.
+Deux changements :
+- chaque essai dure 30 s, pour laisser le temps de descendre ;
+- il ajoute `scripts/stairs/overhang.py`, qui reconstruit la cinématique depuis le log et lit chaque appui chargé
+  0,1 s après le contact.
+
+Pour chaque appui, deux mesures :
+- **semelle hors marche** : la part de la face inférieure de la semelle mc_mujoco (9 × 3 points) qui se trouve plus
+  d'une demi-contremarche sous la marche d'appui ;
+- **à cheval** : 3 rayons sur 6 ou plus hors de la marche, avec les 6 rayons de `stairs_soles`. C'est le critère de
+  `stairs_gait.py`, donc comparable à vos mesures mjlab.
+
+| | sans chute | palier | descente | semelle hors marche (descente) | à cheval (descente) | à cheval (montée) |
+|---|---|---|---|---|---|---|
+| hs2_19000 | 12/12 | 12/12 | 4/12 | 13 % | **8 %** (143 appuis) | 2 % (200) |
+| s50e 15000 | 12/12 | 12/12 | 7/12 | 20 % | 14 % (170) | 16 % (190) |
+
+- **Dans mc_mujoco, hs2 réduit nettement les appuis à cheval** : de 14 à 8 % en descente, et de 16 à 2 % en montée.
+  mjlab ne voyait pas cet effet. Le défaut signalé par Léo est donc bien réel dans mc_mujoco, et hs2 le corrige en
+  partie.
+- **Prix à surveiller** : hs2 descend moins souvent en 30 s (4/12 contre 7/12). Il hésite plus longtemps au bord du
+  palier. C'est le risque de « descente figée » que vous suiviez.
+
+### Chaîne vision dans mc_mujoco (`tardis`)
+
+- **La chaîne marche.** Elle est sur `rl_controller` `real-robot-safe` :
+  - l'`obs_format` 12, qui lit le même scan que le 11, mais pris dans la carte embarquée ;
+  - la mémoire partagée `src/vision_link.h` ;
+  - le slot 23 = vis1 17500, à 50 Hz, tête tenue à 25° ;
+  - `scripts/vision/rhps1_vision.py --source sim`, lancé par `RLQP_VISION=1 scripts/mc_mujoco_stairs.sh`.
+  - Mesures : carte âgée de 0,10 à 0,15 s, tête tenue, erreur moyenne du scan sous 1 cm.
+- **Piège trouvé : MCWaiko sans `leggedOdometry` n'estime pas la position.** Sa position est alors l'ancre du robot
+  de commande, qui ne marche jamais dans le contrôleur RL. Elle reste au point de départ sur 5,5 m de marche, et le
+  z ne suit pas les marches. La config du contrôleur passe en `odometryType: 6D`.
+  - Sur le slot 18, les entrées de la politique sont identiques pendant 1 s après l'armement, et le chemin est le
+    même après 30 s.
+  - Avec la 6D, la dérive en x n'est que de quelques centimètres sur 4 m, mais **le z dérive de +5 à +13 cm sur
+    12 cm montés**.
+- **Résultats de vis1 17500**, banc habituel (relbench) :
+
+  | Entrée | sans chute |
+  |---|---|
+  | carte embarquée | 5/12 |
+  | scan exact | **12/12**, comme s50e 15000 |
+
+  L'élève vaut donc le professeur. C'est la carte de mc_mujoco qui le fait tomber, alors que les portes mjlab
+  (`vismoke`) ne lui coûtaient presque rien.
+  - Suspect principal : la dérive en z de MCWaiko. L'entraînement ne modélise que 10 % d'erreur en z.
+  - Test en cours : la même carte, construite et lue avec la vraie pose.
+
+### Prochaine tâche proposée à `rtx4080` (accord de Léo, 2026-11-18) : élève par l'image de profondeur
+
+**Idée** : plus de carte ni d'odométrie. C'est la famille d'Agarwal 2022, d'*Extreme Parkour* (Cheng 2023) et de
+*Humanoid Parkour* (Zhuang 2024). Une petite image de profondeur de la tête passe dans un CNN, puis dans un GRU, puis
+dans la politique. La mémoire retient les marches vues, que la tête ne voit plus sous les pieds.
+
+- **Départ** :
+  - professeur `s50e_50hz_15000`, la référence mc_mujoco ; ou hs2 si vous le jugez meilleur, mais une seule
+    modification à la fois ;
+  - distillation DAgger avec `rsl_rl` 5.5.2 (`algorithms/distillation.py`, `runners/distillation_runner.py`). Elle a
+    `CNNModel` et `RNNModel`, mais pas de modèle CNN + GRU : à écrire dans `rl_ext.py`, avec le CNN en encodeur
+    devant le GRU.
+- **Image** :
+  - caméra de `vision_map.py` : Azure sur `HEAD_P_LINK`, `CAM_POS` / `CAM_RPY`, tête tenue à 25° avec
+    `RHPS1_VIS=1` et la surcharge de `hold_action.py` ;
+  - motif sténopé d'environ 64 × 48 dans le cône WFOV de 120°, distances écrêtées entre 0,25 et 2,88 m ;
+  - le robot occulte (groupe de géométries 3, comme dans `vision_map`) ;
+  - images à 25 Hz avec 80 ms de retard : garder la dernière image.
+- **Dégradations à l'entraînement** :
+  - bruit de distance de 1 cm ;
+  - erreur de montage de 1° et 1 cm par épisode ;
+  - environ 5 % de pixels manquants ;
+  - pixels parasites mélangeant avant et arrière-plan aux bords des marches, comme sur la vraie Azure.
+- **Déploiement visé** : le CNN tourne sur le Jetson et envoie le latent (32 à 64 nombres) au PC de contrôle par le
+  Wi-Fi, ou bien tout tourne sur le PC de contrôle. Il faut donc un petit encodeur, sous 1 ms sur CPU.
+- **Tests** :
+  - rollouts mjlab déterministes, avec des départs proches et lointains ;
+  - puis le banc mc_mujoco chez `tardis`, qui ajoutera la source d'image à `rhps1_vision.py` et l'`obs_format` 13.
+
+### Outils
+
+- `relbench.sh` et `mc_mujoco_suite.sh` effacent leurs logs mc_rtc après le résumé (`KEEP_LOGS=1` pour les
+  garder). `~/logs/mc_rtc` avait atteint 298 Go et rempli le disque de `tardis` ; vis1 en est mort, puis a repris
+  en vis1b.
+
 ## 2026-11-17 (20 h) : BANC hs1_17000 (6 à 9 cm), et référence s50e 15000
 
 Banc mc_mujoco à 50 Hz, 4 départs de commande par hauteur (2, 3, 4 et 5 s), 25 s. « Palier » : bassin au-delà de
