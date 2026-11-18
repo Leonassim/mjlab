@@ -31,11 +31,11 @@ VIS = os.environ.get("RHPS1_VIS", "0") == "1"
 # Head held at HEAD_P without the onboard map (depth-image student, depth_student.py). VIS implies it.
 HEAD_HOLD = VIS or os.environ.get("RHPS1_HEAD_HOLD", "0") == "1"
 HEAD_P = math.radians(float(_env("HEAD_P_DEG", "25")))  # head pitch held during walking (Leo, 2026-11-17)
-# azure_depth_frame in HEAD_P_LINK, MuJoCo camera axes (-z forward). The default is Choreonoid's (the ZED Mini
-# mount); the real Azure, fitted on rhps1 at three head angles (2026-11-18): CAM_POS 0.1190,0.0017,0.1825 and
-# CAM_RPY 1.49513,-0.00503,-1.57095.
-CAM_POS = tuple(float(x) for x in _env("CAM_POS", "0.071,0.0017,0.1558").split(","))
-CAM_RPY = tuple(float(x) for x in _env("CAM_RPY", "1.46608,1.45688e-06,-1.5708").split(","))
+# Azure depth camera in HEAD_P_LINK, MuJoCo camera axes (-z forward), fitted on rhps1 at three head angles
+# (2026-11-18). Before that, Choreonoid's (0.071, 0.0017, 0.1558), (1.46608, 1.45688e-06, -1.5708): the ZED Mini
+# mount, 1.85 cm below the Azure's; runs up to vis2 and depth7 trained with it.
+CAM_POS = tuple(float(x) for x in _env("CAM_POS", "0.1190,0.0017,0.1825").split(","))
+CAM_RPY = tuple(float(x) for x in _env("CAM_RPY", "1.49513,-0.00503,-1.57095").split(","))
 CONE = math.radians(float(_env("CONE_DEG", "60")))  # half-angle; WFOV is a 120 deg circle
 RANGE = tuple(float(x) for x in _env("RANGE", "0.25,2.88").split(","))  # WFOV 2x2 binned
 ROI_X = tuple(float(x) for x in _env("ROI_X", "0.0,1.6").split(","))  # ground aimed at, ahead of the pelvis
