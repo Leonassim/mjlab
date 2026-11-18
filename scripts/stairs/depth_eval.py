@@ -55,6 +55,9 @@ if not PINNED:
     ck = torch.load(which, map_location=dev)
     m = D.DepthStudent(ck["n_prop"], ck["n_act"], torch.zeros(ck["n_prop"]), torch.ones(ck["n_prop"]),
                      scan_dim=ck.get("scan_dim", 0)).to(dev)
+    if any(k.startswith("scan_head") for k in ck["student"]):
+      m.enable_scan_head(ST.scan_dim())
+      m.to(dev)
     m.load_state_dict(ck["student"])
     m.eval()
     h = torch.zeros(1, u.num_envs, m.gru_dim, device=dev)
@@ -137,6 +140,9 @@ else:
   ck = torch.load(which, map_location=dev)
   m = D.DepthStudent(ck["n_prop"], ck["n_act"], torch.zeros(ck["n_prop"]), torch.ones(ck["n_prop"]),
                      scan_dim=ck.get("scan_dim", 0)).to(dev)
+  if any(k.startswith("scan_head") for k in ck["student"]):
+    m.enable_scan_head(ST.scan_dim())
+    m.to(dev)
   m.load_state_dict(ck["student"])
   m.eval()
   h = torch.zeros(1, u.num_envs, m.gru_dim, device=dev)

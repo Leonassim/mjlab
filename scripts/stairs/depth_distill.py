@@ -24,6 +24,7 @@ import torch  # noqa: E402
 
 import mjlab.tasks  # noqa: E402, F401
 from mjlab.envs import ManagerBasedRlEnv  # noqa: E402
+from mjlab.envs import mdp as envs_mdp  # noqa: E402
 from mjlab.rl import RslRlVecEnvWrapper  # noqa: E402
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls  # noqa: E402
 from mjlab.tasks.tracking.config.rhps1 import depth_student as D  # noqa: E402
@@ -44,6 +45,7 @@ ap.add_argument("--save", type=int, default=250)
 ap.add_argument("--resume", default="")
 ap.add_argument("--init", default="", help="start from this student checkpoint (weights + optimizer), new run")
 ap.add_argument("--input", default="depth", choices=["depth", "scan"], help="scan: diagnostic, exact scan in")
+ap.add_argument("--scan-aux", type=float, default=0.0, help="weight of the exact-scan reconstruction loss")
 ap.add_argument("--wandb", type=int, default=1)
 ap.add_argument("--device", default="cuda:0")
 args = ap.parse_args()
@@ -67,6 +69,9 @@ mean = norm._mean[0, :n_prop].detach()
 std = norm._std[0, :n_prop].detach() + norm.eps
 SCAN = args.input == "scan"
 student = D.DepthStudent(n_prop, n_act, mean, std, scan_dim=ST.scan_dim() if SCAN else 0).to(dev)
+if args.scan_aux > 0:
+  student.enable_scan_head(ST.scan_dim())
+  student.scan_head.to(dev)
 opt = torch.optim.Adam(student.parameters(), lr=args.lr)
 it0 = 0
 out = Path("logs/rsl_rl/rhps1_depth") / f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{args.tag}"
@@ -78,8 +83,11 @@ if args.resume:
   out = Path(args.resume).parent
 if args.init:
   ck = torch.load(args.init, map_location=dev)
-  student.load_state_dict(ck["student"])
-  opt.load_state_dict(ck["opt"])
+  missing, unexpected = student.load_state_dict(ck["student"], strict=False)
+  assert not unexpected and all(k.startswith("scan_head") for k in missing), (missing, unexpected)
+  if not missing:
+    opt.load_state_dict(ck["opt"])  # else new parameters (scan head): fresh optimizer
+  print(f"[depth] init from {args.init}, new: {missing}")
 out.mkdir(parents=True, exist_ok=True)
 rhps1_env = {k: v for k, v in os.environ.items() if k.startswith(("RHPS1_", "MJLAB_"))}
 (out / "env.txt").write_text("\n".join(f"{k}={v}" for k, v in sorted(rhps1_env.items())) + "\n")
@@ -90,6 +98,11 @@ if args.wandb:
   import wandb
 
   wb = wandb.init(project="mjlab", name=f"{out.name}", config={**vars(args), **rhps1_env, "n_prop": n_prop})
+
+
+def exact_scan(o):
+  # Exact scan straight from the sensor (the actor's copy carries the training noise), same convention and clip.
+  return envs_mdp.height_scan(u, sensor_name="stairs_scan", offset=ST.SCAN_OFFSET).clamp(-1.0, 1.0)
 
 
 def split(o):
@@ -113,17 +126,21 @@ for it in range(it0, it0 + args.iters):
   P = torch.zeros(T, args.envs, n_prop, device=dev)
   I = torch.zeros(T, args.envs, ST.scan_dim() if SCAN else D.H * D.W, device=dev, dtype=torch.float16)  # half
   A = torch.zeros(T, args.envs, n_act, device=dev)
+  S = torch.zeros(T, args.envs, ST.scan_dim(), device=dev) if args.scan_aux > 0 else None
   Dn = torch.zeros(T, args.envs, device=dev)
   h0 = h.detach().clone()
   logs = defaultdict(list)
   with torch.no_grad():
     for t in range(T):
       prop, img = split(obs)
+      scan_t = obs["critic"].new_zeros(0) if S is None else exact_scan(obs)
       a_t = teacher(obs).clamp(-12, 12)
       a_s, h = student.step(prop, img, h)
       use_t = (torch.rand(args.envs, device=dev) < beta)[:, None]
       obs, _, dones, extras = env.step(torch.where(use_t, a_t, a_s))
       P[t], I[t], A[t], Dn[t] = prop, img, a_t, dones.float()
+      if S is not None:
+        S[t] = scan_t
       h = h * (1 - dones.float())[None, :, None]
       for k, v in extras.get("log", {}).items():
         if k.startswith(("Curriculum/stairs_levels", "Episode_Termination/stairs_fall",
@@ -131,18 +148,22 @@ for it in range(it0, it0 + args.iters):
           logs[k].append(float(v))
   t_roll = time.time() - t0
   # Truncated BPTT over the rollout, minibatches over envs.
-  tot, nb = 0.0, 0
+  tot, nb, aux_tot = 0.0, 0, 0.0
   for _ in range(args.epochs):
     for idx in torch.randperm(args.envs, device=dev).chunk(args.mb):
       pred, _ = student.seq(P[:, idx], I[:, idx].float(), h0[:, idx], Dn[:, idx])
       loss = torch.nn.functional.mse_loss(pred, A[:, idx])
+      if S is not None:
+        aux = torch.nn.functional.mse_loss(student.scan_head(student.last_y), S[:, idx])
+        loss = loss + args.scan_aux * aux
+        aux_tot += float(aux)
       opt.zero_grad()
       loss.backward()
       torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
       opt.step()
       tot += float(loss)
       nb += 1
-  rec = {"Loss/behavior": tot / nb, "Policy/beta": beta, "Perf/rollout_s": t_roll, "Perf/iter_s": time.time() - t0,
+  rec = {"Loss/behavior": tot / nb, "Loss/scan_aux": aux_tot / nb, "Policy/beta": beta, "Perf/rollout_s": t_roll, "Perf/iter_s": time.time() - t0,
          **{k: sum(v) / len(v) for k, v in logs.items()}}
   if it % 10 == 0:
     print(f"it {it} " + " ".join(f"{k.split('/')[-1]} {v:.4f}" for k, v in rec.items()), flush=True)

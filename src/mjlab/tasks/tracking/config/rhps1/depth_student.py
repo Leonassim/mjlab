@@ -258,6 +258,12 @@ class DepthStudent(nn.Module):
     self.mlp = nn.Sequential(nn.Linear(gru + n_prop, 256), nn.ELU(), nn.Linear(256, 128), nn.ELU(),
                              nn.Linear(128, n_act))
     self.gru_dim = gru
+    self.scan_head = None  # set by enable_scan_head(): training-only reconstruction of the teacher's scan
+
+  def enable_scan_head(self, n_scan: int) -> None:
+    """Auxiliary head: GRU state -> exact height scan (Agarwal 2022, Robot Parkour Learning). It makes the CNN and
+    the memory learn the tread geometry, under the feet included, that the image no longer shows."""
+    self.scan_head = nn.Sequential(nn.Linear(self.gru_dim, 256), nn.ELU(), nn.Linear(256, n_scan))
 
   def step(self, prop: torch.Tensor, depth: torch.Tensor, h: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """One step: prop [B, P], depth [B, H*W], h [1, B, G] -> actions [B, A], h."""
@@ -281,6 +287,7 @@ class DepthStudent(nn.Module):
         ys.append(yi)
         h = h * (1 - dones[i].float())[None, :, None]
       y = torch.cat(ys, 0)
+    self.last_y = y
     return self.mlp(torch.cat([y, x], -1)), h
 
 
