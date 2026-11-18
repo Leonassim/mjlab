@@ -218,7 +218,13 @@ def depth_image(env, train: bool = True) -> torch.Tensor:
 
 
 def apply(cfg, play: bool = False) -> None:
+  import copy
+
   cfg.scene.sensors = cfg.scene.sensors + (camera_sensor_cfg(),)
+  # The student's proprioception as its own group: the actor group minus the height scan (PPO fine-tuning).
+  prop = copy.deepcopy(cfg.observations["actor"])
+  prop.terms = {k: v for k, v in prop.terms.items() if k != "height_scan"}
+  cfg.observations["proprio"] = prop
   cfg.observations["depth"] = ObservationGroupCfg(
     terms={"image": ObservationTermCfg(func=depth_image, params={"train": not play})}, concatenate_terms=True, enable_corruption=False)
 
@@ -300,3 +306,79 @@ class DepthStudentOnnx(nn.Module):
 
   def forward(self, prop, depth, h):
     return self.m.step(prop, depth, h)
+
+
+# ---------------------------------------------------------------------------
+# PPO fine-tuning of the student (depth_rl.py)
+# ---------------------------------------------------------------------------
+
+from rsl_rl.models.mlp_model import MLPModel  # noqa: E402
+from rsl_rl.modules import RNN  # noqa: E402
+from rsl_rl.utils import unpad_trajectories  # noqa: E402
+
+
+class DepthPPOModel(MLPModel):
+  """The DepthStudent as an rsl_rl actor: obs groups ("proprio", "depth"), Gaussian output, GRU state kept by rsl_rl.
+
+  DAgger imitates a teacher that sees more (exact scan, no latency, under the feet): the imitation gap. PPO on the
+  student's own inputs closes it. RHPS1_DEPTH_INIT=<student .pt>: weights and the frozen proprio normalizer.
+  """
+
+  is_recurrent: bool = True
+
+  def __init__(self, obs, obs_groups, obs_set, output_dim, hidden_dims=(256, 128), activation="elu",
+               obs_normalization=False, distribution_cfg=None, gru: int = 256, cnn_out: int = 64,
+               **_unused) -> None:  # mjlab model cfg keys (cnn_cfg, rnn_type...)
+    self._gru, self._n_prop = gru, obs["proprio"].shape[-1]
+    super().__init__(obs, obs_groups, obs_set, output_dim, hidden_dims, activation, False, distribution_cfg)
+    ref = DepthStudent(self._n_prop, output_dim, torch.zeros(self._n_prop), torch.ones(self._n_prop), gru, cnn_out)
+    init = os.environ.get("RHPS1_DEPTH_INIT", "")
+    if init:
+      ck = torch.load(init, map_location="cpu")
+      sd = {k: v for k, v in ck["student"].items() if not k.startswith("scan_head")}
+      ref.load_state_dict(sd)
+    self.register_buffer("mean", ref.mean.clone())
+    self.register_buffer("std", ref.std.clone())
+    self.cnn, self.cnn_fc = ref.cnn, ref.cnn_fc
+    self.rnn = RNN(self._n_prop + cnn_out, gru, 1, "gru")
+    self.rnn.rnn.load_state_dict(ref.gru.state_dict())
+    if init:
+      # Same layer layout (Linear, ELU, Linear, ELU, Linear): the distribution keeps its own std.
+      self.mlp.load_state_dict(ref.mlp.state_dict())
+
+  def _get_latent_dim(self) -> int:
+    return self._gru + self._n_prop
+
+  def get_latent(self, obs, masks=None, hidden_state=None):
+    prop, depth = obs["proprio"], obs["depth"]
+    x = ((prop - self.mean) / self.std).clamp(-5, 5)
+    lead = depth.shape[:-1]
+    z = self.cnn_fc(self.cnn(depth.reshape(-1, 1, H, W))).view(*lead, -1)
+    y = self.rnn(torch.cat([x, z], -1), masks, hidden_state)
+    if masks is not None:
+      x = unpad_trajectories(x, masks)
+    else:
+      y = y.squeeze(0)
+    return torch.cat([y, x], -1)
+
+  def update_normalization(self, obs) -> None:
+    pass  # frozen teacher statistics
+
+  def reset(self, dones=None, hidden_state=None) -> None:
+    self.rnn.reset(dones, hidden_state)
+
+  def get_hidden_state(self):
+    return self.rnn.hidden_state
+
+  def detach_hidden_state(self, dones=None) -> None:
+    self.rnn.detach_hidden_state(dones)
+
+  def to_student(self) -> DepthStudent:
+    """Back to a DepthStudent (same ONNX export and depth_eval)."""
+    m = DepthStudent(self._n_prop, self.mlp[-1].out_features if hasattr(self.mlp[-1], "out_features") else 30,
+                     self.mean, self.std, self._gru)
+    m.cnn.load_state_dict(self.cnn.state_dict())
+    m.cnn_fc.load_state_dict(self.cnn_fc.state_dict())
+    m.gru.load_state_dict(self.rnn.rnn.state_dict())
+    m.mlp.load_state_dict(self.mlp.state_dict())
+    return m
