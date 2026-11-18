@@ -66,6 +66,19 @@ RAY_DROP = float(_env("RAY_DROP", "0"))  # per frame, up to this share of the ra
 PHANTOM_P = float(_env("PHANTOM_P", "0"))  # phantom blocks started per second (people, reflections, clutter)
 PHANTOM_H = tuple(float(x) for x in _env("PHANTOM_H", "0.15,0.6").split(","))  # m above the lowest sole
 PHANTOM_S = tuple(float(x) for x in _env("PHANTOM_S", "0.5,4.0").split(","))  # s, rewritten every frame meanwhile
+# Passers-by: a 1.7 m box crossing ahead, seen by the camera (rays stop on it, the map gets it). Off by default.
+PERSON_P = float(_env("PERSON_P", "0"))  # started per second
+PERSON_S = tuple(float(x) for x in _env("PERSON_S", "1.0,4.0").split(","))
+# Controller gate (docs/vision_safety.md): a doubtful map pauses the command (stairs envs, through the stairs pause,
+# both feet down) and the last map is kept, never flattened. Doubtful: no frame for GATE_AGE, more than GATE_HFRAC of
+# a frame's points GATE_HIGH above the lowest sole, or under GATE_VALID of its rays returning. Held GATE_HOLD after.
+GATE = _env("GATE", "0") == "1"
+GATE_AGE = float(_env("GATE_AGE", "0.3"))
+GATE_HIGH = float(_env("GATE_HIGH", "0.6"))
+GATE_HFRAC = float(_env("GATE_HFRAC", "0.08"))
+GATE_VALID = float(_env("GATE_VALID", "0.1"))
+GATE_HOLD = float(_env("GATE_HOLD", "1.0"))
+DEBUG = _env("DEBUG", "0") == "1"
 LOAD_N = 10.0
 SOLE_DEPTH = 0.097  # ankle to sole bottom
 FOOT_PTS = [(x, y) for x in (-0.08, -0.04, 0.0, 0.04, 0.08) for y in (-0.04, 0.0, 0.04)]
@@ -170,6 +183,14 @@ class VisionMap:
     self.ph_yaw = torch.zeros(b, device=dev)
     g = torch.linspace(-1.0, 1.0, 9, device=dev)
     self.ph_grid = torch.stack(torch.meshgrid(g, g, indexing="ij"), -1).view(-1, 2)
+    self.ps_until = torch.zeros(b, dtype=torch.long, device=dev)
+    self.ps_xy = torch.zeros(b, 2, device=dev)  # world centre
+    self.ps_v = torch.zeros(b, 2, device=dev)  # world velocity
+    self.ps_yaw = torch.zeros(b, device=dev)
+    self.ps_z = torch.zeros(b, device=dev)  # world floor under it
+    self.gate_on = GATE
+    self.gate_until = torch.zeros(b, dtype=torch.long, device=dev)
+    self.hold_n = max(1, round(GATE_HOLD / env.step_dt))
     self.t = -1
     robot = env.scene["robot"]
     self.feet = [list(robot.body_names).index(k) for k in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")]
@@ -234,8 +255,10 @@ class VisionMap:
     self.rot_bias[ids] = (torch.rand(k, 3, device=dev) * 2 - 1) * ROT_BIAS
     self.pos_bias[ids] = (torch.rand(k, 3, device=dev) * 2 - 1) * POS_BIAS
     self.key[ids] = -1
-    for _, v in self.fifo:
-      v[ids] = False
+    for fr in self.fifo:
+      fr[1][ids] = False
+    self.ps_until[ids] = 0
+    self.gate_until[ids] = 0
     if self.lat_rng is not None:
       self.lat_env[ids] = torch.randint(self.lat_rng[0], self.lat_rng[1] + 1, (k,), device=dev)
     self.out_until[ids] = 0
@@ -251,26 +274,90 @@ class VisionMap:
       sub = _Sub(self, pre)
       sub.write(hp, ok)
 
-  def _capture(self, env, pel: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    d = env.scene["stairs_cam"].data
+  def _capture(self, env, pel: torch.Tensor, t: int):
+    """One depth frame in the odometry frame: points, valid, share of points GATE_HIGH above the lowest sole, share
+    of rays returning."""
+    cam = env.scene["stairs_cam"]
+    d = cam.data
     q = d.frame_quat_w[:, 0]
     c = d.pos_w + _qrot(q, torch.tensor(CAM_POS, device=q.device).expand_as(d.pos_w))
-    v = d.hit_pos_w - c[:, None]
     r = d.distances
     import warp as wp
 
-    gid = wp.to_torch(env.scene["stairs_cam"]._ray_geomid).long()
+    gid = wp.to_torch(cam._ray_geomid).long()
     valid = (r >= RANGE[0]) & (r <= RANGE[1]) & (gid >= 0) & ~self.robot_geom[gid.clamp(min=0)]
+    u = cam._cached_world_rays
+    if u is None or cam._cached_world_origins is None:  # before the sensor's first update
+      u = (d.hit_pos_w - c[:, None]) / r.clamp(min=1e-3)[..., None]
+    else:
+      u = u / u.norm(dim=-1, keepdim=True).clamp(min=1e-9)
+    if PERSON_P > 0 and cam._cached_world_origins is not None:
+      r, valid = self._persons(cam, r, valid, u, t)
     if RAY_DROP > 0:
       frac = torch.rand(r.shape[0], 1, device=r.device) * RAY_DROP
       valid &= torch.rand_like(r) >= frac
-    u = v / r.clamp(min=1e-3)[..., None]
     rn = r + torch.randn_like(r) * NOISE
     w = self.rot_bias + torch.randn_like(self.rot_bias) * ROT_JIT  # camera axes
     w = _qrot(q, w)[:, None].expand_as(u)
     ray = u * rn[..., None]
     p = c[:, None] + ray + torch.cross(w, ray, dim=-1) + self.pos_bias[:, None]
-    return self._to_odom(p, pel), valid
+    po = self._to_odom(p, pel)
+    n_ok = valid.float().sum(-1)
+    high = ((po[..., 2] - self._fill(env)[:, None]) > GATE_HIGH) & valid
+    return po, valid, high.float().sum(-1) / n_ok.clamp(min=1.0), n_ok / valid.shape[1]
+
+  def _persons(self, cam, r, valid, u, t):
+    """Rays that meet a passer-by (1.7 m tall, 0.44 m wide, 0.3 m deep, crossing ahead) stop on it."""
+    act = self.ps_until > t
+    if not bool(act.any()):
+      return r, valid
+    o = cam._cached_world_origins
+    c, s = torch.cos(self.ps_yaw)[:, None], torch.sin(self.ps_yaw)[:, None]
+    rx, ry = o[..., 0] - self.ps_xy[:, None, 0], o[..., 1] - self.ps_xy[:, None, 1]
+    org = torch.stack([c * rx + s * ry, -s * rx + c * ry, o[..., 2] - self.ps_z[:, None]], -1)
+    dirs = torch.stack([c * u[..., 0] + s * u[..., 1], -s * u[..., 0] + c * u[..., 1], u[..., 2]], -1)
+    lo = torch.tensor([-0.15, -0.22, 0.0], device=r.device)
+    hi = torch.tensor([0.15, 0.22, 1.7], device=r.device)
+    inv = 1.0 / torch.where(dirs.abs() < 1e-9, torch.full_like(dirs, 1e-9), dirs)
+    t1, t2 = (lo - org) * inv, (hi - org) * inv
+    tn = torch.minimum(t1, t2).max(-1).values
+    tf = torch.maximum(t1, t2).min(-1).values
+    tp = tn.clamp(min=0.0)
+    first = torch.where(r < 0, torch.full_like(r, float("inf")), r)
+    on = act[:, None] & (tn <= tf) & (tf > 0) & (tp < first)
+    r = torch.where(on, tp, r)
+    valid = torch.where(on, (tp >= RANGE[0]) & (tp <= RANGE[1]), valid)
+    return r, valid
+
+  def _spawn_persons(self, env, pel: torch.Tensor, t: int) -> None:
+    b, dev = pel.shape[0], pel.device
+    self.ps_xy = self.ps_xy + self.ps_v * self.frame_dt
+    start = (torch.rand(b, device=dev) < PERSON_P * self.frame_dt) & (self.ps_until <= t)
+    if not bool(start.any()):
+      return
+    ids = start.nonzero().squeeze(-1)
+    k = ids.numel()
+    robot = env.scene["robot"]
+    yaw = _yaw(robot.data.root_link_quat_w[ids])
+    c, s = torch.cos(yaw), torch.sin(yaw)
+    fwd = 0.5 + torch.rand(k, device=dev) * 1.0
+    lat = (torch.rand(k, device=dev) * 2 - 1) * 0.6
+    vl = (torch.rand(k, device=dev) * 2 - 1) * 0.8
+    self.ps_xy[ids] = torch.stack([pel[ids, 0] + c * fwd - s * lat, pel[ids, 1] + s * fwd + c * lat], -1)
+    self.ps_v[ids] = torch.stack([-s * vl, c * vl], -1)
+    self.ps_yaw[ids] = yaw
+    self.ps_z[ids] = robot.data.body_link_pos_w[ids][:, self.feet, 2].min(-1).values - SOLE_DEPTH
+    dur = PERSON_S[0] + torch.rand(k, device=dev) * (PERSON_S[1] - PERSON_S[0])
+    self.ps_until[ids] = t + (dur / env.step_dt).long()
+
+  def gate_pause(self, t: int) -> torch.Tensor:
+    return self.gate_until > t
+
+  def _gate_frame(self, due: torch.Tensor, hf: torch.Tensor, vf: torch.Tensor, t: int) -> None:
+    if not GATE:
+      return
+    bad = due & ((hf > GATE_HFRAC) | (vf < GATE_VALID))
+    self.gate_until = torch.where(bad, t + self.hold_n, self.gate_until)
 
   def _footprints(self, env, pel: torch.Tensor) -> None:
     robot = env.scene["robot"]
@@ -312,30 +399,43 @@ class VisionMap:
       self._reset(env, reset.nonzero().squeeze(-1), pel)
     self._footprints(env, pel)
     if t % PERIOD == 0:
-      p, v = self._capture(env, pel)
+      if PERSON_P > 0:
+        self._spawn_persons(env, pel, t)
+      p, v, hf, vf = self._capture(env, pel, t)
       if DROP > 0 or OUT_P > 0:
         lost = torch.rand(b, device=pel.device) < DROP
         start = (torch.rand(b, device=pel.device) < OUT_P * self.frame_dt) & (self.out_until <= t)
         dur = OUT_S[0] + torch.rand(b, device=pel.device) * (OUT_S[1] - OUT_S[0])
         self.out_until = torch.where(start, t + (dur / dt).long(), self.out_until)
         v = v & ~(lost | (self.out_until > t))[:, None]
-      self.fifo.append((p, v))
+      self.fifo.append((p, v, hf, vf))
       if self.lat_rng is None:
         while len(self.fifo) > self.lat_n:
-          p, v = self.fifo.pop(0)
+          p, v, hf, vf = self.fifo.pop(0)
           self._write(p, v, replace=False)
-          self.last_frame = torch.where(v.any(-1), t, self.last_frame)
+          got = v.any(-1)
+          self.last_frame = torch.where(got, t, self.last_frame)
+          self._gate_frame(got, hf, vf, t)
       else:  # per-episode latency: each env writes the frame whose age matches its own
         n = len(self.fifo)
-        for k, (p, v) in enumerate(self.fifo):
+        for k, (p, v, hf, vf) in enumerate(self.fifo):
           due = (self.lat_env == n - 1 - k)[:, None] & v
           if bool(due.any()):
             self._write(p, due, replace=False)
-            self.last_frame = torch.where(due.any(-1), t, self.last_frame)
+            got = due.any(-1)
+            self.last_frame = torch.where(got, t, self.last_frame)
+            self._gate_frame(got, hf, vf, t)
         while len(self.fifo) > self.lat_rng[1]:  # older than the longest latency: written by every env
           self.fifo.pop(0)
       if PHANTOM_P > 0:
         self._phantoms(env, pel, t, dt)
+    if GATE:  # no frame for GATE_AGE: pause, and keep pausing GATE_HOLD after frames are back
+      stale = (t - self.last_frame) * dt > GATE_AGE
+      self.gate_until = torch.where(stale, t + self.hold_n, self.gate_until)
+      if DEBUG and t % 50 == 0:
+        print(f"[vision_map] t {t}: gate {self.gate_pause(t).float().mean():.2f} stale {stale.float().mean():.2f} "
+              f"person {(self.ps_until > t).float().mean():.2f} outage {(self.out_until > t).float().mean():.2f} "
+              f"phantom {(self.ph_until > t).float().mean():.2f}", flush=True)
 
   def _phantoms(self, env, pel: torch.Tensor, t: int, dt: float) -> None:
     """Blocks that are not there, ahead of the robot, rewritten every frame while they last."""

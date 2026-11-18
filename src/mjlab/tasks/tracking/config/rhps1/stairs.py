@@ -361,6 +361,9 @@ class _State:
       self.pause1 = torch.where(trig, ep + self.sp_dur, self.pause1)
       self.sp_trig = torch.where(trig, torch.full_like(self.sp_trig, float("nan")), self.sp_trig)
     win = (env.episode_length_buf >= self.pause0) & (env.episode_length_buf < self.pause1)
+    vm = getattr(env, "_vision", None)
+    if vm is not None and vm.gate_on:  # RHPS1_VIS_GATE: the controller pauses the command on a doubtful map
+      win = win | vm.gate_pause(int(env.common_step_counter))
     if ARRIVE_LOADED:
       # The command used to drop mid-swing and the policy froze that swing (front foot up after the goal).
       down = (self.load > 0.1 * BW).all(-1)
