@@ -24,6 +24,8 @@ from mjlab.rl import RslRlVecEnvWrapper  # noqa: E402
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls  # noqa: E402
 from mjlab.tasks.tracking.config.rhps1 import depth_student as D  # noqa: E402
 from mjlab.tasks.tracking.config.rhps1 import stairs as ST  # noqa: E402
+from mjlab.tasks.tracking.config.rhps1 import vision_map as VM  # noqa: E402
+from mjlab.utils.lab_api.math import quat_apply  # noqa: E402
 
 TASK = "Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start"
 TEACHER = os.environ.get("TEACHER", "logs/rsl_rl/rhps1_tracking/2026-11-15_10-23-12/model_15000.pt")
@@ -63,19 +65,113 @@ if not PINNED:
     h = torch.zeros(1, u.num_envs, m.gru_dim, device=dev)
   arr = falls = 0
   steps = int(float(os.environ.get("SMOKE_T", "24")) / u.step_dt)
+  N, dt, dv = u.num_envs, u.step_dt, u.device
+  # Image failures (SCEN), applied to the frame the student reads, every EV_T s for EV_D s, all envs at once (their
+  # episodes are out of phase): out = no return at all, freeze = the last frame held, person = a near vertical
+  # band crossing the image (someone walking past the camera). The terrain is unchanged: the right answer is to
+  # keep walking or, with GATE=1, to pause.
+  SCEN = os.environ.get("SCEN", "none")
+  EV_T, EV_D = float(os.environ.get("EV_T", "8")), float(os.environ.get("EV_D", "3"))
+  # GATE=1, the controller-side prototype: an obstructed, blank or frozen frame pauses the stairs command (the
+  # training's mid-walk pause, ARRIVE_LOADED waits for both feet down), resumed GATE_HOLD s after the frame is
+  # clear again. Obstructed: more than GATE_FRAC of the pixels closer than GATE_NEAR m, or more than GATE_HFRAC
+  # of them higher than GATE_HIGH m above the lowest sole (a person; a stair never is). Blank: less than GATE_VALID of
+  # the pixels return (those outside the WFOV circle never do). Frozen: frame unchanged for GATE_FROZEN s (on the robot: its timestamp).
+  GATE = os.environ.get("GATE", "0") == "1"
+  G_NEAR, G_FRAC = float(os.environ.get("GATE_NEAR", "0.6")), float(os.environ.get("GATE_FRAC", "0.15"))
+  G_VALID, G_FROZEN = float(os.environ.get("GATE_VALID", "0.1")), float(os.environ.get("GATE_FROZEN", "0.3"))
+  G_HIGH, G_HFRAC = float(os.environ.get("GATE_HIGH", "0.6")), float(os.environ.get("GATE_HFRAC", "0.08"))
+  G_HOLD = int(float(os.environ.get("GATE_HOLD", "1.0")) / dt)
+  r_off, r_dir = D.HeadDepthPatternCfg().generate_rays(None, dv)
+  cam = u.scene["depth_cam"]
+  robot = u.scene["robot"]
+  feet = [list(robot.body_names).index(k) for k in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")]
+  high_max = torch.zeros(N, device=dv)
+  high_ev = torch.zeros(N, device=dv)
+  since_ev = 10**6
+  falls_ev = 0
+  held = None
+  same = torch.zeros(N, dtype=torch.long, device=dv)
+  clear_t = torch.full((N,), 10**6, dtype=torch.long, device=dv)
+  ev_steps = gate_steps = fp_steps = 0
+  near_max = torch.zeros(N, device=dv)
+  valid_min = torch.ones(N, device=dv)
   for i in range(steps):
+    img = obs["depth"]
+    t = i * dt
+    in_ev = SCEN != "none" and t >= EV_T - EV_D and (t % EV_T) >= EV_T - EV_D
+    if in_ev:
+      ev_steps += 1
+      if SCEN == "out":
+        img = torch.zeros_like(img)
+      elif SCEN == "freeze":
+        held = img.clone() if held is None else held
+        img = held
+      elif SCEN == "person":
+        ph = ((t % EV_T) - (EV_T - EV_D)) / EV_D  # 0 -> 1 across the event
+        g = torch.Generator().manual_seed(int(t // EV_T))
+        wpx = int(8 + torch.randint(0, 24, (1,), generator=g))
+        d = float(0.4 + 1.1 * torch.rand(1, generator=g))
+        x0 = int(-wpx + ph * (D.W + wpx))
+        im = img.view(N, D.H, D.W).clone()
+        im[:, :, max(x0, 0):max(min(x0 + wpx, D.W), 0)] = d / D.RANGE[1]
+        img = im.view(N, -1)
+    else:
+      held = None
+    since_ev = 0 if in_ev else since_ev + 1
+    valid = img > 0
+    rng = (img * D.RANGE[1]).unsqueeze(-1)
+    pts = cam.data.pos_w[:, None] + quat_apply(cam.data.quat_w[:, None].expand(-1, rng.shape[1], -1),
+                                               r_off[None] + r_dir[None] * rng)
+    sole = robot.data.body_link_pos_w[:, feet, 2].min(-1).values - VM.SOLE_DEPTH
+    high = (valid & (pts[..., 2] - sole[:, None] > G_HIGH)).float().mean(-1)
+    if in_ev:
+      high_ev = torch.maximum(high_ev, high)
+    else:
+      high_max = torch.maximum(high_max, high)
+    if GATE:
+      near = (valid & (img < G_NEAR / D.RANGE[1])).float().mean(-1)
+      if not in_ev:
+        near_max = torch.maximum(near_max, near)
+      vf = valid.float().mean(-1)
+      blank = vf < G_VALID
+      if not in_ev:
+        valid_min = torch.minimum(valid_min, vf)
+      # Frozen from the stream itself, as the robot's frame timestamp: a still robot on a clean frame repeats it.
+      same = same + 1 if (in_ev and SCEN == "freeze") else torch.zeros_like(same)
+      bad = (near > G_FRAC) | (high > G_HFRAC) | blank | (same * dt >= G_FROZEN)
+      clear_t = torch.where(bad, torch.zeros_like(clear_t), clear_t + 1)
+      gated = st.is_stairs & (clear_t < G_HOLD)
+      ep = u.episode_length_buf
+      in_win = (ep >= st.pause0) & (ep < st.pause1)
+      st.pause0 = torch.where(gated & ~in_win, ep, st.pause0)
+      st.pause1 = torch.where(gated, torch.where(in_win, torch.maximum(st.pause1, ep + 2), ep + 2), st.pause1)
+      gate_steps += int(gated.sum())
+      if not in_ev:
+        fp_steps += int(gated.sum())
     with torch.no_grad():
       if m is None:
         a = teacher(obs)
       else:
-        a, h = m.step(obs["actor"][:, :n_prop], obs["actor"][:, n_prop:] if m.scan_dim else obs["depth"], h)
+        a, h = m.step(obs["actor"][:, :n_prop], obs["actor"][:, n_prop:] if m.scan_dim else img, h)
       obs, _, dones, _ = env.step(a)
       if m is not None:
         h = h * (1 - dones.float())[None, :, None]
     arr += int(st.arrived_now.sum())
     if "stairs_fall" in u.termination_manager.active_terms:
-      falls += int(u.termination_manager.get_term("stairs_fall").sum())
-  print(f"DEPTHEVAL {label}: arrivals {arr} falls {falls} over {u.num_envs} envs x {steps * u.step_dt:.0f} s")
+      nf = int(u.termination_manager.get_term("stairs_fall").sum())
+      falls += nf
+      falls_ev += nf if since_ev * dt < 1.0 else 0
+  qh = torch.quantile(high_max, torch.tensor([0.5, 0.99, 1.0], device=dv)).tolist()
+  extra = (f" scen {SCEN} falls in events or 1 s after {falls_ev}; high frac (>{G_HIGH} m) outside events p50"
+           f" {qh[0]:.3f} p99 {qh[1]:.3f} max {qh[2]:.3f}, in events median {float(high_ev.median()):.3f}")
+  if GATE:
+    ns = max(steps - ev_steps, 1) * N
+    q = torch.quantile(near_max, torch.tensor([0.5, 0.9, 1.0], device=dv)).tolist()
+    extra += (f" gate on {gate_steps / (steps * N):.3f} of env-steps, outside events {fp_steps / ns:.3f};"
+              f" near frac max per env outside events p50 {q[0]:.3f} p90 {q[1]:.3f} max {q[2]:.3f}; valid frac min p0 {float(valid_min.min()):.3f}"
+              f" p10 {float(torch.quantile(valid_min, 0.1)):.3f}")
+  print(f"DEPTHEVAL {label}: arrivals {arr} falls {falls} over {u.num_envs} envs x {steps * u.step_dt:.0f} s{extra}")
   sys.exit(0)
 
 cells = [(lv, climb) for lv in LEVELS for climb in (True, False)]
