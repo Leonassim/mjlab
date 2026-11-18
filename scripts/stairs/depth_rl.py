@@ -32,6 +32,7 @@ ap.add_argument("--iters", type=int, default=3000)
 ap.add_argument("--warmup", type=int, default=50)
 ap.add_argument("--std", type=float, default=0.3)
 ap.add_argument("--lr", type=float, default=1e-4)
+ap.add_argument("--mb", type=int, default=16)
 ap.add_argument("--export", default="")
 args = ap.parse_args()
 
@@ -84,6 +85,7 @@ rl.actor.distribution_cfg = {"class_name": "GaussianDistribution", "init_std": a
 rl.algorithm.entropy_coef = 0.0
 rl.algorithm.gamma, rl.algorithm.lam = 0.99, 0.95
 rl.algorithm.learning_rate = args.lr
+rl.algorithm.num_mini_batches = args.mb  # recurrent batches are padded per env: small ones fit next to the sim
 rl.experiment_name = "rhps1_depth_rl"
 rl.run_name = args.tag
 rl.save_interval = 250
@@ -111,7 +113,17 @@ print(f"[depth_rl] actor from {args.student}, critic from {args.teacher} -> {log
 actor_params = [p for p in runner.alg.actor.parameters()]
 for p in actor_params:
   p.requires_grad_(False)
+# Fixed LR while the actor is frozen: its KL is 0, and the adaptive schedule would push the LR to its 1e-2 ceiling
+# (x100), which wrecked the student at the first actor update (rl1, episode length 813 -> 29).
+runner.alg.schedule = "fixed"
+runner.alg.learning_rate = 1e-3  # critic only (actor frozen)
+for g in runner.alg.optimizer.param_groups:
+  g["lr"] = 1e-3
 runner.learn(args.warmup)
 for p in actor_params:
   p.requires_grad_(True)
+runner.alg.schedule = "adaptive"
+runner.alg.learning_rate = args.lr
+for g in runner.alg.optimizer.param_groups:
+  g["lr"] = args.lr
 runner.learn(args.iters - args.warmup)
