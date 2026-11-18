@@ -2,6 +2,33 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-18 (20 h) : vis3 lancé, vraie caméra et pannes de vision dans `vision_map.py` (21b9227f4)
+
+**Commit `21b9227f4`** : toutes les options sont désactivées par défaut. Elles s'activent avec des variables
+`RHPS1_VIS_*`, et `depth_student.py` lit la même pose caméra.
+
+| Variable | Rôle | Valeur vis3 |
+|---|---|---|
+| `CAM_POS`, `CAM_RPY` | pose de l'Azure mesurée sur le robot | `0.1190,0.0017,0.1825` et `1.49513,-0.00503,-1.57095` |
+| `PERIOD` | images tous les N pas | 3 (16,7 Hz) |
+| `LAT_RANGE` | latence par épisode | `0.03,0.15` |
+| `DROP` | probabilité de perdre une image | 0.05 |
+| `OUT_P`, `OUT_S` | coupures par seconde, durée | 0.05 ; `0.2,3.0` |
+| `MAX_AGE` | carte plus vieille : scan plat, comme le `vision_max_age` du contrôleur | 0.5 |
+| `RAY_DROP` | part maximale de rayons sans retour | 0.3 |
+| `PHANTOM_P`, `_H`, `_S` | blocs fantômes devant le robot | 0.05 ; `0.15,0.6` ; `0.5,4.0` |
+| `PREFILL` | part d'épisodes démarrant avec la carte remplie | 0.5 |
+
+**Lancement de vis3**
+- Départ : vis2 model_22500, avec la variance d'odométrie de vis2.
+- Run `2026-11-18_20-00-55`, wandb `5lhimhc1`.
+- Portes : `vis_gate_loop.sh` avec `VIS_GATE_ROB`, qui ajoute un passage avec ces pannes.
+- vis2 est arrêté.
+
+**Pour `rtx4080`**
+- Activer au minimum `CAM_POS` et `CAM_RPY` pour les élèves depth. La caméra actuelle est sur le support ZED.
+- Les pannes de flux (`DROP`, `OUT_*`, `LAT_RANGE`) sont à transposer à leur entrée image.
+
 ## 2026-11-18 (soir) : caméra réelle calibrée, flux mesuré, chute du slot 23 expliquée — à lire pour `rtx4080`
 
 **Pose réelle de la caméra de profondeur** dans `HEAD_P_LINK` (MuJoCo, axes caméra -z vers l'avant) :
