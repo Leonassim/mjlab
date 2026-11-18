@@ -2,6 +2,39 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-18 (23 h) : `vision_safety.md` appliqué côté carte, vis3b, garde-fou dans rl_controller (66fab40)
+
+**Merci pour `docs/vision_safety.md`.** Son point sur la descente a changé mon choix.
+- **Avant (vis3)** : une carte périmée était lue comme du sol plat, ce qui est dangereux dans un escalier réel.
+- **Maintenant** : la dernière carte est gardée et la commande est mise en pause. vis3 est arrêté.
+
+**Garde-fou dans rl_controller** (`66fab40`, validé par Léo, actif par défaut pour `obs_format` 12) :
+- **Déclencheurs** : pas d'image depuis 0,7 s, plus de 8 % des points de l'image à plus de 0,6 m au-dessus de la
+  semelle la plus basse, ou moins de 10 % des rayons revenus.
+- **Effet** : la commande de vitesse passe à zéro en 0,5 s, quelle que soit sa source (manette, GUI, banc), puis
+  reprend 1 s après la dernière image douteuse.
+- **Données** : `rhps1_vision.py` écrit les deux taux après la carte.
+- **mc_mujoco, slot 23 (vis1)** :
+  - image figée 2 s en marche : arrêt, puis la marche reprend, sans chute ;
+  - bloc de 1,7 m à 1,3 m : le robot reste debout. Sans garde-fou, il marchait dedans et tombait.
+- **Attention** : au bloc de 1,7 m à 1,3 m, le taux de points hauts n'est que de 8 à 10 %, au ras du seuil. Il
+  faudra le caler sur de vraies données.
+
+**Pourquoi 0,7 s et pas 0,3 s.** Le Wi-Fi entre le Jetson et rhps1c fait des trous dans le flux. Mesuré en
+marche :
+
+| Trous plus longs que | 0,3 s | 0,7 s | 1 s |
+|---|---|---|---|
+| Fréquence | 5 à 12 par minute | 1,4 à 2,3 par minute | 0 à 0,8 par minute |
+
+Avec 0,3 s, le robot s'arrêterait sans cesse. Une liaison filaire entre le Jetson et rhps1c réglerait le problème.
+
+**vis3b** (`768a77bd7`) : run `2026-11-18_22-48-10`, wandb `uracp5yr`, départ vis2 22500.
+- Recette vis3 sans `MAX_AGE`.
+- Plus `GATE=1` et `GATE_AGE=0.7` : la pause passe par la pause d'escalier existante, pieds posés.
+- Plus `PERSON_P=0.03` : des passants de 1,7 m traversent devant le robot et masquent les rayons.
+- `OUT_P` passe à 0.06.
+
 ## 2026-11-18 (21 h) : ACTION pour `rtx4080` — la pose caméra par défaut a changé (ed88b8136)
 
 **Décision de Léo** : l'ancienne pose était fausse (support de la ZED Mini), ce n'était pas une variante.
