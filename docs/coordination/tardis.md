@@ -2,6 +2,51 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-18 (soir) : caméra réelle calibrée, flux mesuré, chute du slot 23 expliquée — à lire pour `rtx4080`
+
+**Pose réelle de la caméra de profondeur** dans `HEAD_P_LINK` (MuJoCo, axes caméra -z vers l'avant) :
+- `pos (0.1190, 0.0017, 0.1825)`, `rpy (1.49513, -0.00503, -1.57095)`, soit 4,3° vers le bas au lieu de 6°.
+- **L'entraînement place l'Azure au mauvais endroit.** `vision_map.py` (comme le VRML Choreonoid) utilise
+  `(0.071, 0.0017, 0.1558)`, qui est l'emplacement de la ZED Mini (avis de Léo). L'Azure est sur le support du dessus.
+- **Comment c'est mesuré.**
+  - Ajustement sur le sol et une boîte de 24,5 cm, robot debout, tête à 0°, 12,6° et 25,2°, une seule pose pour les
+    trois angles.
+  - Résultat : sol plat à ±0,3 cm de 0,2 à 2,2 m, boîte lue entre 24,7 et 25,6 cm.
+  - L'erreur ne dépend pas de l'angle de la tête : pas d'affaissement.
+  - Chaîne de départ : support Azure de l'URDF du labo, plus le décalage d'usine lu sur le Jetson (`camera_base` →
+    `depth_camera_link` : +2 mm, 6°).
+  - Écart restant par rapport à cette chaîne : +4,0 cm en x (centre optique sur la face de la tête), +0,6 cm en z,
+    1,7° moins incliné.
+- **À venir sur `tardis`** : variables d'environnement pour la pose caméra dans `vision_map.py`. Défaut inchangé tant
+  que les runs en cours tournent ; commit annoncé ici.
+
+**Flux réel, Jetson → PC de contrôle, mesuré sur environ 6000 images**
+
+| | Réel | `vision_map.py` aujourd'hui |
+|---|---|---|
+| Cadence | 15 Hz (médiane 67 ms) | 25 Hz |
+| Trous | p99 0,27 à 0,47 s ; 2,6 à 6 % de trous de plus de 0,2 s | aucun |
+| Latence prise de vue → carte | 45 à 65 ms en médiane, 95 à 150 ms au maximum | 80 ms fixe |
+| Bruit de profondeur | σ 0,6 à 0,7 cm par point | 1 cm |
+| Carte à l'armement | environ 63 % connue | pré-remplie à 100 % |
+
+**Odométrie en marche** (slot 18, 2 min de marche avec virages de 90°) :
+- Hauteur : dérive d'environ 5 cm en 60 s, soit à peu près 1 mm/s, puis stable.
+- Position : la boîte reste à ±5 cm dans le plan après un virage de 90°.
+- C'est dans les ordres de grandeur de `ODO_*` de vis2.
+
+**Chute réelle du slot 23 (vis1 17500)**
+- **Les faits.** Armé debout, commande nulle, une boîte de 24,5 cm à 0,8 m devant à droite. La carte était juste.
+  Environ 2,5 s après le démarrage de la politique, le robot recule de 30 cm puis tombe en arrière dans le harnais.
+- **Reproduite dans mc_mujoco** avec la même boîte (`RLQP_BOXES` dans `mc_mujoco_stairs.sh`) : chute à +3 s. Sans
+  la boîte, il reste debout. La cause est donc l'obstacle hors distribution : plus de 18 cm, à commande nulle.
+- **Exigence de Léo** : une politique vision ne doit jamais faire tomber le robot, quels que soient les artefacts,
+  coupures, obstructions ou objets inconnus.
+  - Pas de bascule sur une autre politique : un état inconnu est hors distribution pour elle aussi.
+  - On dégrade l'entrée (carte coupée, donc lue comme sol plat) et on entraîne ces cas.
+- **Banc obligatoire pour tout candidat vision, y compris les élèves depth** : boîte de 25 cm à 0,8 m à commande
+  nulle, carte coupée en marche, carte figée. Je le passe aux candidats déposés ici.
+
 ## 2026-11-18 (2 h) : chaîne vision dans mc_mujoco, deux défauts corrigés ; vis2 lancé
 
 Banc habituel (`relbench`, 12 essais à 4, 5 et 6 cm), avec vis1 17500 sur le slot 23 et `RLQP_VISION=1`.
