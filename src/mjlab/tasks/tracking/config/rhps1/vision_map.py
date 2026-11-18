@@ -31,8 +31,11 @@ VIS = os.environ.get("RHPS1_VIS", "0") == "1"
 # Head held at HEAD_P without the onboard map (depth-image student, depth_student.py). VIS implies it.
 HEAD_HOLD = VIS or os.environ.get("RHPS1_HEAD_HOLD", "0") == "1"
 HEAD_P = math.radians(float(_env("HEAD_P_DEG", "25")))  # head pitch held during walking (Leo, 2026-11-17)
-CAM_POS = (0.071, 0.0017, 0.1558)  # azure_depth_frame in HEAD_P_LINK (URDF), MuJoCo camera axes (-z forward)
-CAM_RPY = (1.46608, 1.45688e-06, -1.5708)
+# azure_depth_frame in HEAD_P_LINK, MuJoCo camera axes (-z forward). The default is Choreonoid's (the ZED Mini
+# mount); the real Azure, fitted on rhps1 at three head angles (2026-11-18): CAM_POS 0.1190,0.0017,0.1825 and
+# CAM_RPY 1.49513,-0.00503,-1.57095.
+CAM_POS = tuple(float(x) for x in _env("CAM_POS", "0.071,0.0017,0.1558").split(","))
+CAM_RPY = tuple(float(x) for x in _env("CAM_RPY", "1.46608,1.45688e-06,-1.5708").split(","))
 CONE = math.radians(float(_env("CONE_DEG", "60")))  # half-angle; WFOV is a 120 deg circle
 RANGE = tuple(float(x) for x in _env("RANGE", "0.25,2.88").split(","))  # WFOV 2x2 binned
 ROI_X = tuple(float(x) for x in _env("ROI_X", "0.0,1.6").split(","))  # ground aimed at, ahead of the pelvis
@@ -52,6 +55,17 @@ ODO_YAW = float(_env("ODO_YAW", "0.005"))  # rad / sqrt(s)
 ALPHA = float(_env("ALPHA", "0.5"))  # weight of a new frame on a known cell
 MAP_N = int(_env("MAP_N", "48"))
 PREFILL = float(_env("PREFILL", "1.0"))  # share of episodes starting with the scan area mapped (walked in)
+# Real stream and failures (all off by default). Measured on rhps1 (2026-11-18): 15 Hz, 45-65 ms median latency and
+# up to 150 ms, 2.6-6 % gaps over 0.2 s; the controller reads a map older than vision_max_age as flat ground.
+LAT_RANGE = tuple(float(x) for x in _env("LAT_RANGE", "").split(",") if x)  # s, per episode, replaces LAT
+DROP = float(_env("DROP", "0"))  # per-frame loss probability
+OUT_P = float(_env("OUT_P", "0"))  # outages started per second (camera or network down)
+OUT_S = tuple(float(x) for x in _env("OUT_S", "0.2,3.0").split(","))
+MAX_AGE = float(_env("MAX_AGE", "0"))  # s; > 0: the whole scan reads flat once the last frame is older
+RAY_DROP = float(_env("RAY_DROP", "0"))  # per frame, up to this share of the rays return nothing
+PHANTOM_P = float(_env("PHANTOM_P", "0"))  # phantom blocks started per second (people, reflections, clutter)
+PHANTOM_H = tuple(float(x) for x in _env("PHANTOM_H", "0.15,0.6").split(","))  # m above the lowest sole
+PHANTOM_S = tuple(float(x) for x in _env("PHANTOM_S", "0.5,4.0").split(","))  # s, rewritten every frame meanwhile
 LOAD_N = 10.0
 SOLE_DEPTH = 0.097  # ankle to sole bottom
 FOOT_PTS = [(x, y) for x in (-0.08, -0.04, 0.0, 0.04, 0.08) for y in (-0.04, 0.0, 0.04)]
@@ -144,7 +158,18 @@ class VisionMap:
     self.rot_bias = torch.zeros(b, 3, device=dev)
     self.pos_bias = torch.zeros(b, 3, device=dev)
     self.fifo: list[tuple[torch.Tensor, torch.Tensor]] = []
-    self.lat_n = max(0, round(LAT / (env.step_dt * PERIOD)))
+    frame_dt = env.step_dt * PERIOD
+    self.frame_dt = frame_dt
+    self.lat_n = max(0, round(LAT / frame_dt))
+    self.lat_rng = (max(0, round(LAT_RANGE[0] / frame_dt)), max(0, round(LAT_RANGE[1] / frame_dt))) if LAT_RANGE else None
+    self.lat_env = torch.full((b,), self.lat_n, dtype=torch.long, device=dev)
+    self.out_until = torch.zeros(b, dtype=torch.long, device=dev)  # step counter
+    self.last_frame = torch.full((b,), -(10**9), dtype=torch.long, device=dev)
+    self.ph_until = torch.zeros(b, dtype=torch.long, device=dev)
+    self.ph_box = torch.zeros(b, 5, device=dev)  # centre x y (odom), half x y, top z
+    self.ph_yaw = torch.zeros(b, device=dev)
+    g = torch.linspace(-1.0, 1.0, 9, device=dev)
+    self.ph_grid = torch.stack(torch.meshgrid(g, g, indexing="ij"), -1).view(-1, 2)
     self.t = -1
     robot = env.scene["robot"]
     self.feet = [list(robot.body_names).index(k) for k in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")]
@@ -211,8 +236,14 @@ class VisionMap:
     self.key[ids] = -1
     for _, v in self.fifo:
       v[ids] = False
+    if self.lat_rng is not None:
+      self.lat_env[ids] = torch.randint(self.lat_rng[0], self.lat_rng[1] + 1, (k,), device=dev)
+    self.out_until[ids] = 0
+    self.ph_until[ids] = 0
+    self.last_frame[ids] = -(10**9)  # no map yet: flat under MAX_AGE, as the controller before the first map
     pre = ids[torch.rand(k, device=dev) < PREFILL]
     if pre.numel():
+      self.last_frame[pre] = int(env.common_step_counter)
       hp = env.scene["stairs_scan"].data.hit_pos_w[pre]
       ok = env.scene["stairs_scan"].data.distances[pre] >= 0
       hp = hp.clone()
@@ -230,6 +261,9 @@ class VisionMap:
 
     gid = wp.to_torch(env.scene["stairs_cam"]._ray_geomid).long()
     valid = (r >= RANGE[0]) & (r <= RANGE[1]) & (gid >= 0) & ~self.robot_geom[gid.clamp(min=0)]
+    if RAY_DROP > 0:
+      frac = torch.rand(r.shape[0], 1, device=r.device) * RAY_DROP
+      valid &= torch.rand_like(r) >= frac
     u = v / r.clamp(min=1e-3)[..., None]
     rn = r + torch.randn_like(r) * NOISE
     w = self.rot_bias + torch.randn_like(self.rot_bias) * ROT_JIT  # camera axes
@@ -278,10 +312,57 @@ class VisionMap:
       self._reset(env, reset.nonzero().squeeze(-1), pel)
     self._footprints(env, pel)
     if t % PERIOD == 0:
-      self.fifo.append(self._capture(env, pel))
-      while len(self.fifo) > self.lat_n:
-        p, v = self.fifo.pop(0)
-        self._write(p, v, replace=False)
+      p, v = self._capture(env, pel)
+      if DROP > 0 or OUT_P > 0:
+        lost = torch.rand(b, device=pel.device) < DROP
+        start = (torch.rand(b, device=pel.device) < OUT_P * self.frame_dt) & (self.out_until <= t)
+        dur = OUT_S[0] + torch.rand(b, device=pel.device) * (OUT_S[1] - OUT_S[0])
+        self.out_until = torch.where(start, t + (dur / dt).long(), self.out_until)
+        v = v & ~(lost | (self.out_until > t))[:, None]
+      self.fifo.append((p, v))
+      if self.lat_rng is None:
+        while len(self.fifo) > self.lat_n:
+          p, v = self.fifo.pop(0)
+          self._write(p, v, replace=False)
+          self.last_frame = torch.where(v.any(-1), t, self.last_frame)
+      else:  # per-episode latency: each env writes the frame whose age matches its own
+        n = len(self.fifo)
+        for k, (p, v) in enumerate(self.fifo):
+          due = (self.lat_env == n - 1 - k)[:, None] & v
+          if bool(due.any()):
+            self._write(p, due, replace=False)
+            self.last_frame = torch.where(due.any(-1), t, self.last_frame)
+        while len(self.fifo) > self.lat_rng[1]:  # older than the longest latency: written by every env
+          self.fifo.pop(0)
+      if PHANTOM_P > 0:
+        self._phantoms(env, pel, t, dt)
+
+  def _phantoms(self, env, pel: torch.Tensor, t: int, dt: float) -> None:
+    """Blocks that are not there, ahead of the robot, rewritten every frame while they last."""
+    b, dev = pel.shape[0], pel.device
+    start = (torch.rand(b, device=dev) < PHANTOM_P * self.frame_dt) & (self.ph_until <= t)
+    if bool(start.any()):
+      ids = start.nonzero().squeeze(-1)
+      k = ids.numel()
+      robot = env.scene["robot"]
+      yaw = _yaw(robot.data.root_link_quat_w[ids]) + self.yaw_err[ids]
+      fwd = 0.3 + torch.rand(k, device=dev) * 1.0
+      lat = (torch.rand(k, device=dev) * 2 - 1) * 0.5
+      c, s = torch.cos(yaw), torch.sin(yaw)
+      top = self._fill(env)[ids] + PHANTOM_H[0] + torch.rand(k, device=dev) * (PHANTOM_H[1] - PHANTOM_H[0])
+      half = 0.075 + torch.rand(k, 2, device=dev) * 0.175
+      self.ph_box[ids] = torch.stack(
+        [self.est[ids, 0] + c * fwd - s * lat, self.est[ids, 1] + s * fwd + c * lat, half[:, 0], half[:, 1], top], -1)
+      self.ph_yaw[ids] = yaw
+      dur = PHANTOM_S[0] + torch.rand(k, device=dev) * (PHANTOM_S[1] - PHANTOM_S[0])
+      self.ph_until[ids] = t + (dur / dt).long()
+    act = self.ph_until > t
+    if bool(act.any()):
+      bx = self.ph_box
+      c, s = torch.cos(self.ph_yaw)[:, None], torch.sin(self.ph_yaw)[:, None]
+      gx, gy = self.ph_grid[None, :, 0] * bx[:, 2:3], self.ph_grid[None, :, 1] * bx[:, 3:4]
+      pts = torch.stack([bx[:, :1] + c * gx - s * gy, bx[:, 1:2] + s * gx + c * gy, bx[:, 4:5].expand_as(gx)], -1)
+      self._write(pts, act[:, None].expand(-1, pts.shape[1]), replace=True)
 
   def read(self, env) -> torch.Tensor:
     robot = env.scene["robot"]
@@ -300,6 +381,9 @@ class VisionMap:
       slot, key = self._slot_key(i0 + di, j0 + dj)
       known = self.key.gather(1, slot) == key
       out += w * torch.where(known, self.h.gather(1, slot), fill[:, None])
+    if MAX_AGE > 0:  # the controller's vision_max_age: a stale or missing map reads as flat at the lowest sole
+      stale = (int(env.common_step_counter) - self.last_frame) * env.step_dt > MAX_AGE
+      out = torch.where(stale[:, None], fill[:, None].expand_as(out), out)
     return (self.est[:, 2:3] - out - self.offset).clamp(-1.0, 1.0)
 
   def _fill(self, env) -> torch.Tensor:
