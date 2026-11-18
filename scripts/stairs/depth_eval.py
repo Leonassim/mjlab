@@ -82,6 +82,7 @@ if not PINNED:
   G_VALID, G_FROZEN = float(os.environ.get("GATE_VALID", "0.1")), float(os.environ.get("GATE_FROZEN", "0.3"))
   G_HIGH, G_HFRAC = float(os.environ.get("GATE_HIGH", "0.6")), float(os.environ.get("GATE_HFRAC", "0.08"))
   G_HOLD = int(float(os.environ.get("GATE_HOLD", "1.0")) / dt)
+  G_MASK = os.environ.get("GATE_MASK", "0") == "1"
   r_off, r_dir = D.HeadDepthPatternCfg().generate_rays(None, dv)
   cam = u.scene["depth_cam"]
   robot = u.scene["robot"]
@@ -142,6 +143,8 @@ if not PINNED:
       bad = (near > G_FRAC) | (high > G_HFRAC) | blank | (same * dt >= G_FROZEN)
       clear_t = torch.where(bad, torch.zeros_like(clear_t), clear_t + 1)
       gated = st.is_stairs & (clear_t < G_HOLD)
+      if G_MASK:  # the controller also hands the policy a blank frame (no return), harmless on the bench
+        img = torch.where(gated[:, None], torch.zeros_like(img), img)
       ep = u.episode_length_buf
       in_win = (ep >= st.pause0) & (ep < st.pause1)
       st.pause0 = torch.where(gated & ~in_win, ep, st.pause0)

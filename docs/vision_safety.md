@@ -63,6 +63,7 @@ pendant `EV_D` s (8 et 3 par défaut).
 | `SCEN=freeze` | la dernière image tenue |
 | `SCEN=person` | une bande verticale proche (0,4 à 1,5 m) qui traverse l'image |
 | `GATE=1` | prototype du garde-fou (pause de la commande d'escalier) |
+| `GATE_MASK=1` | le garde-fou donne aussi une image vide à la politique |
 | `GATE_NEAR`, `GATE_FRAC`, `GATE_HIGH`, `GATE_HFRAC`, `GATE_VALID`, `GATE_FROZEN`, `GATE_HOLD` | seuils du garde-fou |
 
 - **La sortie compte à part les chutes pendant une panne et dans la seconde qui suit.** Le banc dur a une base
@@ -76,16 +77,28 @@ de pas parasite à commande nulle. S'y ajoutent les bancs habituels (marche, mon
 escalier) et, dans mc_mujoco, le banc obligatoire de Léo : boîte de 25 cm à commande nulle, carte coupée et carte
 figée.
 
-## Premiers résultats (rl2 1000, ancienne pose caméra, 128 envs × 24 s)
+## Résultats (rl2 1000, ancienne pose caméra, 128 envs × 24 s, `RHPS1_DEPTH_BLACK_P=0`)
 
-| Panne | Sans garde-fou | Avec garde-fou (distance seule) |
-|---|---|---|
-| aucune | 54 arrivées / 49 chutes | 49 / 61 (jamais déclenché) |
-| passant | 21 / 168 | 25 / 159 (presque jamais déclenché) |
-| image coupée | 53 / 55 | 26 / 36 |
-| image figée | 56 / 51 | 27 / 45 |
+Cases : arrivées / chutes (dont pendant une panne ou dans la seconde qui suit).
 
-Le passant est la panne la plus grave. La suite figure dans le journal `rtx4080`.
+| Panne | Sans garde-fou | Pause seule | Pause et image vide (`GATE_MASK=1`) |
+|---|---|---|---|
+| aucune | 62 / 60 (0) | 54 / 56 (0), jamais déclenché | 56 / 49 (0), jamais déclenché |
+| passant | 21 / 169 (138) | 13 / 154 (131) | **25 / 40 (22)** |
+| image coupée | 53 / 59 (25) | 26 / 38 (24) | |
+| image figée | 57 / 62 (31) | 29 / 46 (30) | |
+
+- **Base du banc** : une panne et la seconde qui suit couvrent la moitié du temps, et le banc dur fait environ 50 à 60
+  chutes sans panne. Environ 25 à 30 chutes « pendant une panne » sont donc la base, pas la panne.
+- **Image coupée ou figée : pas de chute en plus.** L'élève les a vues à l'entraînement (coupures courtes).
+- **Le passant est la seule panne grave** : environ 110 chutes en plus.
+- **La pause seule ne suffit pas.** À l'arrêt, la politique lit toujours l'image du passant et réagit mal.
+- **Le garde-fou doit aussi masquer l'image.** Avec pause et image vide, le passant revient à la base (40 chutes).
+  Une image vide est une situation que la politique connaît et tient.
+- **Le critère de hauteur ne déclenche jamais sans panne** sur ce banc (au plus 5,6 % de pixels hauts, seuil à 8 %).
+
+**Conclusion pour le contrôleur :** sur image douteuse, mettre la commande en pause et donner une image vide (ou, pour
+la politique à carte, ne pas écrire la carte avec cette image), jusqu'à 1 s d'image normale.
 
 ## Ce qui reste à décider
 

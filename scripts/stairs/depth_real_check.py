@@ -79,7 +79,7 @@ def resample(depth_mm: np.ndarray, lut: np.ndarray) -> np.ndarray:
   order = np.argsort(idx, kind="stable")
   idx, r = idx[order], r[order]
   starts = np.flatnonzero(np.r_[True, idx[1:] != idx[:-1]])
-  for a, b in zip(starts, np.r_[starts[1:], len(idx)]):
+  for a, b in zip(starts, np.r_[starts[1:], len(idx)], strict=True):
     out[idx[a]] = np.median(r[a:b])
   rays = virtual_rays()
   out[~cone_mask(rays)] = 0.0
@@ -171,10 +171,13 @@ def save_png(path: Path, real: np.ndarray, sim: np.ndarray) -> None:
 
   fig, ax = plt.subplots(1, 3, figsize=(12, 3.4))
   m = np.ma.masked_equal
-  ax[0].imshow(m(real, 0), vmin=0, vmax=RANGE[1], cmap="viridis"); ax[0].set_title("real (resampled)")
-  ax[1].imshow(m(sim, 0), vmin=0, vmax=RANGE[1], cmap="viridis"); ax[1].set_title("sim (same pose)")
+  ax[0].imshow(m(real, 0), vmin=0, vmax=RANGE[1], cmap="viridis")
+  ax[0].set_title("real (resampled)")
+  ax[1].imshow(m(sim, 0), vmin=0, vmax=RANGE[1], cmap="viridis")
+  ax[1].set_title("sim (same pose)")
   e = np.where((real > 0) & (sim > 0), 100 * (real - sim), np.nan)
-  im = ax[2].imshow(e, vmin=-5, vmax=5, cmap="coolwarm"); ax[2].set_title("real - sim (cm)")
+  im = ax[2].imshow(e, vmin=-5, vmax=5, cmap="coolwarm")
+  ax[2].set_title("real - sim (cm)")
   fig.colorbar(im, ax=ax[2])
   for a in ax:
     a.axis("off")
