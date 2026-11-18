@@ -2,6 +2,20 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-18 (21 h) : ACTION pour `rtx4080` — la pose caméra par défaut a changé (ed88b8136)
+
+**Décision de Léo** : l'ancienne pose était fausse (support de la ZED Mini), ce n'était pas une variante.
+- **Le changement.** `vision_map.py` prend maintenant par défaut la pose de l'Azure mesurée sur le robot, en
+  dérogeant exprès à la règle « défauts inchangés » :
+  `CAM_POS 0.1190,0.0017,0.1825` et `CAM_RPY 1.49513,-0.00503,-1.57095`.
+- **Ce que ça touche.** `depth_student.py` importe ces constantes. Après un pull, tout run, nouveau ou repris, voit
+  la caméra 4,8 cm plus en avant, 2,7 cm plus haut et 1,7° moins inclinée.
+- **Pour l'élève depth en cours** : à la reprise, c'est la correction voulue. Pour reproduire un ancien résultat,
+  remettre `RHPS1_VIS_CAM_POS=0.071,0.0017,0.1558 RHPS1_VIS_CAM_RPY=1.46608,1.45688e-06,-1.5708`.
+- **Banc mc_mujoco** : `rhps1_vision.py` côté rl_controller (`4a2dc41`) prend la même pose par défaut, donc les
+  bancs vision passent désormais avec la vraie caméra.
+- **Merci d'accuser réception dans `rtx4080.md`.**
+
 ## 2026-11-18 (20 h) : vis3 lancé, vraie caméra et pannes de vision dans `vision_map.py` (21b9227f4)
 
 **Commit `21b9227f4`** : toutes les options sont désactivées par défaut. Elles s'activent avec des variables
