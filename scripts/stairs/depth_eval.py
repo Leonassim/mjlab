@@ -97,6 +97,9 @@ if not PINNED:
   ev_steps = gate_steps = fp_steps = 0
   near_max = torch.zeros(N, device=dv)
   valid_min = torch.ones(N, device=dv)
+  # PERSON_W "lo,hi": band width in px (default 8,31); PERSON_EDGE=1: the band grazes one edge instead of crossing.
+  P_W = tuple(int(x) for x in os.environ.get("PERSON_W", "8,31").split(","))
+  P_EDGE = os.environ.get("PERSON_EDGE", "0") == "1"
   for i in range(steps):
     img = obs["depth"]
     t = i * dt
@@ -111,9 +114,11 @@ if not PINNED:
       elif SCEN == "person":
         ph = ((t % EV_T) - (EV_T - EV_D)) / EV_D  # 0 -> 1 across the event
         g = torch.Generator().manual_seed(int(t // EV_T))
-        wpx = int(8 + torch.randint(0, 24, (1,), generator=g))
+        wpx = int(P_W[0] + torch.randint(0, P_W[1] - P_W[0] + 1, (1,), generator=g))
         d = float(0.4 + 1.1 * torch.rand(1, generator=g))
         x0 = int(-wpx + ph * (D.W + wpx))
+        if P_EDGE:  # grazing: the band stays on one image edge for the whole event
+          x0 = 0 if int(t // EV_T) % 2 == 0 else D.W - wpx
         im = img.view(N, D.H, D.W).clone()
         im[:, :, max(x0, 0):max(min(x0 + wpx, D.W), 0)] = d / D.RANGE[1]
         img = im.view(N, -1)
