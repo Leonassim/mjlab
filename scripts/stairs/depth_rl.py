@@ -34,6 +34,7 @@ ap.add_argument("--std", type=float, default=0.3)
 ap.add_argument("--lr", type=float, default=1e-4)
 ap.add_argument("--mb", type=int, default=16)
 ap.add_argument("--export", default="")
+ap.add_argument("--video", type=int, default=1)
 args = ap.parse_args()
 
 if args.export:
@@ -74,7 +75,14 @@ dev = "cuda:0"
 cfg = load_env_cfg(TASK)
 cfg.commands["motion"].motion_file = os.environ.get("MJLAB_MOTION_FILE", "docs/bwc_motion_v3.npz")
 cfg.scene.num_envs = args.envs
-env = RslRlVecEnvWrapper(ManagerBasedRlEnv(cfg, device=dev), clip_actions=12.0)
+log_dir = Path("logs/rsl_rl/rhps1_depth_rl") / f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{args.tag}"
+base = ManagerBasedRlEnv(cfg, device=dev, render_mode="rgb_array" if args.video else None)
+if args.video:  # 3 s clips on wandb, as the teacher's runs (train_s50.sh)
+  from mjlab.utils.wrappers import VideoRecorder  # noqa: E402
+
+  base = VideoRecorder(base, video_folder=log_dir / "videos" / "train", step_trigger=lambda s: s % 6000 == 0,
+                       video_length=150, disable_logger=True)
+env = RslRlVecEnvWrapper(base, clip_actions=12.0)
 
 rl = load_rl_cfg(TASK)
 rl.obs_groups = {"actor": ("proprio", "depth"), "critic": ("critic",)}
@@ -91,7 +99,6 @@ rl.run_name = args.tag
 rl.save_interval = 250
 rl.max_iterations = args.iters
 rl.clip_actions = 12.0
-log_dir = Path("logs/rsl_rl/rhps1_depth_rl") / f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{args.tag}"
 d = asdict(rl)
 
 
