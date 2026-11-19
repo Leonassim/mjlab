@@ -132,6 +132,14 @@ RL = _env("RL", "0") == "1"
 # the episodes get no command at all (stand still). Both stay out of the curriculum.
 FLAT_RL = _env("FLAT_RL", "0") == "1"
 STAND_P = float(_env("STAND_P", "0"))
+# User 2026-11-19 (gamepad in mc_mujoco): the stairs policy must also side-step and turn in place to line up with the
+# stairs. OMNI_P of the flat-tile episodes get a lateral (vy = +-1) or turn (yaw = +-1) command instead of forward;
+# progress pays the lateral metres or OMNI_R x the turned angle (same ratchet and VCAP), then the robot must stop.
+OMNI_P = float(_env("OMNI_P", "0"))
+OMNI_SIDE_FRAC = float(_env("OMNI_SIDE_FRAC", "0.5"))  # side-step share of the omni episodes, the rest turn
+OMNI_SIDE = tuple(float(x) for x in _env("OMNI_SIDE", "0.3,0.8").split(","))  # lateral distance, m
+OMNI_TURN = tuple(float(x) for x in _env("OMNI_TURN", "0.5,1.6").split(","))  # turn angle, rad
+OMNI_R = float(_env("OMNI_R", "0.4"))  # m per rad of turn in the progress ratchet (VCAP 0.12 -> 0.3 rad/s)
 STALL_S = float(_env("STALL_S", "3.0"))  # s without 1 cm of new progress before the stall cost
 STALL_DESC_X = float(_env("STALL_DESC_X", "1"))
 VMAX = float(_env("VMAX", "0.25"))  # m/s, smoothed; faster costs
@@ -239,6 +247,11 @@ class _State:
     self.pyr = self.kind > 0  # pyramid tiles (stair geometry)
     self.is_stairs = self.pyr | ((self.kind == 0) & RL & FLAT_RL)  # every env run by the RL task
     self.standing = torch.zeros(n, dtype=torch.bool, device=dev)
+    self.omni = torch.zeros(n, dtype=torch.long, device=dev)  # 0 forward, 1 side-step, 2 turn (OMNI_P)
+    self.odir = torch.ones(n, device=dev)  # +1 left / counter-clockwise
+    self.oaxis = torch.zeros(n, 2, device=dev)  # side-step direction (world)
+    self.oang = torch.zeros(n, device=dev)  # turned angle this episode, rad (unwrapped)
+    self.oyaw = torch.zeros(n, device=dev)  # last yaw, rad
     self.tread = tread[types]
     self.nsteps = torch.tensor([NSTEPS if t > 0 else 0 for t in treads], device=dev)[types]
     self.center = torch.zeros(n, 2, device=dev)
@@ -342,12 +355,42 @@ class _State:
     self.progress[ids] = 0.0
     self.s0[ids] = s0
     yaw = torch.atan2(face[:, 1], face[:, 0]) + (torch.rand(k, device=dev) * 2 - 1) * (0.15 + (YAW_SPAWN - 0.15) * r)
+    self.omni[ids] = 0
+    if OMNI_P > 0:
+      om = (self.kind[ids] == 0) & (torch.rand(k, device=dev) < OMNI_P)
+      side = torch.rand(k, device=dev) < OMNI_SIDE_FRAC
+      mode = torch.where(om, torch.where(side, 1, 2), 0)
+      odir = torch.where(torch.rand(k, device=dev) < 0.5, -1.0, 1.0)
+      hf = torch.stack([torch.cos(yaw), torch.sin(yaw)], 1)  # actual heading: the side-step keeps it
+      ax = torch.stack([-hf[:, 1], hf[:, 0]], 1) * odir[:, None]
+      dist = OMNI_SIDE[0] + torch.rand(k, device=dev) * (OMNI_SIDE[1] - OMNI_SIDE[0])
+      ang = OMNI_TURN[0] + torch.rand(k, device=dev) * (OMNI_TURN[1] - OMNI_TURN[0])
+      s_side = ((xy - c) * ax).sum(-1)
+      g = torch.where(mode == 1, s_side + dist, OMNI_R * ang)
+      self.omni[ids] = mode
+      self.odir[ids] = odir
+      self.oaxis[ids] = ax
+      self.oang[ids] = 0.0
+      self.oyaw[ids] = yaw
+      self.goal[ids] = torch.where(om, g, self.goal[ids])
+      self.sign[ids] = torch.where(om, torch.ones_like(odir), self.sign[ids])
+      self.face[ids] = torch.where(om[:, None], hf, self.face[ids])
     return xy, ground, yaw
 
   def update(self, env):
     robot = env.scene["robot"]
     p = robot.data.root_link_pos_w[:, :2]
     s = ((p - self.center) * self.u).sum(-1)
+    if OMNI_P > 0:
+      q = robot.data.root_link_quat_w
+      yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+      dy = torch.atan2(torch.sin(yaw - self.oyaw), torch.cos(yaw - self.oyaw))
+      self.oang = torch.where(env.episode_length_buf <= 1, torch.zeros_like(dy), self.oang + dy)
+      self.oyaw = yaw
+      turn = self.omni == 2
+      s = torch.where(self.omni == 1, ((p - self.center) * self.oaxis).sum(-1), s)
+      s = torch.where(turn, OMNI_R * self.odir * self.oang, s)
+      self.face = torch.where(turn[:, None], torch.stack([torch.cos(yaw), torch.sin(yaw)], 1), self.face)
     span = PLATFORM / 2 + (self.nsteps - 1) * self.tread
     start = torch.where(self.sign < 0, span, PLATFORM / 2)
     end = torch.where(self.sign < 0, PLATFORM / 2, span)
@@ -357,6 +400,7 @@ class _State:
     if STAIR_PAUSE_P > 0:
       ep = env.episode_length_buf
       trig = ~torch.isnan(self.sp_trig) & (self.sign * (s - self.sp_trig) > 0) & (ep >= self.cmd_on) & ~self.arrived
+      trig = trig & (self.omni == 0)
       self.pause0 = torch.where(trig, ep, self.pause0)
       self.pause1 = torch.where(trig, ep + self.sp_dur, self.pause1)
       self.sp_trig = torch.where(trig, torch.full_like(self.sp_trig, float("nan")), self.sp_trig)
@@ -377,7 +421,7 @@ class _State:
       # rl14 "arrived" diving off the last step, feet still on the tread: both feet past the last edge.
       sf = ((robot.data.body_link_pos_w[:, self.foot_ids, :2] - self.center[:, None]) * self.u[:, None]).sum(-1)
       edge = torch.where(self.sign < 0, PLATFORM / 2, span)
-      hit = hit & (self.sign[:, None] * (sf - edge[:, None]) > 0).all(-1)
+      hit = hit & ((self.sign[:, None] * (sf - edge[:, None]) > 0).all(-1) | (self.omni > 0))
     if ARRIVE_LOADED:
       hit = hit & (self.load > 0.1 * BW).all(-1)
     self.arrived_now = hit
@@ -573,7 +617,9 @@ def _command_wrapper(orig):
       return u
     on = ~st.arrived & ~st.paused & (env.episode_length_buf >= st.cmd_on)
     forced = torch.zeros_like(u)
-    forced[:, 0] = on.to(u.dtype)
+    forced[:, 0] = (on & (st.omni == 0)).to(u.dtype)
+    forced[:, 1] = (on & (st.omni == 1)).to(u.dtype) * st.odir
+    forced[:, 2] = (on & (st.omni == 2)).to(u.dtype) * st.odir
     if HEAD_CMD:
       q = env.scene["robot"].data.root_link_quat_w
       yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
