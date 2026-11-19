@@ -875,6 +875,44 @@ def stairs_stop(env, std: float) -> torch.Tensor:
   return _stairs_only(r, env)
 
 
+def _still(env) -> torch.Tensor:
+  st = env._stairs
+  still = st.arrived
+  if PAUSE_P > 0 or STAIR_PAUSE_P > 0:
+    still = st.arrived | st.paused | ((env.episode_length_buf < st.cmd_on) & (env.episode_length_buf >= st.hold_end))
+  return still
+
+
+def stairs_stop_pose(env) -> torch.Tensor:
+  """Stopped like slot 18 (tardis 2026-11-19): feet side by side (stagger along the heading, std 3 cm) at the nominal
+  width (std 3 cm), CoM over the middle of the feet (std 2 cm), both feet loaded. Paid only while the command is off.
+  s50e stopped with the feet 6 cm staggered and rocked fore-aft instead of taking a closing step."""
+  st = env._stairs
+  robot = env.scene["robot"]
+  fp = robot.data.body_link_pos_w[:, st.foot_ids, :2]
+  q = robot.data.root_link_quat_w
+  yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+  hf = torch.stack([torch.cos(yaw), torch.sin(yaw)], 1)
+  d = fp[:, 0] - fp[:, 1]
+  dx = (d * hf).sum(-1)
+  w = (-d[:, 0] * hf[:, 1] + d[:, 1] * hf[:, 0]).abs()
+  com = robot.data.data.subtree_com[:, robot.data.indexing.root_body_id, :2]
+  c = (com - fp.mean(1)).norm(dim=-1)
+  k = torch.exp(-((dx / 0.03) ** 2) - ((w - STANCE_W0) / 0.03) ** 2 - (c / 0.02) ** 2)
+  both = (st.load.min(-1).values / (0.25 * BW)).clamp(0.0, 1.0)
+  return _stairs_only(_still(env) * k * both, env)
+
+
+def stairs_still_slip(env) -> torch.Tensor:
+  """Horizontal speed of each foot carrying > 25 % BW while the command is off, m/s summed (weight < 0): a closing step
+  must cost less than sliding a loaded foot back into place (s50e slid 13 cm after a release)."""
+  st = env._stairs
+  robot = env.scene["robot"]
+  v = robot.data.body_link_lin_vel_w[:, st.foot_ids, :2].norm(dim=-1)
+  loaded = st.load > 0.25 * BW
+  return _stairs_only(_still(env) * (v * loaded).sum(-1), env)
+
+
 def stairs_same_tread(env) -> torch.Tensor:
   """Stopped with both feet loaded on one tread (Leo: preferred, one foot per tread allowed)."""
   st = env._stairs
@@ -1556,7 +1594,8 @@ def apply(cfg, play: bool = False) -> None:
       cfg.rewards["stairs_impact"] = RewardTermCfg(func=stairs_impact, weight=w("IMP", "0"))
     for k, f in (("TRUNK", stairs_trunk), ("VZ", stairs_vz), ("TRQ", stairs_torque), ("FCLEAR", stairs_feet_clear),
                  ("TREAD", stairs_tread), ("VINST", stairs_vinst), ("KNEE", stairs_knee_flex),
-                 ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll)):
+                 ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
+                 ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
