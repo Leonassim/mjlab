@@ -766,6 +766,20 @@ def stairs_trunk(env) -> torch.Tensor:
   return t2.sum(-1) * _land_ramp(env)
 
 
+def stairs_roll(env) -> torch.Tensor:
+  """Pelvis and chest roll, sin^2 each, no dead zone (weight RHPS1_STAIRS_W_ROLL < 0). tardis 2026-11-19: s50e sways at
+  3.8 deg roll p95 vs slot 18's 2.2, all inside TRUNK_DEAD, so stairs_trunk gave no gradient there."""
+  robot = env.scene["robot"]
+  if not hasattr(env, "_st_chest"):
+    env._st_chest = list(robot.body_names).index("CHEST_P_LINK")
+
+  def r2(q):
+    w, x, y, z = q.unbind(-1)
+    return (2 * (y * z + w * x)) ** 2
+
+  return (r2(robot.data.root_link_quat_w) + r2(robot.data.body_link_quat_w[:, env._st_chest])) * _land_ramp(env)
+
+
 def stairs_vz(env) -> torch.Tensor:
   """Pelvis vertical speed squared: climbing needs ~0.2 m/s, hopping 1 m/s (ramped)."""
   return env.scene["robot"].data.root_link_lin_vel_w[:, 2] ** 2 * _land_ramp(env)
@@ -1542,7 +1556,7 @@ def apply(cfg, play: bool = False) -> None:
       cfg.rewards["stairs_impact"] = RewardTermCfg(func=stairs_impact, weight=w("IMP", "0"))
     for k, f in (("TRUNK", stairs_trunk), ("VZ", stairs_vz), ("TRQ", stairs_torque), ("FCLEAR", stairs_feet_clear),
                  ("TREAD", stairs_tread), ("VINST", stairs_vinst), ("KNEE", stairs_knee_flex),
-                 ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err)):
+                 ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
