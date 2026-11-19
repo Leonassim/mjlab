@@ -58,7 +58,7 @@ pas une nouvelle façon de bouger. C'était déjà la leçon de T12 (§11, objec
 | Banc | Critère |
 |---|---|
 | omni_eval (avec marche arrière et diagonales) | vitesse ≥ 70 % de la cible sur chaque axe, 0 chute, avance parasite ≤ 0,03 m/s |
-| stop_eval | roulis p95 ≤ 2,5°, glissement p90 ≤ 3 cm, 0 pose après l'arrêt, immobile < 1,5 s |
+| stop_eval | roulis p95 ≤ 2,5°, glissement net ≤ 2 cm (slot 18 : 1,6 ; s50e : 5,7 dans mc_mujoco), 0 pose après l'arrêt, immobile < 1,5 s |
 | tgate (relbench) | ≥ s50e sur toutes les lignes (moteur 0,53 et 0,45, avec arrêts) |
 | mc_mujoco (tardis) | relbench 12/12, banc arrêt, banc omni, essai manette |
 
