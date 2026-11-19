@@ -139,6 +139,14 @@ OMNI_P = float(_env("OMNI_P", "0"))
 OMNI_SIDE_FRAC = float(_env("OMNI_SIDE_FRAC", "0.5"))  # side-step share of the omni episodes, the rest turn
 OMNI_SIDE = tuple(float(x) for x in _env("OMNI_SIDE", "0.3,0.8").split(","))  # lateral distance, m
 OMNI_TURN = tuple(float(x) for x in _env("OMNI_TURN", "0.5,1.6").split(","))  # turn angle, rad
+OSEQ_P = float(_env("OSEQ_P", "0"))  # share of flat tiles running a command sequence (o50, Leo 2026-11-19)
+OSEQ_N = tuple(int(x) for x in _env("OSEQ_N", "3,5").split(","))  # segments per episode, then zero until the end
+OSEQ_T = tuple(float(x) for x in _env("OSEQ_T", "1.5,4.0").split(","))  # s per segment
+OSEQ_ZERO = float(_env("OSEQ_ZERO", "0.25"))  # share of zero segments (stop and restart)
+OSEQ_COMBO = float(_env("OSEQ_COMBO", "0.3"))  # share of 2- and 3-axis sign combos among the moving segments
+OSEQ_V = tuple(float(x) for x in _env("OSEQ_V", "0.12,0.08,0.08,0.3").split(","))  # fwd, back, side m/s, yaw rad/s
+OSEQ_TAU = float(_env("OSEQ_TAU", "0.4"))  # s, body-velocity smoothing for the tracking reward
+OSEQ_STD = float(_env("OSEQ_STD", "0.7"))  # tracking kernel width, in units of the per-axis target speed
 OMNI_R = float(_env("OMNI_R", "0.4"))  # m per rad of turn in the progress ratchet (VCAP 0.12 -> 0.3 rad/s)
 STALL_S = float(_env("STALL_S", "3.0"))  # s without 1 cm of new progress before the stall cost
 STALL_DESC_X = float(_env("STALL_DESC_X", "1"))
@@ -252,6 +260,11 @@ class _State:
     self.oaxis = torch.zeros(n, 2, device=dev)  # side-step direction (world)
     self.oang = torch.zeros(n, device=dev)  # turned angle this episode, rad (unwrapped)
     self.oyaw = torch.zeros(n, device=dev)  # last yaw, rad
+    self.oseq = torch.zeros(n, dtype=torch.bool, device=dev)  # OSEQ_P: flat env running a command sequence
+    self.seg_cmd = torch.zeros(n, OSEQ_N[1] + 1, 3, device=dev)  # signs (vx, vy, yaw); the last slot stays zero
+    self.seg_end = torch.full((n, OSEQ_N[1] + 1), 10**9, dtype=torch.long, device=dev)  # steps after cmd_on
+    self.ocmd = torch.zeros(n, 3, device=dev)  # current sequence command (signs)
+    self.ov = torch.zeros(n, 3, device=dev)  # smoothed body-frame (vx, vy, wz)
     self.tread = tread[types]
     self.nsteps = torch.tensor([NSTEPS if t > 0 else 0 for t in treads], device=dev)[types]
     self.center = torch.zeros(n, 2, device=dev)
@@ -375,7 +388,44 @@ class _State:
       self.goal[ids] = torch.where(om, g, self.goal[ids])
       self.sign[ids] = torch.where(om, torch.ones_like(odir), self.sign[ids])
       self.face[ids] = torch.where(om[:, None], hf, self.face[ids])
+    self.oseq[ids] = False
+    if OSEQ_P > 0:
+      self._seq_spawn(env, ids)
     return xy, ground, yaw
+
+  def _seq_spawn(self, env, ids: torch.Tensor):
+    """Flat tiles: OSEQ_N[0]-OSEQ_N[1] command segments of OSEQ_T s, drawn among zero, the six single axes and
+    2-3 axis sign combos (tardis: ~70 % single or zero, ~30 % combos: the joystick can send any of the 27 states)."""
+    dev = env.device
+    k = len(ids)
+    m = OSEQ_N[1]
+    sq = (self.kind[ids] == 0) & (torch.rand(k, device=dev) < OSEQ_P)
+    nseg = torch.randint(OSEQ_N[0], m + 1, (k,), device=dev)
+    single = torch.zeros(k, m, 3, device=dev)
+    ax = torch.randint(0, 3, (k, m), device=dev)
+    sgn = torch.where(torch.rand(k, m, device=dev) < 0.5, -1.0, 1.0)
+    single.scatter_(2, ax[..., None], sgn[..., None])
+    combo = torch.where(torch.rand(k, m, 3, device=dev) < 0.5, -1.0, 1.0)
+    drop = torch.randint(0, 3, (k, m), device=dev)
+    keep3 = torch.rand(k, m, device=dev) < 0.5
+    combo = combo * torch.where(keep3[..., None], torch.ones_like(combo),
+                                1.0 - torch.nn.functional.one_hot(drop, 3).float())
+    r = torch.rand(k, m, device=dev)
+    cmd = torch.where((r < OSEQ_COMBO)[..., None], combo, single)
+    cmd = cmd * (torch.rand(k, m, device=dev) >= OSEQ_ZERO)[..., None]
+    cmd = cmd * (torch.arange(m, device=dev)[None] < nseg[:, None])[..., None]
+    dur = ((OSEQ_T[0] + torch.rand(k, m, device=dev) * (OSEQ_T[1] - OSEQ_T[0])) / env.step_dt).long()
+    end = dur.cumsum(1)
+    last = end.gather(1, (nseg - 1)[:, None])
+    end = torch.where(torch.arange(m, device=dev)[None] < nseg[:, None], end, last)  # unused: end with the last
+    self.seg_cmd[ids, :m] = cmd
+    self.seg_cmd[ids, m] = 0.0
+    self.seg_end[ids, :m] = end
+    self.seg_end[ids, m] = 10**9
+    self.oseq[ids] = sq
+    self.ov[ids] = 0.0
+    self.goal[ids] = torch.where(sq, torch.full_like(self.goal[ids], 1e6), self.goal[ids])
+    self.sign[ids] = torch.where(sq, torch.ones_like(self.sign[ids]), self.sign[ids])
 
   def update(self, env):
     robot = env.scene["robot"]
@@ -391,6 +441,24 @@ class _State:
       s = torch.where(self.omni == 1, ((p - self.center) * self.oaxis).sum(-1), s)
       s = torch.where(turn, OMNI_R * self.odir * self.oang, s)
       self.face = torch.where(turn[:, None], torch.stack([torch.cos(yaw), torch.sin(yaw)], 1), self.face)
+    seq_zero = torch.zeros_like(self.oseq)
+    if OSEQ_P > 0:
+      ep = env.episode_length_buf
+      t = ep - self.cmd_on
+      # unused slots end with the last real one, then the extra slot is zero until the end
+      idx = (t[:, None] >= self.seg_end).sum(-1).clamp(max=OSEQ_N[1])
+      cur = self.seg_cmd.gather(1, idx[:, None, None].expand(-1, 1, 3))[:, 0]
+      self.ocmd = torch.where((self.oseq & (t >= 0))[:, None], cur, torch.zeros_like(cur))
+      seq_zero = self.oseq & (t >= 0) & (self.ocmd == 0).all(-1)
+      q = robot.data.root_link_quat_w
+      yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+      hf = torch.stack([torch.cos(yaw), torch.sin(yaw)], 1)
+      self.face = torch.where(self.oseq[:, None], hf, self.face)
+      v = robot.data.root_link_lin_vel_w[:, :2]
+      vb = torch.stack([(v * hf).sum(-1), -v[:, 0] * hf[:, 1] + v[:, 1] * hf[:, 0],
+                        robot.data.root_link_ang_vel_w[:, 2]], 1)
+      a = min(1.0, env.step_dt / OSEQ_TAU)
+      self.ov = torch.where((ep <= 1)[:, None], torch.zeros_like(vb), self.ov + a * (vb - self.ov))
     span = PLATFORM / 2 + (self.nsteps - 1) * self.tread
     start = torch.where(self.sign < 0, span, PLATFORM / 2)
     end = torch.where(self.sign < 0, PLATFORM / 2, span)
@@ -408,6 +476,7 @@ class _State:
     vm = getattr(env, "_vision", None)
     if vm is not None and vm.gate_on:  # RHPS1_VIS_GATE: the controller pauses the command on a doubtful map
       win = win | vm.gate_pause(int(env.common_step_counter))
+    win = win | seq_zero  # a zero segment is a pause: the stop rewards and the ARRIVE_LOADED latch apply
     if ARRIVE_LOADED:
       # The command used to drop mid-swing and the policy froze that swing (front foot up after the goal).
       down = (self.load > 0.1 * BW).all(-1)
@@ -416,7 +485,7 @@ class _State:
     else:
       self.paused = win
     on = (env.episode_length_buf >= self.cmd_on) & ~self.paused
-    hit = self.is_stairs & on & (self.sign * (s - self.goal) > 0) & ~self.arrived
+    hit = self.is_stairs & on & (self.sign * (s - self.goal) > 0) & ~self.arrived & ~self.oseq
     if ARRIVE_FEET:
       # rl14 "arrived" diving off the last step, feet still on the tread: both feet past the last edge.
       sf = ((robot.data.body_link_pos_w[:, self.foot_ids, :2] - self.center[:, None]) * self.u[:, None]).sum(-1)
@@ -475,7 +544,9 @@ class _State:
       c = torch.where(fr, torch.zeros_like(rem), (self.credit + VCAP * env.step_dt * on).clamp(max=BUCKET))
       self.gain = torch.minimum(self.gain, c)
       self.credit = c - self.gain
-    moved = self.best < self.mark - 0.01
+    if OSEQ_P > 0:
+      self.gain = torch.where(self.oseq, torch.zeros_like(self.gain), self.gain)  # paid by stairs_otrack instead
+    moved = (self.best < self.mark - 0.01) | self.oseq  # no stall cost on sequence envs
     self.mark = torch.where(fr | moved, self.best, self.mark)
     self.last_gain = torch.where(fr | moved | ~on | self.arrived, ep, self.last_gain)
     if SETTLE_T > 0:
@@ -620,6 +691,8 @@ def _command_wrapper(orig):
     forced[:, 0] = (on & (st.omni == 0)).to(u.dtype)
     forced[:, 1] = (on & (st.omni == 1)).to(u.dtype) * st.odir
     forced[:, 2] = (on & (st.omni == 2)).to(u.dtype) * st.odir
+    if OSEQ_P > 0:
+      forced = torch.where(st.oseq[:, None], st.ocmd.to(u.dtype) * on[:, None].to(u.dtype), forced)
     if HEAD_CMD:
       q = env.scene["robot"].data.root_link_quat_w
       yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
@@ -900,7 +973,7 @@ def stairs_stop_pose(env) -> torch.Tensor:
   c = (com - fp.mean(1)).norm(dim=-1)
   k = torch.exp(-((dx / 0.03) ** 2) - ((w - STANCE_W0) / 0.03) ** 2 - (c / 0.02) ** 2)
   both = (st.load.min(-1).values / (0.25 * BW)).clamp(0.0, 1.0)
-  return _stairs_only(_still(env) * k * both, env)
+  return _stairs_only(_still(env) * k * both, env) * _land_ramp(env)  # ramped (tardis: full guards collapsed the copy)
 
 
 def stairs_still_slip(env) -> torch.Tensor:
@@ -910,7 +983,21 @@ def stairs_still_slip(env) -> torch.Tensor:
   robot = env.scene["robot"]
   v = robot.data.body_link_lin_vel_w[:, st.foot_ids, :2].norm(dim=-1)
   loaded = st.load > 0.25 * BW
-  return _stairs_only(_still(env) * (v * loaded).sum(-1), env)
+  return _stairs_only(_still(env) * (v * loaded).sum(-1), env) * _land_ramp(env)
+
+
+def stairs_otrack(env) -> torch.Tensor:
+  """OSEQ envs while moving: body-frame velocity tracking, exp(-sum((v_i - target_i) / scale_i)^2 / OSEQ_STD^2), smoothed
+  over OSEQ_TAU. Targets: sign x (fwd or back, side, yaw) speed; scale = side speed for vx, vy and yaw speed for wz.
+  t3 (positional goals) learned not to fall by not moving: a speed target pays the motion itself."""
+  st = env._stairs
+  on = ~st.paused & (env.episode_length_buf >= st.cmd_on) & st.oseq & (st.ocmd != 0).any(-1)
+  c = st.ocmd
+  vx = torch.where(c[:, 0] > 0, OSEQ_V[0], OSEQ_V[1]) * c[:, 0]
+  tgt = torch.stack([vx, OSEQ_V[2] * c[:, 1], OSEQ_V[3] * c[:, 2]], 1)
+  sc = torch.tensor([OSEQ_V[2], OSEQ_V[2], OSEQ_V[3]], device=c.device)
+  e = (((st.ov - tgt) / sc) ** 2).sum(-1)
+  return torch.exp(-e / OSEQ_STD**2) * on
 
 
 def stairs_same_tread(env) -> torch.Tensor:
@@ -1595,7 +1682,7 @@ def apply(cfg, play: bool = False) -> None:
     for k, f in (("TRUNK", stairs_trunk), ("VZ", stairs_vz), ("TRQ", stairs_torque), ("FCLEAR", stairs_feet_clear),
                  ("TREAD", stairs_tread), ("VINST", stairs_vinst), ("KNEE", stairs_knee_flex),
                  ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
-                 ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip)):
+                 ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:

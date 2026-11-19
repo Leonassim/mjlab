@@ -73,6 +73,8 @@ slip = torch.zeros(N)
 lands = torch.zeros(N)
 last_move = torch.zeros(N)
 prev_f = None
+prev_lo = torch.zeros(N, 2, dtype=torch.bool)
+anchor = torch.zeros(N, 2, 2)
 p_start = robot.data.root_link_pos_w[:, :2].clone()
 steps = int((WALK + STOP + 2.0) / dt)
 for _ in range(steps):
@@ -93,10 +95,17 @@ for _ in range(steps):
   lat = (pp[:, 0] * -hf[:, 1] + pp[:, 1] * hf[:, 0]).cpu()
   fpos = robot.data.body_link_pos_w[:, fids, :2]
   loaded = (st.load > 0.25 * BW).cpu()
+  # net travel of each loaded sole per stance after the release (a path length summed the 50 Hz jitter)
+  lo = (st.load > 0.25 * BW).cpu() & stopped[:, None]
+  fc = fpos.cpu()
   if prev_f is not None:
-    dmove = (fpos - prev_f).norm(dim=-1).cpu()
-    slip += torch.where(stopped[:, None] & loaded, dmove, torch.zeros_like(dmove)).sum(-1)
-  prev_f = fpos.clone()
+    endc = prev_lo & ~lo
+    slip += ((fc - anchor).norm(dim=-1) * endc).sum(-1)
+    anchor = torch.where((lo & ~prev_lo)[..., None], fc, anchor)
+  else:
+    anchor = fc.clone()
+  prev_lo = lo
+  prev_f = fc
   lands += (st.land.any(-1).cpu() & stopped).float()
   v = robot.data.root_link_lin_vel_w[:, :2].norm(dim=-1).cpu()
   wz = robot.data.root_link_ang_vel_w[:, 2].abs().cpu()
@@ -107,6 +116,7 @@ for _ in range(steps):
     walk_pr[e].append(float(pr[e]))
     walk_cr[e].append(float(cr[e]))
     walk_lat[e].append(float(lat[e]))
+slip += ((prev_f - anchor).norm(dim=-1) * prev_lo).sum(-1)
 d = fpos[:, 0] - fpos[:, 1]
 stagger = (d * hf).sum(-1).abs().cpu() * 100
 

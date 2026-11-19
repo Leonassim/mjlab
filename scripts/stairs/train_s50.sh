@@ -13,7 +13,7 @@ RESUME=(); ENT=0.0
 if [ -z "$LR" ]; then
   export RHPS1_STAIRS_LAND_RAMP_OFF=0 RHPS1_STAIRS_APPROACH_OFF=0 RHPS1_STAIRS_BWC_RAMP=72000 \
     RHPS1_STAIRS_SAT_T0=1.0 RHPS1_STAIRS_SAT_RAMP=72000
-  rm -f "$RHPS1_STAIRS_LVL_FILE"; ENT=0.002
+  rm -f "$RHPS1_STAIRS_LVL_FILE"; ENT=${ENT_COEF:-0.002}  # ENT_COEF=0: s50e lesson (std 1.0 -> 1.75 at 0.002)
 else
   RESUME=(--agent.resume True --agent.load-run "$LR" --agent.load-checkpoint "$LC")
 fi
