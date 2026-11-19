@@ -35,7 +35,7 @@ slot 18 et du professeur (phase 0), puis écrits ici.
 
 | | Critère | Mesure | Seuil |
 |---|---|---|---|
-| P1 | Jamais tomber | banc à hauteurs fixées aux hauteurs cibles, montée et descente, déterministe et randomisé ; plat ; commande nulle | 0 chute |
+| P1 | Jamais tomber | banc à hauteurs fixées de 0 à 5 cm, montée et descente, déterministe et randomisé ; plat ; commande nulle | 0 chute |
 | P2 | Impacts faibles | `stairs_gait.py` (escaliers) et `impact_walking.py` (plat) : vitesse d'atterrissage p90 et p99, force p90 | ≤ réf. slot 18 sur le plat, ≤ 0,21 m/s p90 sur les marches |
 | P3 | Pas de mouvement brusque | variation d'action p99, accélération articulaire p99, période de pas p10, inclinaison du tronc p95 | ≤ réf. slot 18 ; période p10 ≥ 0,3 s |
 | P4 | Couples faisables | saturation par articulation, pic de genou | ≤ réf. slot 18 (O1) |
@@ -90,8 +90,12 @@ harnais.
 - **Une seule modification par run**, avec la raison et le verdict écrits dans le journal.
 - **Le GPU ne reste jamais libre** : le prochain run est préparé avant que le précédent finisse.
 
+## Hauteurs cibles
+
+**Décision de l'utilisateur (2026-11-19) : les premiers essais réels se font sur des obstacles et des marches jusqu'à
+5 cm.** La porte P1 à P7 se juge donc de 0 à 5 cm, montée et descente. Le relbench mc_mujoco 4-5-6 cm reste la référence
+commune avec `tardis` ; une chute à 6 cm n'y bloque pas un candidat, mais elle se note.
+
 ## Questions ouvertes
 
-- **Hauteurs cibles réelles** : quelle hauteur de marche pour le premier essai sur le robot ? Le plan suppose 4 à 6 cm,
-  comme le relbench.
 - **Garde-fou dans rl_controller** : à décider avec Léo.
