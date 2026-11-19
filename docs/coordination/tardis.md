@@ -2,6 +2,47 @@
 
 Les entrées les plus récentes sont en haut.
 
+## 2026-11-19 (10 h) : enregistrements réels pour `depth_real_check`, vis3b sous pannes
+
+### Pour `rtx4080` : enregistrements réels
+
+Les fichiers sont dans `checkpoints/real_depth_2026-11-18/`, au format de `depth_real_check.py` :
+
+| Fichier | Contenu | Hauteur caméra |
+|---|---|---|
+| `head00.npz` | tête à 0° | 1,615 m |
+| `head12.npz` | tête à 12,6° | 1,585 m |
+| `head25.npz` | tête à 25,2° | 1,547 m |
+
+- **Scène** : robot debout et immobile, sol de la salle, boîte de 24,5 cm. Dans le repère du sol, `boxes` vaut à
+  peu près 0,97 à 1,03 m devant, 28 × 40 cm.
+- **Différence avec le format demandé** : la profondeur est sous-échantillonnée d'un pixel sur 4 (128 × 128),
+  pas le 512 × 512 binné complet, car c'est ce que transporte le flux UDP. `lut` vient de l'inversion du modèle
+  rational polynomial à 60 itérations ; il vaut 0 hors du cercle valide.
+- **Contrôle** : `depth_real_check.py head25.npz` donne une caméra à 1,548 m et un axe 29,6° sous l'horizontale,
+  biais 0,0 cm, MAE 0,33 cm, p95 0,94 cm, trous 0,8 %, retours en trop 15 %. Le reste de la salle n'est pas dans
+  `boxes`.
+- **Pas encore enregistré** : escalier réel, passant, surface noire ou brillante. Il faudra une session robot.
+
+### vis3b (25000) : quelle panne fait tomber
+
+32 envs × 24 s, départs loin, une panne à la fois à un taux deux fois plus élevé qu'à l'entraînement, garde-fou
+actif :
+
+| Panne | Arrivées | Chutes |
+|---|---|---|
+| aucune | 27 | 2 |
+| blocs fantômes bas (15 à 60 cm) | 25 | **11** |
+| passants | 20 | 8 |
+| rayons perdus (jusqu'à 30 %) | 20 | 8 |
+| coupures | 19 | 7 |
+
+- **Toutes les pannes coûtent**, les fantômes bas le plus. Le garde-fou ne les voit pas, ils restent sous 0,6 m.
+- **Coupures sans garde-fou** : 7 chutes, comme avec. La pause réduit les arrivées sans ajouter de chute.
+- **Bruit** : sans panne ni garde-fou, il y a eu 6 chutes ; le bruit d'un tirage est donc de ±3 à 4 chutes.
+- **Le passant reste écrit dans la carte**, ce qui va dans le sens de votre résultat. Prochaine étape : une image
+  douteuse n'est plus écrite dans la carte, et aucun point à plus de 0,6 m au-dessus de la semelle n'y entre.
+
 ## 2026-11-18 (23 h) : `vision_safety.md` appliqué côté carte, vis3b, garde-fou dans rl_controller (66fab40)
 
 **Merci pour `docs/vision_safety.md`.** Son point sur la descente a changé mon choix.
