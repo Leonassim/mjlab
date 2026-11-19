@@ -78,6 +78,10 @@ GATE_HIGH = float(_env("GATE_HIGH", "0.6"))
 GATE_HFRAC = float(_env("GATE_HFRAC", "0.08"))
 GATE_VALID = float(_env("GATE_VALID", "0.1"))
 GATE_HOLD = float(_env("GATE_HOLD", "1.0"))
+# A doubtful frame writes nothing (the map keeps its last good state); points CLIP above the lowest sole are never
+# written (0: off). rhps1_vision.py does the same on the robot.
+GATE_SKIP = _env("GATE_SKIP", "0") == "1"
+CLIP = float(_env("CLIP", "0"))
 DEBUG = _env("DEBUG", "0") == "1"
 LOAD_N = 10.0
 SOLE_DEPTH = 0.097  # ankle to sole bottom
@@ -303,8 +307,11 @@ class VisionMap:
     p = c[:, None] + ray + torch.cross(w, ray, dim=-1) + self.pos_bias[:, None]
     po = self._to_odom(p, pel)
     n_ok = valid.float().sum(-1)
-    high = ((po[..., 2] - self._fill(env)[:, None]) > GATE_HIGH) & valid
-    return po, valid, high.float().sum(-1) / n_ok.clamp(min=1.0), n_ok / valid.shape[1]
+    rel = po[..., 2] - self._fill(env)[:, None]
+    hf = ((rel > GATE_HIGH) & valid).float().sum(-1) / n_ok.clamp(min=1.0)
+    if CLIP > 0:
+      valid = valid & (rel <= CLIP)
+    return po, valid, hf, n_ok / valid.shape[1]
 
   def _persons(self, cam, r, valid, u, t):
     """Rays that meet a passer-by (1.7 m tall, 0.44 m wide, 0.3 m deep, crossing ahead) stop on it."""
@@ -359,6 +366,15 @@ class VisionMap:
     bad = due & ((hf > GATE_HFRAC) | (vf < GATE_VALID))
     self.gate_until = torch.where(bad, t + self.hold_n, self.gate_until)
 
+  def _arrive(self, p, v, hf, vf, t: int) -> None:
+    """A frame reaching the map: written unless doubtful under GATE_SKIP; the gate sees it either way."""
+    got = v.any(-1)
+    if GATE_SKIP:
+      v = v & ~((hf > GATE_HFRAC) | (vf < GATE_VALID))[:, None]
+    self._write(p, v, replace=False)
+    self.last_frame = torch.where(got, t, self.last_frame)
+    self._gate_frame(got, hf, vf, t)
+
   def _footprints(self, env, pel: torch.Tensor) -> None:
     robot = env.scene["robot"]
     fp = robot.data.body_link_pos_w[:, self.feet]
@@ -411,20 +427,13 @@ class VisionMap:
       self.fifo.append((p, v, hf, vf))
       if self.lat_rng is None:
         while len(self.fifo) > self.lat_n:
-          p, v, hf, vf = self.fifo.pop(0)
-          self._write(p, v, replace=False)
-          got = v.any(-1)
-          self.last_frame = torch.where(got, t, self.last_frame)
-          self._gate_frame(got, hf, vf, t)
+          self._arrive(*self.fifo.pop(0), t)
       else:  # per-episode latency: each env writes the frame whose age matches its own
         n = len(self.fifo)
         for k, (p, v, hf, vf) in enumerate(self.fifo):
           due = (self.lat_env == n - 1 - k)[:, None] & v
           if bool(due.any()):
-            self._write(p, due, replace=False)
-            got = due.any(-1)
-            self.last_frame = torch.where(got, t, self.last_frame)
-            self._gate_frame(got, hf, vf, t)
+            self._arrive(p, due, hf, vf, t)
         while len(self.fifo) > self.lat_rng[1]:  # older than the longest latency: written by every env
           self.fifo.pop(0)
       if PHANTOM_P > 0:
