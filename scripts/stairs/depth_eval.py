@@ -80,7 +80,7 @@ if not PINNED:
   GATE = os.environ.get("GATE", "0") == "1"
   G_NEAR, G_FRAC = float(os.environ.get("GATE_NEAR", "0.6")), float(os.environ.get("GATE_FRAC", "0.15"))
   G_VALID, G_FROZEN = float(os.environ.get("GATE_VALID", "0.1")), float(os.environ.get("GATE_FROZEN", "0.3"))
-  G_HIGH, G_HFRAC = float(os.environ.get("GATE_HIGH", "0.6")), float(os.environ.get("GATE_HFRAC", "0.08"))
+  G_HIGH, G_HFRAC = float(os.environ.get("GATE_HIGH", "0.6")), float(os.environ.get("GATE_HFRAC", "0.15"))
   G_HOLD = int(float(os.environ.get("GATE_HOLD", "1.0")) / dt)
   G_MASK = os.environ.get("GATE_MASK", "0") == "1"
   r_off, r_dir = D.HeadDepthPatternCfg().generate_rays(None, dv)

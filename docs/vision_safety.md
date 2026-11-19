@@ -35,7 +35,7 @@ Calculés sur chaque image reçue, sans réseau :
 
 | Test | Critère (prototype) | Mesures en marche normale (banc dur, 128 envs) |
 |---|---|---|
-| Quelque chose devant | plus de 8 % des pixels à plus de 0,6 m au-dessus de la semelle la plus basse, ou plus de 15 % à moins de 0,6 m de la caméra | hauteur : 1,2 % en médiane, 3,4 % au pire ; un passant : 26 % en médiane. Distance : 0,7 % au pire |
+| Quelque chose devant | plus de 15 % des pixels à plus de 0,6 m au-dessus de la semelle la plus basse, ou plus de 15 % à moins de 0,6 m de la caméra | hauteur : 1,2 % en médiane, 3,4 % au pire ; un passant : 26 % en médiane. Distance : 0,7 % au pire |
 | Image vide | moins de 10 % des pixels avec un retour | les pixels hors du cercle WFOV de 120° ne renvoient jamais rien : ne pas compter les pixels sans retour |
 | Image figée ou en retard | horodatage de la dernière image plus vieux que 0,3 s | `vision_max_age` du contrôleur le fait déjà pour la carte |
 
@@ -95,7 +95,7 @@ Cases : arrivées / chutes (dont pendant une panne ou dans la seconde qui suit).
 - **La pause seule ne suffit pas.** À l'arrêt, la politique lit toujours l'image du passant et réagit mal.
 - **Le garde-fou doit aussi masquer l'image.** Avec pause et image vide, le passant revient à la base (40 chutes).
   Une image vide est une situation que la politique connaît et tient.
-- **Le critère de hauteur ne déclenche jamais sans panne** sur ce banc (au plus 5,6 % de pixels hauts, seuil à 8 %).
+- **Le critère de hauteur ne déclenche jamais sans panne** sur ce banc (au plus 5,6 % de pixels hauts ; avec la vraie pose caméra, jusqu'à 9,8 % : seuil relevé à 15 %, le passant en donne 33 %).
 
 **Conclusion pour le contrôleur :** sur image douteuse, mettre la commande en pause et donner une image vide (ou, pour
 la politique à carte, ne pas écrire la carte avec cette image), jusqu'à 1 s d'image normale.
