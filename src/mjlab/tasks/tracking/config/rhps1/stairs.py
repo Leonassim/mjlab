@@ -146,7 +146,9 @@ OSEQ_ZERO = float(_env("OSEQ_ZERO", "0.25"))  # share of zero segments (stop and
 OSEQ_COMBO = float(_env("OSEQ_COMBO", "0.3"))  # share of 2- and 3-axis sign combos among the moving segments
 OSEQ_V = tuple(float(x) for x in _env("OSEQ_V", "0.12,0.08,0.08,0.3").split(","))  # fwd, back, side m/s, yaw rad/s
 OSEQ_TAU = float(_env("OSEQ_TAU", "0.4"))  # s, body-velocity smoothing for the tracking reward
-OSEQ_STD = float(_env("OSEQ_STD", "0.7"))  # tracking kernel width, in units of the per-axis target speed
+OSEQ_STD = float(_env("OSEQ_STD", "0.7"))
+OSEQ_STANCE_TOL = float(_env("OSEQ_STANCE_TOL", "0"))  # m, >0: stance free band while a vy command is on (tardis:
+# one 0.08 m/s side step opens the width ~20 cm, ~32/s of stairs_stance against an OTRACK ceiling of 8/s)  # tracking kernel width, in units of the per-axis target speed
 OMNI_R = float(_env("OMNI_R", "0.4"))  # m per rad of turn in the progress ratchet (VCAP 0.12 -> 0.3 rad/s)
 STALL_S = float(_env("STALL_S", "3.0"))  # s without 1 cm of new progress before the stall cost
 STALL_DESC_X = float(_env("STALL_DESC_X", "1"))
@@ -777,7 +779,11 @@ def stairs_stance(env) -> torch.Tensor:
   q = robot.data.root_link_quat_w
   yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
   w = (-d[:, 0] * torch.sin(yaw) + d[:, 1] * torch.cos(yaw)).abs()
-  e = torch.relu((w - STANCE_W0).abs() - STANCE_TOL) / 0.05
+  tol = STANCE_TOL
+  if OSEQ_STANCE_TOL > 0:
+    side = st.oseq & (st.ocmd[:, 1] != 0) & ~st.paused
+    tol = torch.where(side, OSEQ_STANCE_TOL, STANCE_TOL)
+  e = torch.relu((w - STANCE_W0).abs() - tol) / 0.05
   return _stairs_only(e**2, env) * _land_ramp(env)
 
 
