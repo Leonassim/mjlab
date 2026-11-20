@@ -736,6 +736,14 @@ def _flat_only(func):
   return f
 
 
+def _stairs_mask(func):
+  def f(env, *a, **kw):
+    return func(env, *a, **kw) * env._stairs.is_stairs.float()
+
+  f.__name__ = getattr(func, "__name__", "stairs_mask")
+  return f
+
+
 def _zeroed(func):
   def f(env, *a, **kw):
     return torch.zeros_like(func(env, *a, **kw))
@@ -1778,6 +1786,13 @@ def apply(cfg, play: bool = False) -> None:
     depth_student.apply(cfg, play=play)
   cfg.observations["critic"].terms["height_scan"] = ObservationTermCfg(**scan)
   cfg.observations["critic"].terms["stairs_state"] = ObservationTermCfg(func=stairs_state)
+  if RL and COPY_FLAT:
+    # Copy tiles get exactly slot 18's term set (tardis: copy + RL guards on the same tiles negotiates instead of
+    # copying, e.g. the 1.6 s cadence against the BWC's ~1 s step): every RL-only term acts on stair envs only.
+    for name, r in cfg.rewards.items():
+      copy = name.startswith("motion_") or name in _FLAT_ONLY or name == "no_slip"
+      if not copy and name not in _RL_KEEP and not name.endswith("_proximity") and not isinstance(r.func, type):
+        r.func = _stairs_mask(r.func)
   if RL and not COPY_FLAT:
     # Same widths so the walking checkpoint loads; the reference means nothing here.
     for k in ("command", "motion_anchor_pos_b", "motion_anchor_ori_b"):
