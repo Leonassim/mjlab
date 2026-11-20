@@ -860,6 +860,20 @@ def stairs_roll(env) -> torch.Tensor:
   return (r2(robot.data.root_link_quat_w) + r2(robot.data.body_link_quat_w[:, env._st_chest])) * _land_ramp(env)
 
 
+def stairs_hike(env) -> torch.Tensor:
+  """Pelvis roll toward the swing side in single support, sin, linear, ramped (weight RHPS1_STAIRS_W_HIKE < 0). s50e lifts
+  the swing foot by hiking the pelvis (+2.1 deg toward the swing side, knee p99 0.78 rad/s); slot 18 bends the knee
+  (+21 deg swing excursion, 0.7 deg hike). A symmetric roll cost at -1000 moved it 0.3 deg in 1000 its."""
+  st = env._stairs
+  q = env.scene["robot"].data.root_link_quat_w
+  w, x, y, z = q.unbind(-1)
+  roll = 2 * (y * z + w * x)  # sin(roll), > 0 lifts the left side
+  ld = st.load > 0.1 * BW
+  one = ld.sum(-1) == 1
+  sgn = torch.where(ld[:, 1], 1.0, -1.0)  # foot_ids = (left, right): right loaded -> left swing
+  return _stairs_only(torch.relu(roll * sgn) * one, env) * _land_ramp(env)
+
+
 def stairs_vz(env) -> torch.Tensor:
   """Pelvis vertical speed squared: climbing needs ~0.2 m/s, hopping 1 m/s (ramped)."""
   return env.scene["robot"].data.root_link_lin_vel_w[:, 2] ** 2 * _land_ramp(env)
@@ -1689,7 +1703,7 @@ def apply(cfg, play: bool = False) -> None:
     for k, f in (("TRUNK", stairs_trunk), ("VZ", stairs_vz), ("TRQ", stairs_torque), ("FCLEAR", stairs_feet_clear),
                  ("TREAD", stairs_tread), ("VINST", stairs_vinst), ("KNEE", stairs_knee_flex),
                  ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
-                 ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack)):
+                 ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:

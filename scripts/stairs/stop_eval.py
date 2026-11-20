@@ -80,6 +80,10 @@ hike_n = torch.zeros(N)
 lift_pk = torch.zeros(N, 2)
 lifts = [[] for _ in range(N)]
 knee_v = []
+kq_pk = torch.zeros(N, 2)
+kq_st = torch.zeros(N, 2)
+kq_n = torch.zeros(N, 2)
+kexc = [[] for _ in range(N)]
 jk = [list(robot.joint_names).index(n) for n in ('L_KNEE_P', 'R_KNEE_P')]
 last_move = torch.zeros(N)
 prev_f = None
@@ -136,6 +140,15 @@ for _ in range(steps):
   for e, k in ld.nonzero().tolist():
     lifts[e].append(float(lift_pk[e, k]))
   lift_pk = torch.where(sw, lift_pk, torch.zeros_like(lift_pk))
+  kq = robot.data.joint_pos[:, jk].cpu()
+  kq_pk = torch.where(sw, torch.maximum(kq_pk, kq), kq_pk)
+  stn = ~sw & walking[:, None]
+  kq_st += kq * stn
+  kq_n += stn.float()
+  for e, k in ld.nonzero().tolist():
+    if kq_n[e, k] > 0:
+      kexc[e].append(float(kq_pk[e, k] - kq_st[e, k] / kq_n[e, k]))
+  kq_pk = torch.where(sw, kq_pk, kq)
   kv = robot.data.joint_vel[:, jk].abs().cpu()
   knee_v.append(kv[walking].flatten())
   v = robot.data.root_link_lin_vel_w[:, :2].norm(dim=-1).cpu()
@@ -179,6 +192,7 @@ print(f"  cadence: pose a pose med {np.median(gp) if gp else float('nan'):.2f} s
 lf = [x for e in ok for x in lifts[e]]
 kvv = torch.cat(knee_v)
 print(f"  pied: lever max par pas med {np.median(lf) * 100 if lf else float('nan'):.1f} cm"
+      f" | genou balancier - appui med {np.degrees(np.median([x for e in ok for x in kexc[e]] or [np.nan])):+.0f} deg"
       f" | genou |v| p99 {float(kvv.quantile(0.99)) if len(kvv) else float('nan'):.2f} rad/s (plafond 2,64)")
 print(f"  arret: glissement pieds charges med {float(slip[ok].median()) * 100:.1f} p90 {float(slip[ok].quantile(0.9)) * 100:.1f} cm"
       f" | poses apres arret med {float(lands[ok].median()):.0f}"
