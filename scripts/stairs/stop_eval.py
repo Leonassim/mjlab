@@ -71,6 +71,9 @@ walk_pr, walk_cr, walk_lat = [[] for _ in range(N)], [[] for _ in range(N)], [[]
 stop_roll = torch.zeros(N)
 slip = torch.zeros(N)
 lands = torch.zeros(N)
+wgaps = [[] for _ in range(N)]
+single_t = torch.zeros(N)
+walk_t = torch.zeros(N)
 last_move = torch.zeros(N)
 prev_f = None
 prev_lo = torch.zeros(N, 2, dtype=torch.bool)
@@ -107,6 +110,11 @@ for _ in range(steps):
   prev_lo = lo
   prev_f = fc
   lands += (st.land.any(-1).cpu() & stopped).float()
+  wl = st.land.any(-1).cpu() & walking
+  for e in wl.nonzero().flatten().tolist():
+    wgaps[e].append(float(st.land_gap[e]))
+  single_t += ((st.load > 0.1 * BW).sum(-1).cpu() == 1).float() * walking
+  walk_t += walking.float()
   v = robot.data.root_link_lin_vel_w[:, :2].norm(dim=-1).cpu()
   wz = robot.data.root_link_ang_vel_w[:, 2].abs().cpu()
   moving = stopped & ((v > 0.02) | (wz > 0.05))
@@ -141,6 +149,9 @@ def p2p(x):
 print(f"STOP {label}: {len(ok)}/{N} sans chute")
 print(f"  marche: roulis bassin p95 {p95([walk_pr[e] for e in ok]):.1f} buste p95 {p95([walk_cr[e] for e in ok]):.1f} deg"
       f" | oscillation laterale p2p med {np.nanmedian([p2p(walk_lat[e]) for e in ok]):.1f} cm")
+gp = [g for e in ok for g in wgaps[e] if g < 5]
+print(f"  cadence: pose a pose med {np.median(gp) if gp else float('nan'):.2f} s | simple appui"
+      f" {float((single_t[ok] / walk_t[ok].clamp(min=1)).mean()) * 100:.0f} % du temps de marche")
 print(f"  arret: glissement pieds charges med {float(slip[ok].median()) * 100:.1f} p90 {float(slip[ok].quantile(0.9)) * 100:.1f} cm"
       f" | poses apres arret med {float(lands[ok].median()):.0f}"
       f" | immobile apres med {float(last_move[ok].median()):.1f} p90 {float(last_move[ok].quantile(0.9)):.1f} s"
