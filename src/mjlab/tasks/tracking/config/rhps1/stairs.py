@@ -131,6 +131,9 @@ RL = _env("RL", "0") == "1"
 # Leo 2026-11-14, from-scratch 50 Hz run: flat tiles run the RL task (walk to a goal, stop), not the copy; STAND_P of
 # the episodes get no command at all (stand still). Both stay out of the curriculum.
 FLAT_RL = _env("FLAT_RL", "0") == "1"
+# RL with COPY_FLAT=1 (and FLAT_RL=0): flat tiles keep the BWC copy terms (slot 18's recipe: rewards, anchor
+# terminations, reference in the critic) while stair tiles run the RL rewards (Leo 2026-11-20, stage A/B plan).
+COPY_FLAT = _env("COPY_FLAT", "0") == "1"
 STAND_P = float(_env("STAND_P", "0"))
 # User 2026-11-19 (gamepad in mc_mujoco): the stairs policy must also side-step and turn in place to line up with the
 # stairs. OMNI_P of the flat-tile episodes get a lateral (vy = +-1) or turn (yaw = +-1) command instead of forward;
@@ -1680,10 +1683,12 @@ def apply(cfg, play: bool = False) -> None:
   w = lambda k, d: float(_env("W_" + k, d))  # noqa: E731
   if RL:
     for name in list(cfg.rewards):
-      if name not in _RL_KEEP and not name.endswith("_proximity"):
+      copy = COPY_FLAT and (name.startswith("motion_") or name in _FLAT_ONLY or name == "no_slip")
+      if name not in _RL_KEEP and not name.endswith("_proximity") and not copy:
         del cfg.rewards[name]
-    for name in _FLAT_ONLY_TERMINATIONS:
-      cfg.terminations.pop(name, None)
+    if not COPY_FLAT:
+      for name in _FLAT_ONLY_TERMINATIONS:
+        cfg.terminations.pop(name, None)
     from mjlab.managers.scene_entity_config import SceneEntityCfg
 
     legs = SceneEntityCfg("robot", joint_names=(r"^[LR]_(CROTCH|KNEE|ANKLE)_.*",))
@@ -1773,7 +1778,7 @@ def apply(cfg, play: bool = False) -> None:
     depth_student.apply(cfg, play=play)
   cfg.observations["critic"].terms["height_scan"] = ObservationTermCfg(**scan)
   cfg.observations["critic"].terms["stairs_state"] = ObservationTermCfg(func=stairs_state)
-  if RL:
+  if RL and not COPY_FLAT:
     # Same widths so the walking checkpoint loads; the reference means nothing here.
     for k in ("command", "motion_anchor_pos_b", "motion_anchor_ori_b"):
       t = cfg.observations["critic"].terms.get(k)

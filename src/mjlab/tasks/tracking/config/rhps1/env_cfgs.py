@@ -1086,7 +1086,8 @@ def _reference_velocity_command(env, command_name: str) -> "torch.Tensor":
     rot = matrix_from_quat(cmd.motion.body_quat_w[:, ai])
     yaw = torch.atan2(rot[:, 1, 0], rot[:, 0, 0])
     T = pos.shape[0]
-    W = int(4.0 / env.step_dt)  # 4 s : voir le docstring
+    fdt = env.step_dt / getattr(cmd, "_stride", 1)  # one clip frame (RHPS1_MOTION_REALTIME), s
+    W = int(4.0 / fdt)  # 4 s : voir le docstring
     # Window kept inside each frame's own clip (several clips per file).
     t = torch.arange(T, device=pos.device)
     cs, ce = cmd.motion.clip_start.to(pos.device), cmd.motion.clip_end.to(pos.device)
@@ -1119,12 +1120,12 @@ def _reference_velocity_command(env, command_name: str) -> "torch.Tensor":
       D[D[:, 2] != 0, 1] = 0
       idx = [cmd.cfg.body_names.index(n) for n in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")]
       lifted = cmd.motion.body_pos_w[:, idx, 2].max(dim=1).values > 0.11
-      m = int(0.3 / env.step_dt)
+      m = int(0.3 / fdt)
       change = torch.ones(D.shape[0], dtype=torch.bool, device=D.device)
       change[1:] = (D[1:] != D[:-1]).any(dim=1)
       starts = change.nonzero().flatten().tolist() + [D.shape[0]]
       for a, b in zip(starts[:-1], starts[1:]):
-        if b - a < int(1.0 / env.step_dt) and not bool(lifted[max(a - m, 0):b + m].any()):
+        if b - a < int(1.0 / fdt) and not bool(lifted[max(a - m, 0):b + m].any()):
           D[a:b] = 0
     # Transitions: the 4 s window reads the BWC's weight shift as a mode of its
     # own ([0,-1,0] for 0.76 s before the first forward walk), so 0 -> forward,
@@ -1135,7 +1136,7 @@ def _reference_velocity_command(env, command_name: str) -> "torch.Tensor":
       change = torch.ones(D.shape[0], dtype=torch.bool, device=D.device)
       change[1:] = (D[1:] != D[:-1]).any(dim=1)
       starts = change.nonzero().flatten().tolist() + [D.shape[0]]
-      short = int(1.0 / env.step_dt)
+      short = int(1.0 / fdt)
       nxt = None
       for a, b in reversed(list(zip(starts[:-1], starts[1:]))):
         if b - a >= short:

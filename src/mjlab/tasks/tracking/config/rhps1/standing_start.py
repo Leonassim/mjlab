@@ -61,6 +61,7 @@ class StandingStartMotionCommand(MotionCommand):
     # la reference s'eloignait de 42 cm pendant que le robot etait tenu, et la
     # politique reprenait la main en retard et dephasee : suivi 0.80 -> 0.16.
     w0 = int(self._standing_end())
+    st = getattr(self, "_stride", 1)  # clip frames per policy step (RHPS1_MOTION_REALTIME)
     hmax = float(os.environ.get("RHPS1_ACTION_HOLD_S", "3.0"))
     hold_steps = torch.randint(
       0, max(int(hmax / self._env.step_dt), 1), (len(pick),), device=self.device
@@ -71,15 +72,15 @@ class StandingStartMotionCommand(MotionCommand):
       starts, still = self._segment_starts()
       k = torch.randint(0, len(starts), (len(pick),), device=self.device)
       w0 = starts[k]
-      hold_steps = torch.minimum(hold_steps, still[k])
+      hold_steps = torch.minimum(hold_steps, still[k] // st)
       # RHPS1_STAND_PRE_S: 0..PRE_S of standing under the policy's control between the
       # hold and the walk, inside the reference's stillness (~10 s before each walk).
       # Without it the hold ends on the first step: the policy never stands on its own.
       pre = float(os.environ.get("RHPS1_STAND_PRE_S", "0"))
       if pre > 0.0:
         free_steps = (torch.rand(len(pick), device=self.device) * (pre / self._env.step_dt)).long()
-        free_steps = torch.minimum(free_steps, (self._segment_still_full[k] - hold_steps).clamp(min=0))
-        w0 = w0 - free_steps
+        free_steps = torch.minimum(free_steps, (self._segment_still_full[k] // st - hold_steps).clamp(min=0))
+        w0 = w0 - free_steps * st
     # Free stand: the policy holds the robot at command 0 for a random time
     # after the hold, then the command flips where the reference's does. The
     # operator's joystick push on the robot, which training never showed in
@@ -88,9 +89,9 @@ class StandingStartMotionCommand(MotionCommand):
     if free[1] > 0.0:
       lo, hi = int(free[0] / self._env.step_dt), int(free[1] / self._env.step_dt)
       free_steps = torch.randint(lo, max(hi, lo + 1), (len(pick),), device=self.device)
-      self.time_steps[pick] = (self._command_flip() - free_steps - hold_steps).clamp(min=0)
+      self.time_steps[pick] = (self._command_flip() - (free_steps + hold_steps) * st).clamp(min=0)
     else:
-      self.time_steps[pick] = (w0 - hold_steps).clamp(min=0)
+      self.time_steps[pick] = (w0 - hold_steps * st).clamp(min=0)
 
     # Racine et posture prises sur la reference a la trame choisie, vitesses
     # nulles : le robot EST la reference a l'arret, juste avant son depart.
@@ -165,7 +166,8 @@ class StandingStartMotionCommand(MotionCommand):
     if not hasattr(self, "_segment_starts_cache"):
       idx = [self.cfg.body_names.index(n) for n in ("L_ANKLE_P_LINK", "R_ANKLE_P_LINK")]
       moving = (self.motion.body_pos_w[:, idx, 2].max(dim=1).values > 0.11).cpu()
-      min_still = int(1.5 / self._env.step_dt)
+      fdt = self._env.step_dt / getattr(self, "_stride", 1)  # one clip frame, s
+      min_still = int(1.5 / fdt)
       starts, still, full, run = [], [], [], 0
       clip_start = self.motion.clip_start.cpu()
       for f, m in enumerate(moving.tolist()):
@@ -173,7 +175,7 @@ class StandingStartMotionCommand(MotionCommand):
           run = 0
         if m and run >= min_still:
           starts.append(f)
-          still.append(min(run, int(3.0 / self._env.step_dt)) - 1)
+          still.append(min(run, int(3.0 / fdt)) - 1)
           full.append(run - 1)
         run = 0 if m else run + 1
       self._segment_still_full = torch.tensor(full, device=self.device)

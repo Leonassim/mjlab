@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -58,6 +59,7 @@ class MotionLoader:
     self.body_lin_vel_w = self._body_lin_vel_w[:, self._body_indexes]
     self.body_ang_vel_w = self._body_ang_vel_w[:, self._body_indexes]
     self.time_step_total = self.joint_pos.shape[0]
+    self.fps = float(np.asarray(data["fps"]).reshape(-1)[0]) if "fps" in data else None
     # Several clips in one file: "clip_starts" holds each clip's first frame.
     # clip_start/clip_end give, per frame, its clip's bounds (end exclusive).
     starts = (
@@ -93,6 +95,11 @@ class MotionCommand(CommandTerm):
       self.cfg.motion_file, self.body_indexes, device=self.device
     )
     self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+    # RHPS1_MOTION_REALTIME=1: play the clip in real time at any policy rate (a 200 fps clip
+    # advanced one frame per 50 Hz step played 4x slower).
+    self._stride = 1
+    if os.environ.get("RHPS1_MOTION_REALTIME", "0") == "1" and self.motion.fps:
+      self._stride = max(1, round(self.motion.fps * env.step_dt))
     self.body_pos_relative_w = torch.zeros(
       self.num_envs, len(cfg.body_names), 3, device=self.device
     )
@@ -426,10 +433,10 @@ class MotionCommand(CommandTerm):
 
   def _update_command(self, env_ids: torch.Tensor | None = None):
     if env_ids is None:
-      self.time_steps += 1
+      self.time_steps += self._stride
     else:
-      self.time_steps[env_ids] += 1
-    prev = (self.time_steps - 1).clamp(0, self.motion.time_step_total - 1)
+      self.time_steps[env_ids] += self._stride
+    prev = (self.time_steps - self._stride).clamp(0, self.motion.time_step_total - 1)
     wrap_ids = torch.where(self.time_steps >= self.motion.clip_end[prev])[0]
     if wrap_ids.numel() > 0:
       self._resample_command(wrap_ids)
