@@ -53,6 +53,7 @@ robot = u.scene["robot"]
 bn = list(robot.body_names)
 i_body, i_chest = bn.index("BODY"), bn.index("CHEST_P_LINK")
 fids = st.foot_ids
+assert "L" in bn[fids[0]][:2] and "R" in bn[fids[1]][:2], [bn[i] for i in fids]
 BW = 57.64 * 9.81
 dt = u.step_dt
 rel = st.cmd_on + int(WALK / dt)  # release step per env
@@ -74,6 +75,12 @@ lands = torch.zeros(N)
 wgaps = [[] for _ in range(N)]
 single_t = torch.zeros(N)
 walk_t = torch.zeros(N)
+hike = torch.zeros(N)
+hike_n = torch.zeros(N)
+lift_pk = torch.zeros(N, 2)
+lifts = [[] for _ in range(N)]
+knee_v = []
+jk = [list(robot.joint_names).index(n) for n in ('L_KNEE_P', 'R_KNEE_P')]
 last_move = torch.zeros(N)
 prev_f = None
 prev_lo = torch.zeros(N, 2, dtype=torch.bool)
@@ -115,6 +122,22 @@ for _ in range(steps):
     wgaps[e].append(float(st.land_gap[e]))
   single_t += ((st.load > 0.1 * BW).sum(-1).cpu() == 1).float() * walking
   walk_t += walking.float()
+  # pelvis roll toward the swing side in single support: > 0 = swing side up (hip hike), < 0 = it drops
+  ldd = (st.load > 0.1 * BW).cpu()
+  one = (ldd.sum(-1) == 1) & walking
+  sgn = torch.where(ldd[:, 1], 1.0, -1.0)  # right foot loaded -> left swing; +roll lifts the left side
+  hike += torch.where(one, pr * sgn, torch.zeros_like(pr))
+  hike_n += one.float()
+  # swing sole height (ankle - 0.10 m over the ground under it): peak per swing, recorded at the landing
+  hgt = (robot.data.body_link_pos_w[:, fids, 2] - 0.10 - u.scene["stairs_ground"].data.hit_pos_w[:, :2, 2]).cpu()
+  sw = (st.load <= 10.0).cpu()
+  lift_pk = torch.where(sw, torch.maximum(lift_pk, hgt), lift_pk)
+  ld = st.land.cpu() & walking[:, None]
+  for e, k in ld.nonzero().tolist():
+    lifts[e].append(float(lift_pk[e, k]))
+  lift_pk = torch.where(sw, lift_pk, torch.zeros_like(lift_pk))
+  kv = robot.data.joint_vel[:, jk].abs().cpu()
+  knee_v.append(kv[walking].flatten())
   v = robot.data.root_link_lin_vel_w[:, :2].norm(dim=-1).cpu()
   wz = robot.data.root_link_ang_vel_w[:, 2].abs().cpu()
   moving = stopped & ((v > 0.02) | (wz > 0.05))
@@ -151,7 +174,12 @@ print(f"  marche: roulis bassin p95 {p95([walk_pr[e] for e in ok]):.1f} buste p9
       f" | oscillation laterale p2p med {np.nanmedian([p2p(walk_lat[e]) for e in ok]):.1f} cm")
 gp = [g for e in ok for g in wgaps[e] if g < 5]
 print(f"  cadence: pose a pose med {np.median(gp) if gp else float('nan'):.2f} s | simple appui"
-      f" {float((single_t[ok] / walk_t[ok].clamp(min=1)).mean()) * 100:.0f} % du temps de marche")
+      f" {float((single_t[ok] / walk_t[ok].clamp(min=1)).mean()) * 100:.0f} % du temps de marche"
+      f" | roulis vers le pied en l'air moy {float((hike[ok] / hike_n[ok].clamp(min=1)).mean()):+.1f} deg")
+lf = [x for e in ok for x in lifts[e]]
+kvv = torch.cat(knee_v)
+print(f"  pied: lever max par pas med {np.median(lf) * 100 if lf else float('nan'):.1f} cm"
+      f" | genou |v| p99 {float(kvv.quantile(0.99)) if len(kvv) else float('nan'):.2f} rad/s (plafond 2,64)")
 print(f"  arret: glissement pieds charges med {float(slip[ok].median()) * 100:.1f} p90 {float(slip[ok].quantile(0.9)) * 100:.1f} cm"
       f" | poses apres arret med {float(lands[ok].median()):.0f}"
       f" | immobile apres med {float(last_move[ok].median()):.1f} p90 {float(last_move[ok].quantile(0.9)):.1f} s"
