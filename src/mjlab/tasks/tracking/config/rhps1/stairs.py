@@ -779,11 +779,12 @@ def stairs_stance(env) -> torch.Tensor:
   q = robot.data.root_link_quat_w
   yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
   w = (-d[:, 0] * torch.sin(yaw) + d[:, 1] * torch.cos(yaw)).abs()
-  tol = STANCE_TOL
+  wide = STANCE_TOL
   if OSEQ_STANCE_TOL > 0:
+    # widening only (tardis): a symmetric band would free narrowing down to crossed feet
     side = st.oseq & (st.ocmd[:, 1] != 0) & ~st.paused
-    tol = torch.where(side, OSEQ_STANCE_TOL, STANCE_TOL)
-  e = torch.relu((w - STANCE_W0).abs() - tol) / 0.05
+    wide = torch.where(side, OSEQ_STANCE_TOL, STANCE_TOL)
+  e = (torch.relu(w - STANCE_W0 - wide) + torch.relu(STANCE_W0 - w - STANCE_TOL)) / 0.05
   return _stairs_only(e**2, env) * _land_ramp(env)
 
 

@@ -3,7 +3,7 @@
 Every env holds one command for MOVE_S s, then zero for STOP_S s, deterministic policy, no random pauses. Patterns (env
 id mod 8): fwd, back, left, right, yaw+, yaw-, fwd+yaw+, fwd+left. Per pattern, from 1 s after the start:
   ratio: mean speed along each commanded axis / its target (fwd 0.12, back/side 0.08 m/s, yaw 0.3 rad/s)
-  leak: mean |speed| on the uncommanded axes (m/s, rad/s for yaw), roll p95 (deg), falls
+  leak: mean |speed| on the uncommanded axes (m/s, rad/s for yaw), roll p95 (deg), min lateral ankle width (cm), falls
   stop: loaded-sole slip after the release (cm), landings after the release
   BENCH_N=64 MOVE_S=6 STOP_S=4 python oseq_eval.py <run> <ckpt> [label]
 """
@@ -68,6 +68,7 @@ fell = torch.zeros(N, dtype=torch.bool)
 vsum, vcnt = torch.zeros(N, 3), torch.zeros(N)
 rolls = [[] for _ in range(N)]
 slip, lands = torch.zeros(N), torch.zeros(N)
+wmin = torch.full((N,), 9.0)
 prev_f = None
 prev_lo = torch.zeros(N, 2, dtype=torch.bool)
 anchor = torch.zeros(N, 2, 2)
@@ -92,6 +93,9 @@ for _ in range(int((MOVE + STOP + 1.5) / dt)):
   for e in mv.nonzero().flatten().tolist():
     rolls[e].append(abs(float(r[e])))
   fpos = robot.data.body_link_pos_w[:, st.foot_ids, :2]
+  dd = fpos[:, 0] - fpos[:, 1]
+  wl = (-dd[:, 0] * hf[:, 1] + dd[:, 1] * hf[:, 0]).abs().cpu()
+  wmin = torch.where(mv, torch.minimum(wmin, wl), wmin)
   stopped = (t >= MOVE) & alive
   # net travel of each loaded sole per stance after the release (a path length summed the 50 Hz jitter)
   lo = (st.load > 0.25 * BW).cpu() & stopped[:, None]
@@ -118,7 +122,7 @@ for i, (name, c) in enumerate(PAT):
     leak = [float(vm[ok][:, j].abs().mean()) for j in range(3) if not cm[j]]
     rp = float(np.percentile(np.concatenate([np.array(rolls[e]) for e in ok if rolls[e]] or [np.zeros(1)]), 95))
     print(f"  {name:13s} chute {int(fell[ids].sum())}/{len(ids)} | ratio " + " ".join(f"{x:.2f}" for x in ratio)
-          + " | fuite " + " ".join(f"{x:.3f}" for x in leak) + f" | roulis p95 {rp:.1f}"
+          + " | fuite " + " ".join(f"{x:.3f}" for x in leak) + f" | roulis p95 {rp:.1f} | largeur min {float(wmin[ok].min()) * 100:.0f} cm"
           + f" | arret glisse med {float(slip[ok].median()) * 100:.1f} cm poses {float(lands[ok].median()):.0f}")
   else:
     print(f"  {name:13s} chute {int(fell[ids].sum())}/{len(ids)}")
