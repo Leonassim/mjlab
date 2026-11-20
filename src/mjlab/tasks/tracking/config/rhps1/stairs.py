@@ -147,6 +147,8 @@ OSEQ_COMBO = float(_env("OSEQ_COMBO", "0.3"))  # share of 2- and 3-axis sign com
 OSEQ_V = tuple(float(x) for x in _env("OSEQ_V", "0.12,0.08,0.08,0.3").split(","))  # fwd, back, side m/s, yaw rad/s
 OSEQ_TAU = float(_env("OSEQ_TAU", "0.4"))  # s, body-velocity smoothing for the tracking reward
 OSEQ_STD = float(_env("OSEQ_STD", "0.7"))
+OSEQ_WIN = float(_env("OSEQ_WIN", "0"))  # s, >0: tracked velocity = net pelvis displacement (xy, yaw) over this window
+# instead of the OSEQ_TAU EMA (tardis: the stride sway cancels exactly, without the EMA's ~1 s lag)
 OSEQ_STANCE_TOL = float(_env("OSEQ_STANCE_TOL", "0"))  # m, >0: stance free band while a vy command is on (tardis:
 # one 0.08 m/s side step opens the width ~20 cm, ~32/s of stairs_stance against an OTRACK ceiling of 8/s)  # tracking kernel width, in units of the per-axis target speed
 OMNI_R = float(_env("OMNI_R", "0.4"))  # m per rad of turn in the progress ratchet (VCAP 0.12 -> 0.3 rad/s)
@@ -267,6 +269,8 @@ class _State:
     self.seg_end = torch.full((n, OSEQ_N[1] + 1), 10**9, dtype=torch.long, device=dev)  # steps after cmd_on
     self.ocmd = torch.zeros(n, 3, device=dev)  # current sequence command (signs)
     self.ov = torch.zeros(n, 3, device=dev)  # smoothed body-frame (vx, vy, wz)
+    nw = max(1, int(round(OSEQ_WIN / env.step_dt))) + 1
+    self.obuf = torch.zeros(n, nw, 3, device=dev)  # OSEQ_WIN: (x, y, unwrapped yaw) history, oldest first
     self.tread = tread[types]
     self.nsteps = torch.tensor([NSTEPS if t > 0 else 0 for t in treads], device=dev)[types]
     self.center = torch.zeros(n, 2, device=dev)
@@ -459,8 +463,17 @@ class _State:
       v = robot.data.root_link_lin_vel_w[:, :2]
       vb = torch.stack([(v * hf).sum(-1), -v[:, 0] * hf[:, 1] + v[:, 1] * hf[:, 0],
                         robot.data.root_link_ang_vel_w[:, 2]], 1)
-      a = min(1.0, env.step_dt / OSEQ_TAU)
-      self.ov = torch.where((ep <= 1)[:, None], torch.zeros_like(vb), self.ov + a * (vb - self.ov))
+      if OSEQ_WIN > 0:
+        last = self.obuf[:, -1]
+        dyaw = torch.atan2(torch.sin(yaw - last[:, 2]), torch.cos(yaw - last[:, 2]))
+        cur = torch.stack([p[:, 0], p[:, 1], last[:, 2] + dyaw], 1)
+        fresh = (ep <= 1)[:, None, None]
+        self.obuf = torch.where(fresh, cur[:, None].expand_as(self.obuf), torch.cat([self.obuf[:, 1:], cur[:, None]], 1))
+        d = (self.obuf[:, -1] - self.obuf[:, 0]) / OSEQ_WIN
+        self.ov = torch.stack([d[:, 0] * hf[:, 0] + d[:, 1] * hf[:, 1], -d[:, 0] * hf[:, 1] + d[:, 1] * hf[:, 0], d[:, 2]], 1)
+      else:
+        a = min(1.0, env.step_dt / OSEQ_TAU)
+        self.ov = torch.where((ep <= 1)[:, None], torch.zeros_like(vb), self.ov + a * (vb - self.ov))
     span = PLATFORM / 2 + (self.nsteps - 1) * self.tread
     start = torch.where(self.sign < 0, span, PLATFORM / 2)
     end = torch.where(self.sign < 0, PLATFORM / 2, span)
