@@ -82,6 +82,7 @@ ONE_LEG_T = float(_env("ONE_LEG_T", "0"))  # s, >0: a foot up longer ends the ep
 CAD_C = float(_env("CAD_C", "0"))  # >0: two-sided cadence, min(gap/T_STEP, 1) - CAD_C per landing (weight > 0)
 AIR_WIN = tuple(float(x) for x in _env("AIR_WIN", "0.05,0.6").split(","))  # s, swing time paid by stairs_air
 AIR_WIN0 = tuple(float(x) for x in _env("AIR_WIN0", _env("AIR_WIN", "0.05,0.6")).split(","))  # window at launch, ramped to AIR_WIN
+AIR_MIN_H = float(_env("AIR_MIN_H", "0"))  # m, >0: stairs_air pays only while the swing sole is this high
 CLIMB_FRAC = float(_env("CLIMB_FRAC", "0.5"))  # share of stair spawns that climb
 # MODE_FIXED=1: each env keeps its mode, so climbs and descents each get their own curriculum level
 # (shared, rl40 settled at 5 cm where climbs arrived 44% and descents 12%: descents stopped learning).
@@ -986,7 +987,14 @@ def stairs_air(env) -> torch.Tensor:
   one = (st.air > 0).sum(-1) == 1
   r = _land_ramp(env) if AIR_WIN0 != AIR_WIN else 1.0
   lo, hi = (w0 + (w1 - w0) * r for w0, w1 in zip(AIR_WIN0, AIR_WIN))
-  ok = ((st.air > lo) & (st.air < hi)).any(-1) & one
+  inwin = (st.air > lo) & (st.air < hi)
+  if AIR_MIN_H > 0:
+    # fn 500 shuffled (lift 0.1 cm, 3 % single support) and still earned the air time with 1 mm lifts: pay only
+    # while the swing sole is AIR_MIN_H above the ground under it.
+    fp = env.scene["robot"].data.body_link_pos_w[:, st.foot_ids, 2]
+    h = fp - 0.10 - env.scene["stairs_ground"].data.hit_pos_w[:, :2, 2]
+    inwin = inwin & (h > AIR_MIN_H)
+  ok = inwin.any(-1) & one
   on = ~st.arrived & ~st.paused & (env.episode_length_buf >= st.cmd_on)
   return _stairs_only((ok & on).float(), env)
 
