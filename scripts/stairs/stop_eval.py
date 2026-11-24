@@ -20,6 +20,7 @@ os.environ.setdefault("RHPS1_STAIRS", "1")
 for k in ("RHPS1_STAIRS_FRAC", "RHPS1_STAIRS_STAND_P", "RHPS1_STAIRS_PAUSE_P", "RHPS1_STAIRS_STAIR_PAUSE_P",
           "RHPS1_STAIRS_OMNI_P"):
   os.environ[k] = "0"
+os.environ["RHPS1_STAIRS_OSEQ_P"] = "0"  # forward-then-stop on every env (recipes with OSEQ_P left random sequences here)
 os.environ["RHPS1_STAIRS_GAP"] = "2.5,2.5"  # far goal: the release comes before the arrival
 os.environ["RHPS1_STAIRS_YAW_SPAWN"] = "0"
 from mjlab.envs import ManagerBasedRlEnv  # noqa: E402
