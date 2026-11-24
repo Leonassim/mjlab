@@ -83,6 +83,8 @@ CAD_C = float(_env("CAD_C", "0"))  # >0: two-sided cadence, min(gap/T_STEP, 1) -
 AIR_WIN = tuple(float(x) for x in _env("AIR_WIN", "0.05,0.6").split(","))  # s, swing time paid by stairs_air
 AIR_WIN0 = tuple(float(x) for x in _env("AIR_WIN0", _env("AIR_WIN", "0.05,0.6")).split(","))  # window at launch, ramped to AIR_WIN
 AIR_MIN_H = float(_env("AIR_MIN_H", "0"))  # m, >0: stairs_air pays only while the swing sole is this high
+STEP_MIN_H = float(_env("STEP_MIN_H", "0.03"))  # m, sole rise for stairs_step to pay a landing
+STEP_T0 = float(_env("STEP_T0", "0.2"))  # s, swing time below which stairs_step pays nothing
 CLIMB_FRAC = float(_env("CLIMB_FRAC", "0.5"))  # share of stair spawns that climb
 # MODE_FIXED=1: each env keeps its mode, so climbs and descents each get their own curriculum level
 # (shared, rl40 settled at 5 cm where climbs arrived 44% and descents 12%: descents stopped learning).
@@ -318,6 +320,8 @@ class _State:
     self.since_land = torch.full((n,), 10.0, device=dev)  # time since the last landing of either foot, s
     self.land_gap = torch.zeros(n, device=dev)  # that time at this step's landing
     self.swing_land = torch.zeros(n, 2, device=dev)  # landing foot's swing time at this step's landing
+    self.hmax = torch.zeros(n, 2, device=dev)  # highest sole height over the ground in the current swing, m
+    self.land_h = torch.zeros(n, 2, device=dev)  # that height at this step's landing
     # Landing speed = fastest descent over the last 50 ms (11 samples at 200 Hz, 3 at 50 Hz).
     self.vz_buf = torch.zeros(n, int(round(0.05 / env.step_dt)) + 1, 2, device=dev)
     self.land = torch.zeros(n, 2, dtype=torch.bool, device=dev)
@@ -545,6 +549,9 @@ class _State:
     self.f_close = (self.f_t < 0.06) & (t >= 0.06)
     self.f_t = torch.where(fresh, torch.ones_like(t), t)
     self.swing_land = torch.where(self.land, self.air, torch.zeros_like(self.air))
+    hs = robot.data.body_link_pos_w[:, self.foot_ids, 2] - 0.10 - env.scene["stairs_ground"].data.hit_pos_w[:, :2, 2]
+    self.land_h = torch.where(self.land, self.hmax, torch.zeros_like(self.hmax))
+    self.hmax = torch.where(ld | fresh, torch.zeros_like(self.hmax), torch.maximum(self.hmax, hs))
     self.load = fl
     self.air = torch.where(ld | fresh, torch.zeros_like(self.air), self.air + env.step_dt)
     if UP_LOAD > 0:
@@ -997,6 +1004,17 @@ def stairs_air(env) -> torch.Tensor:
   ok = inwin.any(-1) & one
   on = ~st.arrived & ~st.paused & (env.episode_length_buf >= st.cmd_on)
   return _stairs_only((ok & on).float(), env)
+
+
+def stairs_step(env) -> torch.Tensor:
+  """Per landing of a real step while asked to move: swing time (capped at 1 s) minus STEP_T0, paid only if the sole
+  rose STEP_MIN_H during that swing (legged_gym feet air time with a height gate). fo/fp moved by sliding the feet
+  (lift 0.1-0.6 cm): every air-time or landing reward was reachable with 1 mm lifts."""
+  st = env._stairs
+  on = (~st.arrived & ~st.paused & (env.episode_length_buf >= st.cmd_on))[:, None]
+  ok = st.land & (st.land_h >= STEP_MIN_H) & on
+  e = (st.swing_land.clamp(max=1.0) - STEP_T0) * ok
+  return _stairs_only(e.sum(-1) / env.step_dt, env)
 
 
 def stairs_stop(env, std: float) -> torch.Tensor:
@@ -1761,7 +1779,8 @@ def apply(cfg, play: bool = False) -> None:
     for k, f in (("TRUNK", stairs_trunk), ("VZ", stairs_vz), ("TRQ", stairs_torque), ("FCLEAR", stairs_feet_clear),
                  ("TREAD", stairs_tread), ("VINST", stairs_vinst), ("KNEE", stairs_knee_flex),
                  ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
-                 ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike)):
+                 ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike),
+                 ("STEP", stairs_step)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
