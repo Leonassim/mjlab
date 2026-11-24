@@ -154,6 +154,8 @@ OSEQ_V = tuple(float(x) for x in _env("OSEQ_V", "0.12,0.08,0.08,0.3").split(",")
 OSEQ_TAU = float(_env("OSEQ_TAU", "0.4"))  # s, body-velocity smoothing for the tracking reward
 OSEQ_STD = float(_env("OSEQ_STD", "0.7"))
 CRITIC_CMD = _env("CRITIC_CMD", "0") == "1"  # critic reads the sequence command, tracked velocity, stall timer
+W_OPROG = float(_env("W_OPROG", "0"))  # per metre: sequence progress ratchet (stairs_oprog)
+OSEQ_R = float(_env("OSEQ_R", "0.27"))  # m per rad of yaw in that ratchet (0.08 m/s side ~ 0.3 rad/s)
 OSEQ_STALL = float(_env("OSEQ_STALL", "0"))  # >0: stall cost on sequence envs below this speed ratio
 OSEQ_WIN = float(_env("OSEQ_WIN", "0"))  # s, >0: tracked velocity = net pelvis displacement (xy, yaw) over this window
 # instead of the OSEQ_TAU EMA (tardis: the stride sway cancels exactly, without the EMA's ~1 s lag)
@@ -277,6 +279,17 @@ class _State:
     self.seg_end = torch.full((n, OSEQ_N[1] + 1), 10**9, dtype=torch.long, device=dev)  # steps after cmd_on
     self.ocmd = torch.zeros(n, 3, device=dev)  # current sequence command (signs)
     self.ov = torch.zeros(n, 3, device=dev)  # smoothed body-frame (vx, vy, wz)
+    # W_OPROG: per-segment ratchet on the displacement along the commanded direction (+ OSEQ_R x yaw turned)
+    self.oseg = torch.full((n,), -1, dtype=torch.long, device=dev)
+    self.ocmd_p = torch.zeros(n, 3, device=dev)
+    self.op0 = torch.zeros(n, 2, device=dev)
+    self.odir_w = torch.zeros(n, 2, device=dev)
+    self.oyu = torch.zeros(n, device=dev)  # unwrapped yaw
+    self.oyaw_p = torch.zeros(n, device=dev)
+    self.oy0 = torch.zeros(n, device=dev)
+    self.obest = torch.zeros(n, device=dev)
+    self.ocred = torch.zeros(n, device=dev)
+    self.ogain = torch.zeros(n, device=dev)
     nw = max(1, int(round(OSEQ_WIN / env.step_dt))) + 1
     self.obuf = torch.zeros(n, nw, 3, device=dev)  # OSEQ_WIN: (x, y, unwrapped yaw) history, oldest first
     self.tread = tread[types]
@@ -484,6 +497,34 @@ class _State:
       else:
         a = min(1.0, env.step_dt / OSEQ_TAU)
         self.ov = torch.where((ep <= 1)[:, None], torch.zeros_like(vb), self.ov + a * (vb - self.ov))
+      if W_OPROG != 0:
+        # fw learned forward only through the stairs progress ratchet (linear, paid the moment a cm is gained, blind
+        # to the in-step sway); the otrack kernel alone left ft 750 leaning 6-7 deg forward without a step.
+        first = ep <= 1
+        dy = torch.atan2(torch.sin(yaw - self.oyaw_p), torch.cos(yaw - self.oyaw_p))
+        self.oyu = torch.where(first, yaw, self.oyu + dy)
+        self.oyaw_p = yaw
+        c = self.ocmd
+        newseg = first | (idx != self.oseg) | (c != self.ocmd_p).any(-1)  # the command also turns on at cmd_on
+        self.oseg = idx
+        self.ocmd_p = c.clone()
+        cxy = c[:, :2]
+        dirb = cxy / cxy.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        dw = torch.stack([dirb[:, 0] * hf[:, 0] - dirb[:, 1] * hf[:, 1], dirb[:, 0] * hf[:, 1] + dirb[:, 1] * hf[:, 0]], 1)
+        self.odir_w = torch.where(newseg[:, None], dw, self.odir_w)
+        self.op0 = torch.where(newseg[:, None], p, self.op0)
+        self.oy0 = torch.where(newseg, self.oyu, self.oy0)
+        self.obest = torch.where(newseg, torch.zeros_like(self.obest), self.obest)
+        proj = ((p - self.op0) * self.odir_w).sum(-1) + OSEQ_R * c[:, 2] * (self.oyu - self.oy0)
+        moving = self.oseq & (t >= 0) & (c != 0).any(-1)
+        vx_t = torch.where(c[:, 0] > 0, OSEQ_V[0], OSEQ_V[1]) * c[:, 0].abs()
+        rate = torch.sqrt(vx_t**2 + (OSEQ_V[2] * c[:, 1]) ** 2) + OSEQ_R * OSEQ_V[3] * c[:, 2].abs()
+        self.ocred = torch.where(newseg | ~moving, torch.zeros_like(self.ocred),
+                                 (self.ocred + rate * env.step_dt).clamp(max=BUCKET))
+        g = torch.minimum((proj - self.obest).clamp(min=0.0), self.ocred) * moving
+        self.ocred = self.ocred - g
+        self.obest = self.obest + g
+        self.ogain = g
     span = PLATFORM / 2 + (self.nsteps - 1) * self.tread
     start = torch.where(self.sign < 0, span, PLATFORM / 2)
     end = torch.where(self.sign < 0, PLATFORM / 2, span)
@@ -1004,6 +1045,12 @@ def stairs_air(env) -> torch.Tensor:
   ok = inwin.any(-1) & one
   on = ~st.arrived & ~st.paused & (env.episode_length_buf >= st.cmd_on)
   return _stairs_only((ok & on).float(), env)
+
+
+def stairs_oprog(env) -> torch.Tensor:
+  """W_OPROG (per metre): the sequence ratchet, metres gained along the commanded direction this step (yaw counted as
+  OSEQ_R x angle), each new record paid once and capped by a credit filled at the target speed (as VCAP/BUCKET)."""
+  return _stairs_only(env._stairs.ogain / env.step_dt, env)
 
 
 def stairs_step(env) -> torch.Tensor:
@@ -1780,7 +1827,7 @@ def apply(cfg, play: bool = False) -> None:
                  ("TREAD", stairs_tread), ("VINST", stairs_vinst), ("KNEE", stairs_knee_flex),
                  ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
                  ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike),
-                 ("STEP", stairs_step)):
+                 ("STEP", stairs_step), ("OPROG", stairs_oprog)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
