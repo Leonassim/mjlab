@@ -176,6 +176,23 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     actor_only = os.environ.get("MJLAB_LOAD_ACTOR_ONLY") == "1"
     runner.load(str(resume_path), load_cfg={"actor": True} if actor_only else None)
 
+  # MJLAB_CRITIC_WARMUP=N: the actor is frozen for the first N updates, so a fresh
+  # critic's noise does not reach it (one such update broke a resumed walker).
+  warmup = int(os.environ.get("MJLAB_CRITIC_WARMUP", "0"))
+  if warmup > 0:
+    alg = runner.alg
+    update = alg.update
+    n_updates = [0]
+
+    def warm_update(*args, **kwargs):
+      frozen = n_updates[0] < warmup
+      for p in alg.actor.parameters():
+        p.requires_grad_(not frozen)
+      n_updates[0] += 1
+      return update(*args, **kwargs)
+
+    alg.update = warm_update
+
   runner.learn(
     num_learning_iterations=cfg.agent.max_iterations, init_at_random_ep_len=True
   )
