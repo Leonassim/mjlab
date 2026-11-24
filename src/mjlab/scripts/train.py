@@ -177,17 +177,35 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     runner.load(str(resume_path), load_cfg={"actor": True} if actor_only else None)
 
   # MJLAB_CRITIC_WARMUP=N: the actor is frozen for the first N updates, so a fresh
-  # critic's noise does not reach it (one such update broke a resumed walker).
+  # critic's noise does not reach it (one such update broke a resumed walker). The
+  # learning rate is held at 1e-3 meanwhile: with a frozen actor the KL is 0 and the
+  # adaptive schedule climbs to 1e-2, which broke the walker at the unfreeze.
+  # MJLAB_RESUME_LR: learning rate set when the actor starts learning (an actor-only
+  # load resets the optimizer; fw ended at 1e-5).
   warmup = int(os.environ.get("MJLAB_CRITIC_WARMUP", "0"))
-  if warmup > 0:
+  resume_lr = float(os.environ.get("MJLAB_RESUME_LR", "0"))
+  if warmup > 0 or resume_lr > 0:
     alg = runner.alg
     update = alg.update
+    schedule = alg.schedule
     n_updates = [0]
 
+    def set_lr(lr: float) -> None:
+      alg.learning_rate = lr
+      for group in alg.optimizer.param_groups:
+        group["lr"] = lr
+
     def warm_update(*args, **kwargs):
-      frozen = n_updates[0] < warmup
+      n = n_updates[0]
+      if n == 0 and warmup > 0:
+        alg.schedule = "fixed"
+        set_lr(1e-3)
+      if n == warmup:
+        alg.schedule = schedule
+        if resume_lr > 0:
+          set_lr(resume_lr)
       for p in alg.actor.parameters():
-        p.requires_grad_(not frozen)
+        p.requires_grad_(n >= warmup)
       n_updates[0] += 1
       return update(*args, **kwargs)
 
