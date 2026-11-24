@@ -150,6 +150,7 @@ OSEQ_COMBO = float(_env("OSEQ_COMBO", "0.3"))  # share of 2- and 3-axis sign com
 OSEQ_V = tuple(float(x) for x in _env("OSEQ_V", "0.12,0.08,0.08,0.3").split(","))  # fwd, back, side m/s, yaw rad/s
 OSEQ_TAU = float(_env("OSEQ_TAU", "0.4"))  # s, body-velocity smoothing for the tracking reward
 OSEQ_STD = float(_env("OSEQ_STD", "0.7"))
+OSEQ_STALL = float(_env("OSEQ_STALL", "0"))  # >0: stall cost on sequence envs below this speed ratio
 OSEQ_WIN = float(_env("OSEQ_WIN", "0"))  # s, >0: tracked velocity = net pelvis displacement (xy, yaw) over this window
 # instead of the OSEQ_TAU EMA (tardis: the stride sway cancels exactly, without the EMA's ~1 s lag)
 OSEQ_STANCE_TOL = float(_env("OSEQ_STANCE_TOL", "0"))  # m, >0: stance free band while a vy command is on (tardis:
@@ -565,6 +566,15 @@ class _State:
     if OSEQ_P > 0:
       self.gain = torch.where(self.oseq, torch.zeros_like(self.gain), self.gain)  # paid by stairs_otrack instead
     moved = (self.best < self.mark - 0.01) | self.oseq  # no stall cost on sequence envs
+    if OSEQ_P > 0 and OSEQ_STALL > 0:
+      # fx froze standing on every axis once the forward goal tiles (whose stall cost started fw's gait) were gone:
+      # a sequence env counts as moving only at >= OSEQ_STALL of the commanded speed (mean over the commanded axes).
+      c = self.ocmd
+      vmax = torch.stack([torch.where(c[:, 0] > 0, OSEQ_V[0], OSEQ_V[1]), torch.full_like(c[:, 0], OSEQ_V[2]),
+                          torch.full_like(c[:, 0], OSEQ_V[3])], 1)
+      nz = (c != 0).sum(-1)
+      ratio = (self.ov * c / vmax).sum(-1) / nz.clamp(min=1)
+      moved = (self.best < self.mark - 0.01) | (self.oseq & ((nz == 0) | (ratio >= OSEQ_STALL)))
     self.mark = torch.where(fr | moved, self.best, self.mark)
     self.last_gain = torch.where(fr | moved | ~on | self.arrived, ep, self.last_gain)
     if SETTLE_T > 0:
