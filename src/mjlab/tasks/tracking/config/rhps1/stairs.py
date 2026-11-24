@@ -1577,7 +1577,7 @@ def apply(cfg, play: bool = False) -> None:
   # Terrain: one column per tread, then the flat column (the copy). Stairs first so
   # env 0, the one the training videos film, is on stairs; any flat tile adds the plane.
   kinds, treads, subs = [], [], {}
-  for t in TREADS:
+  for t in TREADS if FRAC > 0 else ():  # FRAC=0: no stair tile at all (the generator keeps a row of each kind)
     subs[f"up{int(round(t * 100))}"] = StepPyramidCfg(
       proportion=FRAC / len(TREADS), step_height_range=H_RANGE, step_width=t,
       num_steps=NSTEPS, platform_width=PLATFORM,
