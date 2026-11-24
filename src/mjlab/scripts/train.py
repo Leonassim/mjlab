@@ -171,7 +171,10 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   runner.add_git_repo_to_log(__file__)
   if resume_path is not None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-    runner.load(str(resume_path))
+    # MJLAB_LOAD_ACTOR_ONLY=1: keep the actor, start a fresh critic (its observations
+    # changed) and optimizer.
+    actor_only = os.environ.get("MJLAB_LOAD_ACTOR_ONLY") == "1"
+    runner.load(str(resume_path), load_cfg={"actor": True} if actor_only else None)
 
   runner.learn(
     num_learning_iterations=cfg.agent.max_iterations, init_at_random_ep_len=True
