@@ -150,6 +150,7 @@ OSEQ_COMBO = float(_env("OSEQ_COMBO", "0.3"))  # share of 2- and 3-axis sign com
 OSEQ_V = tuple(float(x) for x in _env("OSEQ_V", "0.12,0.08,0.08,0.3").split(","))  # fwd, back, side m/s, yaw rad/s
 OSEQ_TAU = float(_env("OSEQ_TAU", "0.4"))  # s, body-velocity smoothing for the tracking reward
 OSEQ_STD = float(_env("OSEQ_STD", "0.7"))
+CRITIC_CMD = _env("CRITIC_CMD", "0") == "1"  # critic reads the sequence command, tracked velocity, stall timer
 OSEQ_STALL = float(_env("OSEQ_STALL", "0"))  # >0: stall cost on sequence envs below this speed ratio
 OSEQ_WIN = float(_env("OSEQ_WIN", "0"))  # s, >0: tracked velocity = net pelvis displacement (xy, yaw) over this window
 # instead of the OSEQ_TAU EMA (tardis: the stride sway cancels exactly, without the EMA's ~1 s lag)
@@ -1547,6 +1548,19 @@ def stairs_state(env) -> torch.Tensor:
   return torch.stack([st.is_stairs.float(), st.arrived.float(), on], -1)
 
 
+def stairs_critic_cmd(env) -> torch.Tensor:
+  """CRITIC_CMD: the critic's view of the sequence task: the direction command the actor reads (unfiltered), the
+  tracked velocity window in units of the per-axis target, and the stall timer. Without it the critic only saw the
+  BWC clip command and (stairs, arrived, on): it could not tell a side command from a forward one (fx/fy/fz)."""
+  from . import env_cfgs as E
+
+  st = env._stairs
+  cmd = E._reference_velocity_command(env, "motion")
+  sc = torch.tensor([OSEQ_V[2], OSEQ_V[2], OSEQ_V[3]], device=cmd.device)
+  idle = ((env.episode_length_buf - st.last_gain).float() * env.step_dt / max(STALL_S, 1e-3)).clamp(0.0, 2.0)
+  return torch.cat([cmd, (st.ov / sc).clamp(-3.0, 3.0), idle[:, None]], -1)
+
+
 def scan_dim() -> int:
   nx = len(torch.arange(-SCAN_SIZE[0] / 2, SCAN_SIZE[0] / 2 + SCAN_RES * 0.5, SCAN_RES))
   ny = len(torch.arange(-SCAN_SIZE[1] / 2, SCAN_SIZE[1] / 2 + SCAN_RES * 0.5, SCAN_RES))
@@ -1796,6 +1810,8 @@ def apply(cfg, play: bool = False) -> None:
     depth_student.apply(cfg, play=play)
   cfg.observations["critic"].terms["height_scan"] = ObservationTermCfg(**scan)
   cfg.observations["critic"].terms["stairs_state"] = ObservationTermCfg(func=stairs_state)
+  if CRITIC_CMD:
+    cfg.observations["critic"].terms["stairs_cmd"] = ObservationTermCfg(func=stairs_critic_cmd)
   if RL and COPY_FLAT:
     # Copy tiles get exactly slot 18's term set (tardis: copy + RL guards on the same tiles negotiates instead of
     # copying, e.g. the 1.6 s cadence against the BWC's ~1 s step): every RL-only term acts on stair envs only.
