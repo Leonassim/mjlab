@@ -1888,11 +1888,7 @@ def apply(cfg, play: bool = False) -> None:
                  ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
                  ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike),
                  ("STEP", stairs_step), ("OPROG", stairs_oprog), ("SWINGH", stairs_swing_h),
-<<<<<<< Updated upstream
-                 ("VRATE", stairs_vrate)):
-=======
-                 ("SWINGK", stairs_swing_knee)):
->>>>>>> Stashed changes
+                 ("VRATE", stairs_vrate), ("SWINGK", stairs_swing_knee)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
