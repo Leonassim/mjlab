@@ -1,0 +1,1 @@
+gyaw 5000 (run 2026-11-25_16-17-30): gk 3500 + OSEQ_YAW_SS, lr fixed 3e-4, recipe gyaw.env. oseq 0/8 falls on all 8 commands: fwd 0.96, back 1.16, left 0.86, right 0.98, yaw 0.79/0.87; stop_eval 32/32, roll 1.9, 0.50 s, 91 % single support, lift 2.1 cm, knee +8.
