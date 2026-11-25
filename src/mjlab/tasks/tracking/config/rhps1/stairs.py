@@ -161,6 +161,7 @@ VRATE_DEAD = float(_env("VRATE_DEAD", "1.2"))  # stairs_vrate free band, slot 18
 CRITIC_CMD = _env("CRITIC_CMD", "0") == "1"  # critic reads the sequence command, tracked velocity, stall timer
 W_OPROG = float(_env("W_OPROG", "0"))  # per metre: sequence progress ratchet (stairs_oprog)
 OSEQ_R = float(_env("OSEQ_R", "0.27"))  # m per rad of yaw in that ratchet (0.08 m/s side ~ 0.3 rad/s)
+OSEQ_YAW_SS = _env("OSEQ_YAW_SS", "0") == "1"  # yaw tracked/ratcheted only while in single support (tardis)
 OSEQ_STALL = float(_env("OSEQ_STALL", "0"))  # >0: stall cost on sequence envs below this speed ratio
 OSEQ_WIN = float(_env("OSEQ_WIN", "0"))  # s, >0: tracked velocity = net pelvis displacement (xy, yaw) over this window
 # instead of the OSEQ_TAU EMA (tardis: the stride sway cancels exactly, without the EMA's ~1 s lag)
@@ -287,6 +288,8 @@ class _State:
     # W_OPROG: per-segment ratchet on the displacement along the commanded direction (+ OSEQ_R x yaw turned)
     self.oseg = torch.full((n,), -1, dtype=torch.long, device=dev)
     self.ocmd_p = torch.zeros(n, 3, device=dev)
+    self.oyw_prev = torch.zeros(n, device=dev)  # OSEQ_YAW_SS: previous heading, and the single-support yaw accrued
+    self.oyc = torch.zeros(n, device=dev)
     self.op0 = torch.zeros(n, 2, device=dev)
     self.odir_w = torch.zeros(n, 2, device=dev)
     self.oyu = torch.zeros(n, device=dev)  # unwrapped yaw
@@ -493,8 +496,17 @@ class _State:
                         robot.data.root_link_ang_vel_w[:, 2]], 1)
       if OSEQ_WIN > 0:
         last = self.obuf[:, -1]
-        dyaw = torch.atan2(torch.sin(yaw - last[:, 2]), torch.cos(yaw - last[:, 2]))
-        cur = torch.stack([p[:, 0], p[:, 1], last[:, 2] + dyaw], 1)
+        if OSEQ_YAW_SS:
+          # tardis: a double-support pivot earns no yaw (gy's sole-yaw cost only slowed the pivot); the window's yaw
+          # channel accrues the heading change only while exactly one sole carries the robot (previous step's loads)
+          dyw = torch.atan2(torch.sin(yaw - self.oyw_prev), torch.cos(yaw - self.oyw_prev))
+          self.oyw_prev = yaw
+          ss = ((self.load > 0.1 * BW).sum(-1) == 1).float()
+          self.oyc = torch.where(ep <= 1, torch.zeros_like(self.oyc), self.oyc + dyw * ss)
+          cur = torch.stack([p[:, 0], p[:, 1], self.oyc], 1)
+        else:
+          dyaw = torch.atan2(torch.sin(yaw - last[:, 2]), torch.cos(yaw - last[:, 2]))
+          cur = torch.stack([p[:, 0], p[:, 1], last[:, 2] + dyaw], 1)
         fresh = (ep <= 1)[:, None, None]
         self.obuf = torch.where(fresh, cur[:, None].expand_as(self.obuf), torch.cat([self.obuf[:, 1:], cur[:, None]], 1))
         d = (self.obuf[:, -1] - self.obuf[:, 0]) / OSEQ_WIN
@@ -507,7 +519,8 @@ class _State:
         # to the in-step sway); the otrack kernel alone left ft 750 leaning 6-7 deg forward without a step.
         first = ep <= 1
         dy = torch.atan2(torch.sin(yaw - self.oyaw_p), torch.cos(yaw - self.oyaw_p))
-        self.oyu = torch.where(first, yaw, self.oyu + dy)
+        gate = ((self.load > 0.1 * BW).sum(-1) == 1).float() if OSEQ_YAW_SS else 1.0
+        self.oyu = torch.where(first, yaw, self.oyu + dy * gate)
         self.oyaw_p = yaw
         c = self.ocmd
         newseg = first | (idx != self.oseg) | (c != self.ocmd_p).any(-1)  # the command also turns on at cmd_on
