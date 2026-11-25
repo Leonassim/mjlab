@@ -288,6 +288,8 @@ class _State:
     # W_OPROG: per-segment ratchet on the displacement along the commanded direction (+ OSEQ_R x yaw turned)
     self.oseg = torch.full((n,), -1, dtype=torch.long, device=dev)
     self.ocmd_p = torch.zeros(n, 3, device=dev)
+    self.oyr = torch.zeros(n, device=dev)
+    self.oyr0 = torch.zeros(n, device=dev)
     self.oyw_prev = torch.zeros(n, device=dev)  # OSEQ_YAW_SS: previous heading, and the single-support yaw accrued
     self.oyc = torch.zeros(n, device=dev)
     self.op0 = torch.zeros(n, 2, device=dev)
@@ -532,6 +534,9 @@ class _State:
         self.odir_w = torch.where(newseg[:, None], dw, self.odir_w)
         self.op0 = torch.where(newseg[:, None], p, self.op0)
         self.oy0 = torch.where(newseg, self.oyu, self.oy0)
+        # real (uncredited) unwrapped heading, and its value at the segment start: stairs_headhold
+        self.oyr = torch.where(first, yaw, self.oyr + dy)
+        self.oyr0 = torch.where(newseg, self.oyr, self.oyr0)
         self.obest = torch.where(newseg, torch.zeros_like(self.obest), self.obest)
         proj = ((p - self.op0) * self.odir_w).sum(-1) + OSEQ_R * c[:, 2] * (self.oyu - self.oy0)
         moving = self.oseq & (t >= 0) & (c != 0).any(-1)
@@ -1122,6 +1127,16 @@ def stairs_sole_yaw(env) -> torch.Tensor:
     c0 = env._soleyaw_c0 = env.common_step_counter
   ramp = min(1.0, (env.common_step_counter - c0) / SOLEYAW_RAMP) if SOLEYAW_RAMP > 0 else 1.0
   return _stairs_only((w * loaded * on).sum(-1), env) * ramp
+
+
+def stairs_headhold(env) -> torch.Tensor:
+  """W_HEADHOLD (< 0): |heading change since the segment start| (rad, linear) while a translation is commanded with no
+  yaw. The robot test of gyaw 4000 / gcy 4500 (2026-11-25) drifted +4-9 deg per 3-6 s on forward; the OTRACK yaw
+  kernel barely sees 0.02-0.05 rad/s against a 0.3 rad/s scale. Needs W_OPROG (the segment bookkeeping)."""
+  st = env._stairs
+  c = st.ocmd
+  on = st.oseq & ~st.paused & (env.episode_length_buf >= st.cmd_on) & (c[:, :2] != 0).any(-1) & (c[:, 2] == 0)
+  return _stairs_only((st.oyr - st.oyr0).abs() * on, env)
 
 
 def stairs_step(env) -> torch.Tensor:
@@ -1921,7 +1936,7 @@ def apply(cfg, play: bool = False) -> None:
                  ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike),
                  ("STEP", stairs_step), ("OPROG", stairs_oprog), ("SWINGH", stairs_swing_h),
                  ("VRATE", stairs_vrate), ("SWINGK", stairs_swing_knee),
-                 ("SOLEYAW", stairs_sole_yaw)):
+                 ("SOLEYAW", stairs_sole_yaw), ("HEADHOLD", stairs_headhold)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
