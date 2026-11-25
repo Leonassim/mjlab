@@ -21,7 +21,9 @@ def stance_action(env, term) -> torch.Tensor:
   off = getattr(env, "_hold_offset_q", None)
   if off is None:
     return torch.zeros(env.num_envs, term.action_dim, device=env.device)
-  return off[:, term.target_ids] / term._scale
+  a = off[:, term.target_ids] / term._scale
+  vel = getattr(term, "_vel", None)
+  return a if vel is None else a * ~vel  # velocity joints hold with zero velocity
 
 
 class HoldableJointPositionAction(JointPositionAction):
@@ -58,6 +60,92 @@ class HoldableJointPositionAction(JointPositionAction):
 class HoldableJointPositionActionCfg(JointPositionActionCfg):
   def build(self, env) -> HoldableJointPositionAction:
     return HoldableJointPositionAction(self, env)
+
+
+class HoldableJointVelocityAction(HoldableJointPositionAction):
+  """RHPS1_ACTION_MODE=vel: leg joints take a velocity, the target is its free-running integral, as rl_controller's
+  velocity_action (utils.cpp): integrated every physics step, kept within max(effort/kp, 2|v|/sqrt(K)) of the
+  measured (motor side, encoder) position, then the joint range and the cylinder projection. Other joints stay
+  position actions. Exploration noise moves the target by v*dt per step instead of a full jump."""
+
+  def __init__(self, cfg, env):
+    super().__init__(cfg, env)
+    names = list(self.target_names)
+    vel = [any(t in n for t in cfg.vel_tokens) for n in names]
+    self._vel = torch.tensor(vel, dtype=torch.bool, device=self.device)
+    self._vcols = self._vel.nonzero().flatten()
+    from mjlab.utils.lab_api.string import resolve_matching_names_values
+
+    vnames = [names[i] for i in self._vcols.tolist()]
+    _, fnames, fvals = resolve_matching_names_values(cfg.dev_floor, vnames)
+    floor = dict(zip(fnames, fvals))
+    vs, dev0 = [], []
+    for n in vnames:
+      g = next(k for k in cfg.vel_scale if k in n)
+      vs.append(cfg.vel_scale[g])
+      dev0.append(floor[n])
+    self._vscale = torch.tensor(vs, device=self.device)
+    self._dev0 = torch.tensor(dev0, device=self.device)
+    self._vmax = cfg.vel_max
+    self._sqrt_k = cfg.posture_k**0.5 if cfg.posture_k > 0 else 0.0
+    self._dt = env.cfg.sim.mujoco.timestep
+    lim = self._entity.data.joint_pos_limits[0, self._target_ids[self._vcols]]
+    self._lo, self._hi = lim[:, 0].clone(), lim[:, 1].clone()
+    self._v = torch.zeros(self.num_envs, len(vs), device=self.device)
+    self._int = torch.zeros(self.num_envs, len(vs), device=self.device)
+    self._init = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+    self._target = torch.zeros(self.num_envs, self.action_dim, device=self.device)
+
+  def _measured(self) -> torch.Tensor:
+    ids = self._target_ids[self._vcols]
+    q = self._entity.data.joint_pos[:, ids] + self._entity.data.encoder_bias[:, ids]
+    d = getattr(self._entity, "_rhps1_deflection", None)
+    return q if d is None else q + d[:, ids]
+
+  def reset(self, env_ids=None) -> None:
+    super().reset(env_ids)
+    self._init[slice(None) if env_ids is None else env_ids] = True
+
+  def process_actions(self, actions: torch.Tensor) -> None:
+    hold = getattr(self._env, "_action_hold_steps", None)
+    a = actions[:, self._vcols]
+    if hold is not None:
+      a = torch.where((self._env.episode_length_buf < hold)[:, None], torch.zeros_like(a), a)
+    self._v = (a * self._vscale).clamp(-self._vmax, self._vmax)
+    if bool(self._init.any()):  # first step of an episode: start from the reset posture
+      self._int = torch.where(self._init[:, None], self._measured(), self._int)
+      self._init[:] = False
+    super().process_actions(actions)  # position joints, hold, head; leg columns overwritten in apply_actions
+    self._target = self._processed_actions.clone()
+
+  def apply_actions(self) -> None:
+    q = self._measured()
+    dev = self._dev0
+    if self._sqrt_k > 0:
+      dev = torch.maximum(dev, 2.0 * self._v.abs() / self._sqrt_k)
+    i = torch.minimum(torch.maximum(self._int + self._v * self._dt, q - dev), q + dev)
+    i = torch.minimum(torch.maximum(i, self._lo), self._hi)
+    t = self._target.clone()
+    t[:, self._vcols] = i
+    if self._cyl is not None:
+      from mjlab.asset_zoo.robots.RHPS1.rhps1_cylinders import project_cylinder_limits
+
+      t = project_cylinder_limits(t, *self._cyl)
+    self._int = t[:, self._vcols]
+    self._processed_actions = t
+    super(HoldableJointPositionAction, self).apply_actions()
+
+
+@dataclass(kw_only=True)
+class HoldableJointVelocityActionCfg(HoldableJointPositionActionCfg):
+  vel_tokens: tuple[str, ...] = ("CROTCH", "KNEE", "ANKLE")
+  vel_scale: dict[str, float] = None  # rad/s per action unit, by joint group token
+  dev_floor: dict[str, float] = None  # effort / kp per joint name
+  vel_max: float = 3.0
+  posture_k: float = 1600.0
+
+  def build(self, env) -> HoldableJointVelocityAction:
+    return HoldableJointVelocityAction(self, env)
 
 
 def held_last_action(env, action_name: str | None = None) -> torch.Tensor:

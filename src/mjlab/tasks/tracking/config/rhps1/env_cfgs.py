@@ -1343,6 +1343,21 @@ def rhps1_flat_tracking_env_cfg(
   # needs 77-92 action units while exploration std sat at 0.28 unit (0.13 deg).
   _amult = float(os.environ.get("RHPS1_ACTION_SCALE_MULT", "10"))
   joint_pos_action.scale = {k: v * _amult for k, v in RHPS1_ACTION_SCALE.items()}
+  # RHPS1_ACTION_MODE=vel: leg joints output a velocity (rl_controller velocity_action), 1 unit = slot 18's p99 joint
+  # speed x RHPS1_VEL_SCALE_MULT; the position scale still applies to the other joints.
+  if os.environ.get("RHPS1_ACTION_MODE", "pos") == "vel":
+    from mjlab.tasks.tracking.config.rhps1.hold_action import HoldableJointVelocityActionCfg
+
+    _vm = float(os.environ.get("RHPS1_VEL_SCALE_MULT", "1.0"))
+    _p99 = {"KNEE_P": 1.76, "ANKLE_P": 1.41, "CROTCH_P": 1.00, "CROTCH_R": 0.71, "ANKLE_R": 1.10, "CROTCH_Y": 0.70}
+    cfg.actions["joint_pos"] = HoldableJointVelocityActionCfg(
+      **{f.name: getattr(joint_pos_action, f.name) for f in joint_pos_action.__dataclass_fields__.values()},
+      vel_scale={k: v * _vm for k, v in _p99.items()},
+      dev_floor={k: v for k, v in RHPS1_ACTION_SCALE.items() if any(t in k for t in ("CROTCH", "KNEE", "ANKLE"))},  # effort / kp
+      vel_max=float(os.environ.get("RHPS1_VEL_MAX", "3.0")),
+      posture_k=float(os.environ.get("RHPS1_POSTURE_K", "1600")),
+    )
+    joint_pos_action = cfg.actions["joint_pos"]
   # RHPS1_HEAD_SCALE=0 freezes the head. Off by default: the head is imitated by
   # motion_joint_pos_upper instead, like every other joint (Leo, 2026-09-18).
   _head = os.environ.get("RHPS1_HEAD_SCALE")
