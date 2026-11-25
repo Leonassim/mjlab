@@ -49,6 +49,8 @@ st.seg_cmd[:, 0] = torch.tensor(cmd, device=dev)
 st.seg_end[:] = 10**9
 robot = u.scene["robot"]
 kid = [robot.joint_names.index(n) for n in ("L_KNEE_P", "R_KNEE_P")]
+yid = [robot.joint_names.index(n) for n in ("L_CROTCH_Y", "R_CROTCH_Y")]
+yfr = []  # |hip yaw actuator torque| / 35 N.m (CROTCH_Y effort limit)
 alive = torch.ones(N, dtype=torch.bool, device=dev)
 pit_s, rol_s, kex_s = [], [], []
 BW = 57.64 * 9.81
@@ -65,6 +67,7 @@ for i in range(int(8 / u.step_dt)):
   sw = (st.load <= 10.0) & alive[:, None]
   q = robot.data.joint_pos[:, kid]
   kex = torch.stack([q[:, 0] - q[:, 1], q[:, 1] - q[:, 0]], -1)
+  yfr.append((robot.data.qfrc_actuator[:, yid].abs() / 35.0)[alive].flatten().cpu())
   ld = st.load > 0.1 * BW
   one_t += float(((ld.sum(-1) == 1) & alive).sum())
   all_t += float(alive.sum())
@@ -88,5 +91,8 @@ print(f"  |roll|  p50/p90/p99 {d(np.percentile(rol_a, 50)):.1f}/{d(np.percentile
 lf = torch.cat(lifts).numpy() if lifts else np.zeros(1)
 print(f"  single support {100 * one_t / max(all_t, 1):.0f} % | peak lift per step med {100 * np.median(lf):.1f} cm"
       f" ({len(lf)} steps)")
+yf = torch.cat(yfr).numpy()
+print(f"  hip yaw torque / 35 N.m p50/p90/p99 {np.percentile(yf, 50):.2f}/{np.percentile(yf, 90):.2f}/"
+      f"{np.percentile(yf, 99):.2f}, >= 0.95: {100 * np.mean(yf >= 0.95):.1f} %")
 print(f"  swing knee over stance p50/p90/p99 {d(np.percentile(kex_a, 50)):+.1f}/{d(np.percentile(kex_a, 90)):+.1f}/"
       f"{d(np.percentile(kex_a, 99)):+.1f} deg")
