@@ -1,0 +1,1 @@
+gi2 2500 (run 2026-11-25_09-51-27): gi resumed from gi 1000, lr fixed 3e-4. Recipe gi.env (same actor obs as s50e: proprio, filtered direction command, height scan). policy.onnx exported with scripts/tools/export_onnx.py under gi.env. Gates in docs/coordination/rtx4080.md 2026-11-25 13:20.
