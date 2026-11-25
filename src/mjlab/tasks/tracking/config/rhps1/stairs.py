@@ -87,6 +87,7 @@ STEP_MIN_H = float(_env("STEP_MIN_H", "0.03"))  # m, sole rise for stairs_step t
 STEP_T0 = float(_env("STEP_T0", "0.2"))  # s, swing time below which stairs_step pays nothing
 SWINGH_H = float(_env("SWINGH_H", "0.06"))  # m, stairs_swing_h saturates at this sole height
 SWINGH_V = float(_env("SWINGH_V", "0.2"))  # m/s, foot speed for full stairs_swing_h pay
+SWINGK_DEG = float(_env("SWINGK_DEG", "20"))  # deg, stairs_swing_knee saturates at this swing-over-stance flexion
 CLIMB_FRAC = float(_env("CLIMB_FRAC", "0.5"))  # share of stair spawns that climb
 # MODE_FIXED=1: each env keeps its mode, so climbs and descents each get their own curriculum level
 # (shared, rl40 settled at 5 cm where climbs arrived 44% and descents 12%: descents stopped learning).
@@ -1072,6 +1073,25 @@ def stairs_swing_h(env) -> torch.Tensor:
   return _stairs_only(r.sum(-1), env)
 
 
+def stairs_swing_knee(env) -> torch.Tensor:
+  """W_SWINGK: swing-knee flexion above the stance knee, linear to SWINGK_DEG then flat, x min(|v_xy| / SWINGH_V, 1) on
+  the unloaded leg while a move is commanded (tardis: reward the intended lever; gs's swing height was bought with hip
+  hike, roll p95 1.8 -> 3.0 deg, knee +7 -> +6; h1's hike cost -150 also left the knee at +7; slot 18: +21)."""
+  st = env._stairs
+  robot = env.scene["robot"]
+  ids = getattr(env, "_st_knee_ids", None)
+  if ids is None:
+    ids = env._st_knee_ids = [robot.joint_names.index(n) for n in ("L_KNEE_P", "R_KNEE_P")]
+  q = robot.data.joint_pos[:, ids]
+  ex = torch.stack([q[:, 0] - q[:, 1], q[:, 1] - q[:, 0]], -1)  # each leg above the other, feet ordered L, R
+  v = robot.data.body_link_lin_vel_w[:, st.foot_ids, :2].norm(dim=-1)
+  _, _, _, _, fn = _feet(env)
+  swing = fn.view(q.shape[0], 2, -1).sum(-1) <= 10.0
+  on = (~st.arrived & ~st.paused & (env.episode_length_buf >= st.cmd_on))[:, None]
+  r = (ex / math.radians(SWINGK_DEG)).clamp(0.0, 1.0) * (v / SWINGH_V).clamp(max=1.0) * swing * on
+  return _stairs_only(r.sum(-1), env)
+
+
 def stairs_step(env) -> torch.Tensor:
   """Per landing of a real step while asked to move: swing time (capped at 1 s) minus STEP_T0, paid only if the sole
   rose STEP_MIN_H during that swing (legged_gym feet air time with a height gate). fo/fp moved by sliding the feet
@@ -1868,7 +1888,11 @@ def apply(cfg, play: bool = False) -> None:
                  ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
                  ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike),
                  ("STEP", stairs_step), ("OPROG", stairs_oprog), ("SWINGH", stairs_swing_h),
+<<<<<<< Updated upstream
                  ("VRATE", stairs_vrate)):
+=======
+                 ("SWINGK", stairs_swing_knee)):
+>>>>>>> Stashed changes
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
