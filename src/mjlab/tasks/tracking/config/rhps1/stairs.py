@@ -155,6 +155,7 @@ OSEQ_COMBO = float(_env("OSEQ_COMBO", "0.3"))  # share of 2- and 3-axis sign com
 OSEQ_V = tuple(float(x) for x in _env("OSEQ_V", "0.12,0.08,0.08,0.3").split(","))  # fwd, back, side m/s, yaw rad/s
 OSEQ_TAU = float(_env("OSEQ_TAU", "0.4"))  # s, body-velocity smoothing for the tracking reward
 OSEQ_STD = float(_env("OSEQ_STD", "0.7"))
+VRATE_DEAD = float(_env("VRATE_DEAD", "1.2"))  # stairs_vrate free band, slot 18 p95 (tardis 2026-11-25)
 CRITIC_CMD = _env("CRITIC_CMD", "0") == "1"  # critic reads the sequence command, tracked velocity, stall timer
 W_OPROG = float(_env("W_OPROG", "0"))  # per metre: sequence progress ratchet (stairs_oprog)
 OSEQ_R = float(_env("OSEQ_R", "0.27"))  # m per rad of yaw in that ratchet (0.08 m/s side ~ 0.3 rad/s)
@@ -1133,6 +1134,27 @@ def stairs_still_slip(env) -> torch.Tensor:
   return _stairs_only(_still(env) * (v * loaded).sum(-1), env) * _land_ramp(env)
 
 
+def stairs_vrate(env) -> torch.Tensor:
+  """Change of the measured joint velocity (mean over the policy step) between two policy steps, per joint in units
+  of slot 18's p99 speed, squared and summed (W_VRATE < 0; tardis 2026-11-25). Slot 18 in mc_mujoco: 0.64 per step.
+  The acceleration cost for velocity actions: action_rate on the sampled action bills the exploration noise itself
+  (white noise at std 0.5 = 15 per step, 23x the slot-18 gait), while the posture filter keeps it out of the joints."""
+  from mjlab.tasks.tracking.config.rhps1.hold_action import SLOT18_P99_VEL
+
+  robot = env.scene["robot"]
+  q = robot.data.joint_pos
+  if getattr(env, "_vr_q", None) is None:
+    env._vr_s = torch.tensor([SLOT18_P99_VEL.get(n, 1.0) for n in robot.joint_names], device=env.device)
+    env._vr_q, env._vr_v = q.clone(), torch.zeros_like(q)
+    return torch.zeros(env.num_envs, device=env.device)
+  v = (q - env._vr_q) / env.step_dt
+  e = (((v - env._vr_v) / env._vr_s) ** 2).sum(-1)
+  env._vr_q, env._vr_v = q.clone(), v
+  # Dead zone at slot 18's p95 (1.2): gi2 2500 reads 0.60 and velocity noise at std 0.5 reads 0.79, so a plain
+  # cost would bill the exploration about as much as a slot-18 gait; only jerkier motion pays.
+  return torch.relu(e - VRATE_DEAD) * (env.episode_length_buf >= 3)  # the first two differences straddle the reset
+
+
 def stairs_otrack(env) -> torch.Tensor:
   """OSEQ envs while moving: body-frame velocity tracking, exp(-sum((v_i - target_i) / scale_i)^2 / OSEQ_STD^2), smoothed
   over OSEQ_TAU. Targets: sign x (fwd or back, side, yaw) speed; scale = side speed for vx, vy and yaw speed for wz.
@@ -1845,7 +1867,8 @@ def apply(cfg, play: bool = False) -> None:
                  ("TREAD", stairs_tread), ("VINST", stairs_vinst), ("KNEE", stairs_knee_flex),
                  ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
                  ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike),
-                 ("STEP", stairs_step), ("OPROG", stairs_oprog), ("SWINGH", stairs_swing_h)):
+                 ("STEP", stairs_step), ("OPROG", stairs_oprog), ("SWINGH", stairs_swing_h),
+                 ("VRATE", stairs_vrate)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:

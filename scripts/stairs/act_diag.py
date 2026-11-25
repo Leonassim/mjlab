@@ -122,3 +122,9 @@ if ok.any():
   ld = L[t0:, ok] > 0.1 * BW
   ss = np.mean(ld.sum(-1) == 1)
   print(f"  foot lift p90 {100 * np.percentile(lift, 90):.1f} cm, max {100 * np.max(lift):.1f} cm | single support {100 * ss:.0f} %")
+  from mjlab.tasks.tracking.config.rhps1.hold_action import SLOT18_P99_VEL
+
+  sc = np.array([SLOT18_P99_VEL.get(n, 1.0) for n in jn])
+  v = np.diff(Q[t0:, ok], axis=0) / dt
+  vr = (((np.diff(v, axis=0)) / sc) ** 2).sum(-1)
+  print(f"  stairs_vrate (sum of (dqd/slot18 p99)^2 per step): mean {vr.mean():.2f} p95 {np.percentile(vr, 95):.2f} (slot 18: 0.64)")

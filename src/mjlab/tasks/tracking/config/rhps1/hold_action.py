@@ -63,10 +63,10 @@ class HoldableJointPositionActionCfg(JointPositionActionCfg):
 
 
 class HoldableJointVelocityAction(HoldableJointPositionAction):
-  """RHPS1_ACTION_MODE=vel: leg joints take a velocity, the target is its free-running integral, as rl_controller's
-  velocity_action (utils.cpp): integrated every physics step, kept within max(effort/kp, 2|v|/sqrt(K)) of the
-  measured (motor side, encoder) position, then the joint range and the cylinder projection. Other joints stay
-  position actions. Exploration noise moves the target by v*dt per step instead of a full jump."""
+  """RHPS1_ACTION_MODE=vel: the joints whose name contains a vel_tokens entry take a velocity, the target is its
+  free-running integral, as rl_controller's velocity_action (utils.cpp): integrated every physics step, kept within
+  max(effort/kp, 2|v|/sqrt(K)) of the measured (motor side, encoder) position, then the joint range and the cylinder
+  projection. Other joints stay position actions. Noise moves the target by v*dt per step instead of a full jump."""
 
   def __init__(self, cfg, env):
     super().__init__(cfg, env)
@@ -74,18 +74,10 @@ class HoldableJointVelocityAction(HoldableJointPositionAction):
     vel = [any(t in n for t in cfg.vel_tokens) for n in names]
     self._vel = torch.tensor(vel, dtype=torch.bool, device=self.device)
     self._vcols = self._vel.nonzero().flatten()
-    from mjlab.utils.lab_api.string import resolve_matching_names_values
-
     vnames = [names[i] for i in self._vcols.tolist()]
-    _, fnames, fvals = resolve_matching_names_values(cfg.dev_floor, vnames)
-    floor = dict(zip(fnames, fvals))
-    vs, dev0 = [], []
-    for n in vnames:
-      g = next(k for k in cfg.vel_scale if k in n)
-      vs.append(cfg.vel_scale[g])
-      dev0.append(floor[n])
-    self._vscale = torch.tensor(vs, device=self.device)
-    self._dev0 = torch.tensor(dev0, device=self.device)
+    self._vscale = torch.tensor([cfg.vel_scale[n] for n in vnames], device=self.device)
+    self._dev0 = torch.tensor([cfg.dev_floor[n] for n in vnames], device=self.device)
+    vs = vnames
     self._vmax = cfg.vel_max
     self._sqrt_k = cfg.posture_k**0.5 if cfg.posture_k > 0 else 0.0
     self._dt = env.cfg.sim.mujoco.timestep
@@ -127,6 +119,8 @@ class HoldableJointVelocityAction(HoldableJointPositionAction):
     i = torch.minimum(torch.maximum(i, self._lo), self._hi)
     t = self._target.clone()
     t[:, self._vcols] = i
+    for j, v in self._fixed:
+      t[:, j] = v
     if self._cyl is not None:
       from mjlab.asset_zoo.robots.RHPS1.rhps1_cylinders import project_cylinder_limits
 
@@ -136,10 +130,23 @@ class HoldableJointVelocityAction(HoldableJointPositionAction):
     super(HoldableJointPositionAction, self).apply_actions()
 
 
+# mc_mujoco slot 18 (2026-11-25, forward / left / yaw, 20 ms means): p99 |qd| per joint, floor 0.3 rad/s. The
+# velocity action scale (1 unit = this speed) and the stairs_vrate normalisation.
+SLOT18_P99_VEL = {
+  "L_CROTCH_Y": 0.4, "L_CROTCH_R": 0.6, "L_CROTCH_P": 1.1, "L_KNEE_P": 2.2, "L_ANKLE_R": 0.5, "L_ANKLE_P": 0.5,
+  "R_CROTCH_Y": 0.4, "R_CROTCH_R": 0.6, "R_CROTCH_P": 1.1, "R_KNEE_P": 2.2, "R_ANKLE_R": 0.5, "R_ANKLE_P": 0.5,
+  "CHEST_Y": 1.0, "CHEST_P": 0.3, "HEAD_Y": 0.4, "HEAD_P": 0.4,
+  "L_SHOULDER_P": 0.3, "L_SHOULDER_R": 0.3, "L_SHOULDER_Y": 0.3, "L_ELBOW_P": 0.3, "L_ELBOW_Y": 0.3,
+  "L_WRIST_R": 0.5, "L_WRIST_Y": 0.4,
+  "R_SHOULDER_P": 0.3, "R_SHOULDER_R": 0.3, "R_SHOULDER_Y": 0.3, "R_ELBOW_P": 0.3, "R_ELBOW_Y": 0.3,
+  "R_WRIST_R": 0.5, "R_WRIST_Y": 0.4,
+}
+
+
 @dataclass(kw_only=True)
 class HoldableJointVelocityActionCfg(HoldableJointPositionActionCfg):
-  vel_tokens: tuple[str, ...] = ("CROTCH", "KNEE", "ANKLE")
-  vel_scale: dict[str, float] = None  # rad/s per action unit, by joint group token
+  vel_tokens: tuple[str, ...] = ("",)  # every joint; ("CROTCH", "KNEE", "ANKLE") for the legs only
+  vel_scale: dict[str, float] = None  # rad/s per action unit, per joint name
   dev_floor: dict[str, float] = None  # effort / kp per joint name
   vel_max: float = 3.0
   posture_k: float = 1600.0
