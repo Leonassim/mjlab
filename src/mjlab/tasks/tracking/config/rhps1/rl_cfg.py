@@ -18,7 +18,9 @@ def rhps1_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       obs_normalization=True,
       distribution_cfg={
         "class_name": "GaussianDistribution",
-        "init_std": 1.0,
+        # RHPS1_INIT_STD: initial action std. 1.0 is ~3-6 deg of white noise per leg
+        # joint every 20 ms, 10-30x the 20000 N.m/rad servo's linear range.
+        "init_std": float(os.environ.get("RHPS1_INIT_STD", "1.0")),
         "std_type": "scalar",
       },
       # RHPS1_SCAN_ENC="128,32": stairs height scan through an encoder to a latent (scan_encoder.py).
