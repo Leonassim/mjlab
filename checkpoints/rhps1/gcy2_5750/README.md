@@ -1,0 +1,1 @@
+gcy2 5750 (run 2026-11-25_22-25-09): gcy 5250 resumed (gcad 4000 + OSEQ_YAW_SS), recipe gcy.env. stop_eval 32/32, 0.69 s steps, 93 % single support, lift 3.7 cm, knee +13, roll 2.0; touchdown vz p90 0.16, Fz p90 935 N (1.65 BW), leg torque p99 0.90. oseq: fwd 1.07, back 1.12, side 0.84/0.84, yaw 0.52/0.45 (1/8 falls on left and yaw+).
