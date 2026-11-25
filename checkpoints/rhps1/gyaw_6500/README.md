@@ -1,0 +1,1 @@
+gyaw 6500 (run 2026-11-25_16-17-30): recipe gyaw.env. oseq 0/8 falls on all 8: fwd 1.21, back 1.22, left 0.89, right 1.10, yaw 0.76/1.00, fwd+yaw 0.99/0.65, fwd+left 0.90/0.86. stop_eval 32/32, roll 1.8, 0.58 s, 93 % single support, lift 2.5 cm, knee +9; touchdown vz p90 0.13 m/s, Fz peak p90 883 N (1.56 BW), leg torque p99 0.88.
