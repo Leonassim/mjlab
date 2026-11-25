@@ -115,3 +115,20 @@ Pistes :
 - Pas rapides et bas : 0,46 s et 1,9 cm, contre 1,03 s et 5,6 cm au slot 18.
 - Glissement à l'arrêt de 10 cm et pieds décalés.
 - Arrière faible : 0,17.
+
+## Mise à jour 2026-11-25 17 h 40 : meilleur candidat gyaw 4000
+
+`checkpoints/rhps1/gyaw_4000` (ONNX inclus), lignée gi2 → gk (genou) → gyaw (lacet crédité en simple appui seulement,
+`OSEQ_YAW_SS`). Premier candidat qui fait des pas sur tous les axes, sans chute, dans mc_mujoco (banc tardis) :
+lacet en simple appui 77-80 % (gs/gk : 35-53 %), roulis p95 1,1-1,6°, glissement à l'arrêt 2-4 cm.
+Écarts au slot 18 : pas 0,41-0,46 s (1,03), levée 1,6-2,0 cm (5,6-6,4), genou de balancier +6..+9° (+22).
+
+Leçons de la journée :
+- un coût sur un levier fait baisser ce levier (hike -150 → genou inchangé ; coût de lacet de semelle → pivot plus lent),
+  il faut payer directement le bon levier ou créditer la tâche seulement quand elle est faite comme voulu
+  (`OSEQ_YAW_SS`) ;
+- la cadence (`W_CAD 20`, `CAD_C 0.2`) payait presque autant les pas de 0,5 s que ceux de 1 s : c'est elle qui fixait
+  les pas courts (bilan par seconde de tardis). `CAD_C 0.45` (gcad) allonge les pas à 0,66 s, levée 2,9 cm,
+  genou +10, mais dégrade le lacet ; gcy = gcad 4000 + `OSEQ_YAW_SS` combine les deux (en cours) ;
+- ni la saturation (diagnostic tardis), ni le plafond de vitesse du genou, ni l'enveloppe d'inclinaison de semelle ne
+  bloquent le genou (`swing_tilt_probe.py`).
