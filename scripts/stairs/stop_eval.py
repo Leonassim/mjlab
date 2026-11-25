@@ -73,6 +73,7 @@ walk_pr, walk_cr, walk_lat = [[] for _ in range(N)], [[] for _ in range(N)], [[]
 stop_roll = torch.zeros(N)
 slip = torch.zeros(N)
 lands = torch.zeros(N)
+vland, fpeak, trq_r = [], [], []  # touchdown sole vz (m/s), 60 ms peak sole load (N), leg |torque| / limit
 wgaps = [[] for _ in range(N)]
 single_t = torch.zeros(N)
 walk_t = torch.zeros(N)
@@ -123,6 +124,14 @@ for _ in range(steps):
   prev_f = fc
   lands += (st.land.any(-1).cpu() & stopped).float()
   wl = st.land.any(-1).cpu() & walking
+  lw = st.land.cpu() & walking[:, None]
+  vland.append(st.v_land.cpu()[lw])
+  fw = st.f_close.cpu() & walking[:, None]
+  fpeak.append(st.f_peak.cpu()[fw])
+  lim = getattr(u, "_st_trq_lim", None)
+  if lim is not None and walking.any():
+    legs = torch.isfinite(lim)
+    trq_r.append((robot.data.qfrc_actuator.abs() / lim)[:, legs].cpu()[walking].flatten())
   for e in wl.nonzero().flatten().tolist():
     wgaps[e].append(float(st.land_gap[e]))
   single_t += ((st.load > 0.1 * BW).sum(-1).cpu() == 1).float() * walking
@@ -195,6 +204,12 @@ kvv = torch.cat(knee_v)
 print(f"  pied: lever max par pas med {np.median(lf) * 100 if lf else float('nan'):.1f} cm"
       f" | genou balancier - appui med {np.degrees(np.median([x for e in ok for x in kexc[e]] or [np.nan])):+.0f} deg"
       f" | genou |v| p99 {float(kvv.quantile(0.99)) if len(kvv) else float('nan'):.2f} rad/s (plafond 2,64)")
+vl, fp = torch.cat(vland), torch.cat(fpeak)
+tr = torch.cat(trq_r) if trq_r else torch.zeros(1)
+q = lambda x, a: float(x.quantile(a)) if len(x) else float("nan")  # noqa: E731
+print(f"  impacts: vz pose p50/p90 {q(vl, 0.5):.2f}/{q(vl, 0.9):.2f} m/s | Fz pic 60 ms p50/p90 {q(fp, 0.5):.0f}/"
+      f"{q(fp, 0.9):.0f} N ({q(fp, 0.9) / BW:.2f} BW) | couple jambes / limite p99 {q(tr, 0.99):.2f}, >= 0.9 "
+      f"{100 * float((tr >= 0.9).float().mean()):.1f} %")
 print(f"  arret: glissement pieds charges med {float(slip[ok].median()) * 100:.1f} p90 {float(slip[ok].quantile(0.9)) * 100:.1f} cm"
       f" | poses apres arret med {float(lands[ok].median()):.0f}"
       f" | immobile apres med {float(last_move[ok].median()):.1f} p90 {float(last_move[ok].quantile(0.9)):.1f} s"
