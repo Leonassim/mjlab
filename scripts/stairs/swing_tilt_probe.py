@@ -51,6 +51,10 @@ robot = u.scene["robot"]
 kid = [robot.joint_names.index(n) for n in ("L_KNEE_P", "R_KNEE_P")]
 alive = torch.ones(N, dtype=torch.bool, device=dev)
 pit_s, rol_s, kex_s = [], [], []
+BW = 57.64 * 9.81
+one_t, all_t = 0.0, 0.0
+lift_pk = torch.zeros(N, 2, device=dev)
+lifts = []
 for i in range(int(8 / u.step_dt)):
   with torch.no_grad():
     obs, _, _, _ = env.step(pol(obs))
@@ -61,6 +65,14 @@ for i in range(int(8 / u.step_dt)):
   sw = (st.load <= 10.0) & alive[:, None]
   q = robot.data.joint_pos[:, kid]
   kex = torch.stack([q[:, 0] - q[:, 1], q[:, 1] - q[:, 0]], -1)
+  ld = st.load > 0.1 * BW
+  one_t += float(((ld.sum(-1) == 1) & alive).sum())
+  all_t += float(alive.sum())
+  h = robot.data.body_link_pos_w[:, st.foot_ids, 2] - 0.10 - u.scene["stairs_ground"].data.hit_pos_w[:, :2, 2]
+  lift_pk = torch.where(sw, torch.maximum(lift_pk, h), lift_pk)
+  landed = st.land & alive[:, None]
+  lifts.append(lift_pk[landed].cpu())
+  lift_pk = torch.where(sw, lift_pk, torch.zeros_like(lift_pk))
   pit_s.append(pit.abs()[sw].cpu())
   rol_s.append(rol.abs()[sw].cpu())
   kex_s.append(kex[sw].cpu())
@@ -73,5 +85,8 @@ print(f"  |pitch| p50/p90/p99 {d(np.percentile(pit_a, 50)):.1f}/{d(np.percentile
 print(f"  |roll|  p50/p90/p99 {d(np.percentile(rol_a, 50)):.1f}/{d(np.percentile(rol_a, 90)):.1f}/"
       f"{d(np.percentile(rol_a, 99)):.1f} deg, beyond {math.degrees(BWC_SWING_ROLL):.1f}: "
       f"{100 * np.mean(rol_a > BWC_SWING_ROLL):.1f} %")
+lf = torch.cat(lifts).numpy() if lifts else np.zeros(1)
+print(f"  single support {100 * one_t / max(all_t, 1):.0f} % | peak lift per step med {100 * np.median(lf):.1f} cm"
+      f" ({len(lf)} steps)")
 print(f"  swing knee over stance p50/p90/p99 {d(np.percentile(kex_a, 50)):+.1f}/{d(np.percentile(kex_a, 90)):+.1f}/"
       f"{d(np.percentile(kex_a, 99)):+.1f} deg")
