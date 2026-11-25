@@ -74,6 +74,8 @@ stop_roll = torch.zeros(N)
 slip = torch.zeros(N)
 lands = torch.zeros(N)
 vland, fpeak, trq_r = [], [], []  # touchdown sole vz (m/s), 60 ms peak sole load (N), leg |torque| / limit
+knee_t = []  # |knee actuator torque| (N.m), L and R, while walking
+kid_t = [list(robot.joint_names).index(n) for n in ("L_KNEE_P", "R_KNEE_P")]
 wgaps = [[] for _ in range(N)]
 single_t = torch.zeros(N)
 walk_t = torch.zeros(N)
@@ -128,6 +130,7 @@ for _ in range(steps):
   vland.append(st.v_land.cpu()[lw])
   fw = st.f_close.cpu() & walking[:, None]
   fpeak.append(st.f_peak.cpu()[fw])
+  knee_t.append(robot.data.qfrc_actuator[:, kid_t].abs().cpu()[walking])
   lim = getattr(u, "_st_trq_lim", None)
   if lim is not None and walking.any():
     legs = torch.isfinite(lim)
@@ -210,6 +213,9 @@ q = lambda x, a: float(x.quantile(a)) if len(x) else float("nan")  # noqa: E731
 print(f"  impacts: vz pose p50/p90 {q(vl, 0.5):.2f}/{q(vl, 0.9):.2f} m/s | Fz pic 60 ms p50/p90 {q(fp, 0.5):.0f}/"
       f"{q(fp, 0.9):.0f} N ({q(fp, 0.9) / BW:.2f} BW) | couple jambes / limite p99 {q(tr, 0.99):.2f}, >= 0.9 "
       f"{100 * float((tr >= 0.9).float().mean()):.1f} %")
+kt = torch.cat(knee_t) if knee_t else torch.zeros(1, 2)
+print(f"  genou couple p99 G/D {q(kt[:, 0], 0.99):.0f}/{q(kt[:, 1], 0.99):.0f} N.m (reducteur 70) | >= 66.5 N.m (95 %) G/D "
+      f"{100 * float((kt[:, 0] >= 66.5).float().mean()):.1f}/{100 * float((kt[:, 1] >= 66.5).float().mean()):.1f} %")
 print(f"  arret: glissement pieds charges med {float(slip[ok].median()) * 100:.1f} p90 {float(slip[ok].quantile(0.9)) * 100:.1f} cm"
       f" | poses apres arret med {float(lands[ok].median()):.0f}"
       f" | immobile apres med {float(last_move[ok].median()):.1f} p90 {float(last_move[ok].quantile(0.9)):.1f} s"
