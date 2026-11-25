@@ -133,4 +133,5 @@ for f in sys.argv[1:]:
   print(f"{name:19s} | {vm[0]:+.3f} {vm[1]:+.3f} {vm[2]:+.2f} | {np.percentile(np.abs(roll[wk]), 95):5.2f} {hike:+5.2f} | "
         f"{np.median(gaps) if len(gaps) else np.nan:5.2f} {100 * ss.sum() / max(wk.sum(), 1):4.0f} "
         f"{100 * np.median(lifts) if lifts else np.nan:6.1f} {np.nanmedian(knees) if knees else np.nan:+5.0f} | "
+        f"{np.percentile(vzs, 90) if vzs else np.nan:9.3f} {np.percentile(fpk, 90) if fpk else np.nan:6.0f} | "
         f"{100 * net:7.1f} {steps:5d} {still:6.2f}{'  FELL' if fell else ''}")
