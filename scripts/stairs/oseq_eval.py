@@ -4,6 +4,8 @@ Every env holds one command for MOVE_S s, then zero for STOP_S s, deterministic 
 id mod 8): fwd, back, left, right, yaw+, yaw-, fwd+yaw+, fwd+left. Per pattern, from 1 s after the start:
   ratio: mean speed along each commanded axis / its target (fwd 0.12, back/side 0.08 m/s, yaw 0.3 rad/s)
   leak: mean |speed| on the uncommanded axes (m/s, rad/s for yaw), roll p95 (deg), min lateral ankle width (cm), falls
+  hip roll: |CROTCH_R torque| / effort limit (100 N.m) p99 left/right while moving and share >= 0.98
+  (tardis: saturation on side steps?)
   stop: loaded-sole slip after the release (cm), landings after the release
   BENCH_N=64 MOVE_S=6 STOP_S=4 python oseq_eval.py <run> <ckpt> [label]
 """
@@ -69,6 +71,9 @@ vsum, vcnt = torch.zeros(N, 3), torch.zeros(N)
 rolls = [[] for _ in range(N)]
 slip, lands = torch.zeros(N), torch.zeros(N)
 wmin = torch.full((N,), 9.0)
+HR_LIM = 100.0  # RHPS1_ACTUATOR_CROTCH_R effort_limit
+hr_ids = [list(robot.joint_names).index(n) for n in ("L_CROTCH_R", "R_CROTCH_R")]
+hr = [[] for _ in range(N)]
 prev_f = None
 prev_lo = torch.zeros(N, 2, dtype=torch.bool)
 anchor = torch.zeros(N, 2, 2)
@@ -90,8 +95,10 @@ for _ in range(int((MOVE + STOP + 1.5) / dt)):
   vcnt += mv.float()
   w, x, y, z = q.unbind(-1)
   r = torch.rad2deg(torch.asin((2 * (y * z + w * x)).clamp(-1, 1))).cpu()
+  hq = (robot.data.qfrc_actuator[:, hr_ids].abs() / HR_LIM).cpu()
   for e in mv.nonzero().flatten().tolist():
     rolls[e].append(abs(float(r[e])))
+    hr[e].append(hq[e])
   fpos = robot.data.body_link_pos_w[:, st.foot_ids, :2]
   dd = fpos[:, 0] - fpos[:, 1]
   wl = (-dd[:, 0] * hf[:, 1] + dd[:, 1] * hf[:, 0]).abs().cpu()
@@ -121,8 +128,11 @@ for i, (name, c) in enumerate(PAT):
     ratio = [float((vm[ok][:, j] / tgt[ok][:, j]).mean()) for j in range(3) if cm[j]]
     leak = [float(vm[ok][:, j].abs().mean()) for j in range(3) if not cm[j]]
     rp = float(np.percentile(np.concatenate([np.array(rolls[e]) for e in ok if rolls[e]] or [np.zeros(1)]), 95))
+    hs = torch.cat([torch.stack(hr[e]) for e in ok if hr[e]] or [torch.zeros(1, 2)])
+    hrp = torch.quantile(hs, 0.99, dim=0).tolist() + (100 * (hs >= 0.98).float().mean(0)).tolist()
     print(f"  {name:13s} chute {int(fell[ids].sum())}/{len(ids)} | ratio " + " ".join(f"{x:.2f}" for x in ratio)
           + " | fuite " + " ".join(f"{x:.3f}" for x in leak) + f" | roulis p95 {rp:.1f} | largeur min {float(wmin[ok].min()) * 100:.0f} cm"
-          + f" | arret glisse med {float(slip[ok].median()) * 100:.1f} cm poses {float(lands[ok].median()):.0f}")
+          + f" | arret glisse med {float(slip[ok].median()) * 100:.1f} cm poses {float(lands[ok].median()):.0f}"
+          + f" | hanche roulis p99 G/D {hrp[0]:.2f}/{hrp[1]:.2f}, >= 0.98 {hrp[2]:.0f}/{hrp[3]:.0f} %")
   else:
     print(f"  {name:13s} chute {int(fell[ids].sum())}/{len(ids)}")

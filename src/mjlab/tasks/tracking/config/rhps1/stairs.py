@@ -163,6 +163,8 @@ W_OPROG = float(_env("W_OPROG", "0"))  # per metre: sequence progress ratchet (s
 OSEQ_R = float(_env("OSEQ_R", "0.27"))  # m per rad of yaw in that ratchet (0.08 m/s side ~ 0.3 rad/s)
 OSEQ_YAW_SS = _env("OSEQ_YAW_SS", "0") == "1"  # yaw tracked/ratcheted only while in single support (tardis)
 OSEQ_STALL = float(_env("OSEQ_STALL", "0"))  # >0: stall cost on sequence envs below this speed ratio
+OSEQ_FWD_STEPS = int(_env("OSEQ_FWD_STEPS", "0"))  # command curriculum (tardis, Leo 2026-11-26): before this many
+# env steps (common_step_counter, 24 per iteration), every moving sequence segment is forward; then all axes
 OSEQ_WIN = float(_env("OSEQ_WIN", "0"))  # s, >0: tracked velocity = net pelvis displacement (xy, yaw) over this window
 # instead of the OSEQ_TAU EMA (tardis: the stride sway cancels exactly, without the EMA's ~1 s lag)
 OSEQ_STANCE_TOL = float(_env("OSEQ_STANCE_TOL", "0"))  # m, >0: stance free band while a vy command is on (tardis:
@@ -453,6 +455,8 @@ class _State:
     cmd = torch.where((r < OSEQ_COMBO)[..., None], combo, single)
     cmd = cmd * (torch.rand(k, m, device=dev) >= OSEQ_ZERO)[..., None]
     cmd = cmd * (torch.arange(m, device=dev)[None] < nseg[:, None])[..., None]
+    if env.common_step_counter < OSEQ_FWD_STEPS:
+      cmd = torch.nn.functional.pad((cmd.abs().sum(-1, keepdim=True) > 0).float(), (0, 2))
     dur = ((OSEQ_T[0] + torch.rand(k, m, device=dev) * (OSEQ_T[1] - OSEQ_T[0])) / env.step_dt).long()
     end = dur.cumsum(1)
     last = end.gather(1, (nseg - 1)[:, None])
