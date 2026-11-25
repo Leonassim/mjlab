@@ -85,6 +85,8 @@ AIR_WIN0 = tuple(float(x) for x in _env("AIR_WIN0", _env("AIR_WIN", "0.05,0.6"))
 AIR_MIN_H = float(_env("AIR_MIN_H", "0"))  # m, >0: stairs_air pays only while the swing sole is this high
 STEP_MIN_H = float(_env("STEP_MIN_H", "0.03"))  # m, sole rise for stairs_step to pay a landing
 STEP_T0 = float(_env("STEP_T0", "0.2"))  # s, swing time below which stairs_step pays nothing
+SWINGH_H = float(_env("SWINGH_H", "0.06"))  # m, stairs_swing_h saturates at this sole height
+SWINGH_V = float(_env("SWINGH_V", "0.2"))  # m/s, foot speed for full stairs_swing_h pay
 CLIMB_FRAC = float(_env("CLIMB_FRAC", "0.5"))  # share of stair spawns that climb
 # MODE_FIXED=1: each env keeps its mode, so climbs and descents each get their own curriculum level
 # (shared, rl40 settled at 5 cm where climbs arrived 44% and descents 12%: descents stopped learning).
@@ -1053,6 +1055,22 @@ def stairs_oprog(env) -> torch.Tensor:
   return _stairs_only(env._stairs.ogain / env.step_dt, env)
 
 
+def stairs_swing_h(env) -> torch.Tensor:
+  """W_SWINGH: unloaded sole height over the ground, linear up to SWINGH_H then flat, times min(|v_xy| / SWINGH_V, 1),
+  while a move is commanded (tardis: clearance while the foot travels; a per-second height pay taught rl25 to hold a
+  leg up). gi2 2500 lifted 2.4 cm with the swing knee at +7 deg (slot 18: 5.6-6.4 cm, +22)."""
+  st = env._stairs
+  robot = env.scene["robot"]
+  fp = robot.data.body_link_pos_w[:, st.foot_ids]
+  h = fp[..., 2] - 0.10 - env.scene["stairs_ground"].data.hit_pos_w[:, :2, 2]
+  v = robot.data.body_link_lin_vel_w[:, st.foot_ids, :2].norm(dim=-1)
+  _, _, _, _, fn = _feet(env)
+  swing = fn.view(fp.shape[0], 2, -1).sum(-1) <= 10.0
+  on = (~st.arrived & ~st.paused & (env.episode_length_buf >= st.cmd_on))[:, None]
+  r = (h / SWINGH_H).clamp(0.0, 1.0) * (v / SWINGH_V).clamp(max=1.0) * swing * on
+  return _stairs_only(r.sum(-1), env)
+
+
 def stairs_step(env) -> torch.Tensor:
   """Per landing of a real step while asked to move: swing time (capped at 1 s) minus STEP_T0, paid only if the sole
   rose STEP_MIN_H during that swing (legged_gym feet air time with a height gate). fo/fp moved by sliding the feet
@@ -1827,7 +1845,7 @@ def apply(cfg, play: bool = False) -> None:
                  ("TREAD", stairs_tread), ("VINST", stairs_vinst), ("KNEE", stairs_knee_flex),
                  ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
                  ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike),
-                 ("STEP", stairs_step), ("OPROG", stairs_oprog)):
+                 ("STEP", stairs_step), ("OPROG", stairs_oprog), ("SWINGH", stairs_swing_h)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
