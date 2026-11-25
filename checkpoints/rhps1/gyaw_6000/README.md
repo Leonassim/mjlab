@@ -1,0 +1,1 @@
+gyaw 6000 (run 2026-11-25_16-17-30): gk 3500 + OSEQ_YAW_SS, lr fixed 3e-4, recipe gyaw.env. oseq 0/8 falls on all 8 commands, every ratio >= 0.74: fwd 1.22, back 1.00, left 0.87, right 0.88, yaw 0.74/0.88, fwd+yaw 1.05/0.83, fwd+left 0.77/0.75; fwd wz leak 0.006. stop_eval 32/32, roll 1.6, 0.52 s, 89 % single support, lift 2.1 cm, knee +7.
