@@ -23,7 +23,8 @@ _READ = """
 import sys, numpy as np, mc_log_ui
 l = mc_log_ui.read_log(sys.argv[1])
 keep = ("t", "FloatingBase_position_", "FloatingBase_orientation_", "qIn_", "NewRLQPController_velCmd_",
-        "NewRLQPController_RL_currentAction_", "LeftFootForceSensor_fz", "RightFootForceSensor_fz")
+        "NewRLQPController_RL_currentAction_", "LeftFootForceSensor_fz", "RightFootForceSensor_fz",
+        "NewRLQPController_leftFoot", "NewRLQPController_rightFoot")
 np.savez(sys.argv[2], **{k: np.asarray(v, float) for k, v in l.items() if k == "t" or k.startswith(keep[1:])})
 """
 
@@ -49,12 +50,17 @@ def load(f):
   q = np.stack([g(f"qIn_{i}") for i in range(30)], 1)
   vc = np.stack([g(f"NewRLQPController_velCmd_{a}") for a in "xyz"], 1)
   a = np.stack([g(f"NewRLQPController_RL_currentAction_{i}") for i in range(30)], 1)
-  return g("t"), pos, quat, q, vc, a, g("LeftFootForceSensor_fz"), g("RightFootForceSensor_fz")
+  imp = []
+  for side in ("left", "right"):
+    c = g(f"NewRLQPController_{side}FootContact")
+    vz = np.abs(g(f"NewRLQPController_{side}FootImpactVel_z"))
+    imp.append((c, vz))
+  return g("t"), pos, quat, q, vc, a, g("LeftFootForceSensor_fz"), g("RightFootForceSensor_fz"), imp
 
 
-print("run                 | speed vx    vy    wz  | roll p95 hike | step s  ss %  lift cm knee | stop net cm steps still s")
+print("run                 | speed vx    vy    wz  | roll p95 hike | step s  ss %  lift cm knee | td vz p90  Fz p90 | stop net cm steps still s")
 for f in sys.argv[1:]:
-  t, pos, quat, q, vc, act, fzL, fzR = load(f)
+  t, pos, quat, q, vc, act, fzL, fzR, imp = load(f)
   n = len(t)
   ft, roll, yaw = np.zeros((n, 2, 3)), np.zeros(n), np.zeros(n)
   for i in range(n):
@@ -100,6 +106,11 @@ for f in sys.argv[1:]:
   lands = np.sort(lands)
   gaps = np.diff(lands)
   gaps = gaps[gaps > 0.1]
+  vzs, fpk = [], []
+  for k, (c, vz) in enumerate(imp):
+    rise = np.where((c[1:] > 0.5) & (c[:-1] < 0.5) & wk[1:])[0] + 1
+    vzs += list(vz[np.minimum(rise + 1, n - 1)])
+    fpk += [F[r:r + 40, k].max() for r in rise]
   st = (t >= t_off) & (t < t_off + 3)
   net = 0.0
   for k in range(2):
