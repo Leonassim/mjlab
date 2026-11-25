@@ -88,6 +88,7 @@ STEP_T0 = float(_env("STEP_T0", "0.2"))  # s, swing time below which stairs_step
 SWINGH_H = float(_env("SWINGH_H", "0.06"))  # m, stairs_swing_h saturates at this sole height
 SWINGH_V = float(_env("SWINGH_V", "0.2"))  # m/s, foot speed for full stairs_swing_h pay
 SWINGK_DEG = float(_env("SWINGK_DEG", "20"))  # deg, stairs_swing_knee saturates at this swing-over-stance flexion
+SOLEYAW_RAMP = float(_env("SOLEYAW_RAMP", "12000"))  # env steps, ramp of stairs_sole_yaw (~500 its x 24 steps)
 CLIMB_FRAC = float(_env("CLIMB_FRAC", "0.5"))  # share of stair spawns that climb
 # MODE_FIXED=1: each env keeps its mode, so climbs and descents each get their own curriculum level
 # (shared, rl40 settled at 5 cm where climbs arrived 44% and descents 12%: descents stopped learning).
@@ -1092,6 +1093,24 @@ def stairs_swing_knee(env) -> torch.Tensor:
   return _stairs_only(r.sum(-1), env)
 
 
+def stairs_sole_yaw(env) -> torch.Tensor:
+  """W_SOLEYAW (< 0): yaw rate of the loaded soles (> 50 N), rad/s summed over both feet, linear, while a move is
+  commanded, ramped in over SOLEYAW_RAMP env steps. tardis: in RL mode the only slip cost is slip_speed (yaw through a
+  0.1 m lever), so a 0.3 rad/s double-foot pivot cost ~1.2/s against up to 24/s of OTRACK yaw; gs 3000 turned by
+  sliding both feet (yaw single support 39-44 %, lift 0-1 cm in mc_mujoco)."""
+  st = env._stairs
+  robot = env.scene["robot"]
+  w = robot.data.body_link_ang_vel_w[:, st.foot_ids, 2].abs()
+  _, _, _, _, fn = _feet(env)
+  loaded = fn.view(w.shape[0], 2, -1).sum(-1) > 50.0
+  on = (~st.arrived & ~st.paused & (env.episode_length_buf >= st.cmd_on))[:, None]
+  c0 = getattr(env, "_soleyaw_c0", None)
+  if c0 is None:
+    c0 = env._soleyaw_c0 = env.common_step_counter
+  ramp = min(1.0, (env.common_step_counter - c0) / SOLEYAW_RAMP) if SOLEYAW_RAMP > 0 else 1.0
+  return _stairs_only((w * loaded * on).sum(-1), env) * ramp
+
+
 def stairs_step(env) -> torch.Tensor:
   """Per landing of a real step while asked to move: swing time (capped at 1 s) minus STEP_T0, paid only if the sole
   rose STEP_MIN_H during that swing (legged_gym feet air time with a height gate). fo/fp moved by sliding the feet
@@ -1888,7 +1907,8 @@ def apply(cfg, play: bool = False) -> None:
                  ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
                  ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike),
                  ("STEP", stairs_step), ("OPROG", stairs_oprog), ("SWINGH", stairs_swing_h),
-                 ("VRATE", stairs_vrate), ("SWINGK", stairs_swing_knee)):
+                 ("VRATE", stairs_vrate), ("SWINGK", stairs_swing_knee),
+                 ("SOLEYAW", stairs_sole_yaw)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
