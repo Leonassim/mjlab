@@ -161,6 +161,7 @@ VRATE_DEAD = float(_env("VRATE_DEAD", "1.2"))  # stairs_vrate free band, slot 18
 PDRIFT_TAU = float(_env("PDRIFT_TAU", "1.0"))  # s, stairs_posture_drift window
 PDRIFT_FREE = float(_env("PDRIFT_FREE", "0.05"))  # rad, free band on the averaged offset
 PDRIFT_STD = float(_env("PDRIFT_STD", "0.10"))  # rad
+PDRIFT_ALL = _env("PDRIFT_ALL", "0") == "1"  # every joint, not only the legs: velocity actions let the arms drift too (vcurp 1000: shoulder yaw +-40 deg, head -29)
 CRITIC_CMD = _env("CRITIC_CMD", "0") == "1"  # critic reads the sequence command, tracked velocity, stall timer
 W_OPROG = float(_env("W_OPROG", "0"))  # per metre: sequence progress ratchet (stairs_oprog)
 OSEQ_R = float(_env("OSEQ_R", "0.27"))  # m per rad of yaw in that ratchet (0.08 m/s side ~ 0.3 rad/s)
@@ -1215,15 +1216,16 @@ def stairs_still_slip(env) -> torch.Tensor:
 
 
 def stairs_posture_drift(env) -> torch.Tensor:
-  """Slow drift of the leg joints away from the default pose: their 1 s moving average of (q - q0), beyond a free
+  """Slow drift of the leg joints (PDRIFT_ALL: every joint) away from the default pose: their 1 s moving average of (q - q0), beyond a free
   band PDRIFT_FREE, in units of PDRIFT_STD, squared and summed (W_PDRIFT < 0; tardis 2026-11-26). Velocity actions hold
   wherever they are, so the posture random-walks into a fall (vcur 500: pitch +11 -> -8 deg, pelvis -7 cm); the gait's
   own oscillation averages out of the window, only the drift pays."""
   robot = env.scene["robot"]
   ids = getattr(env, "_pd_ids", None)
   if ids is None:
+    legs = ("CROTCH", "KNEE", "ANKLE")
     ids = env._pd_ids = torch.tensor([i for i, n in enumerate(robot.joint_names)
-                                      if any(k in n for k in ("CROTCH", "KNEE", "ANKLE"))], device=env.device)
+                                      if PDRIFT_ALL or any(k in n for k in legs)], device=env.device)
   d = robot.data.joint_pos[:, ids] - robot.data.default_joint_pos[:, ids]
   ema = getattr(env, "_pd_ema", None)
   if ema is None:

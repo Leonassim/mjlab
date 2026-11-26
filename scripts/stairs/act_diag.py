@@ -127,4 +127,8 @@ if ok.any():
   sc = np.array([SLOT18_P99_VEL.get(n, 1.0) for n in jn])
   v = np.diff(Q[t0:, ok], axis=0) / dt
   vr = (((np.diff(v, axis=0)) / sc) ** 2).sum(-1)
+  if os.environ.get("POSE_PRINT"):
+    q0 = robot.data.default_joint_pos[0].cpu().numpy()
+    off = np.degrees(Q[-int(2 / dt):, ok].mean((0, 1)) - q0)
+    print("  mean q - q0 over the last 2 s (deg): " + " ".join(f"{n} {o:+.0f}" for n, o in zip(jn, off) if abs(o) >= 3))
   print(f"  stairs_vrate (sum of (dqd/slot18 p99)^2 per step): mean {vr.mean():.2f} p95 {np.percentile(vr, 95):.2f} (slot 18: 0.64)")
