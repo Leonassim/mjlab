@@ -1,0 +1,1 @@
+gytdP2 10000 (run 2026-11-26_19-25-52, tardis): gytd 9500 + W_PDRIFT -2 on the legs (q0 reference), FREE 0.02, STD 0.05; recipe gytdP2.env. mc_mujoco: rest IMU -3.1 after walking (arming +3.3), back+left no fall (pitch min -8.1/-8.8), fwd 0.117, lift 2.2 cm, Fz p90 756-875. 10250 was pruned by flat_gate (multiples of 500 only).
