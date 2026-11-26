@@ -1,0 +1,1 @@
+gytdP2 10250 (run 2026-11-26_19-25-52, tardis): gytd 9500 + W_PDRIFT -2 on the legs (q0 reference), FREE 0.02, STD 0.05; recipe gytdP2.env. Gate: 32/32 stop, 0/64 falls, rest pelvis -3.2 vs q0, hip +2.5; Fz p90 758 N. Paused 2026-11-26 21:49 for H1 on tardis.
