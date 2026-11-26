@@ -1,0 +1,1 @@
+gimpS 8250 (run 2026-11-26_22-33-22): gimpP2 7500 + PDRIFT_REF=stance (real standing posture while the command is off); lr fixed 3e-4, recipe gimpS.env. Sim: rest vs stance hip +0.5 knee +3.6 ankle +0.6; 32/32 stop, 0/64 falls; Fz p90 836, vz 0.13; roll p95 2.7.
