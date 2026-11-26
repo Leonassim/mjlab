@@ -162,6 +162,7 @@ PDRIFT_TAU = float(_env("PDRIFT_TAU", "1.0"))  # s, stairs_posture_drift window
 PDRIFT_FREE = float(_env("PDRIFT_FREE", "0.05"))  # rad, free band on the averaged offset
 PDRIFT_STD = float(_env("PDRIFT_STD", "0.10"))  # rad
 PDRIFT_ALL = _env("PDRIFT_ALL", "0") == "1"  # every joint, not only the legs: velocity actions let the arms drift too (vcurp 1000: shoulder yaw +-40 deg, head -29)
+PDRIFT_FREE_UPPER = float(_env("PDRIFT_FREE_UPPER", str(PDRIFT_FREE)))  # rad, free band for the non-leg joints under PDRIFT_ALL (arms may swing for balance: only free-arm velocity runs learned fast)
 CRITIC_CMD = _env("CRITIC_CMD", "0") == "1"  # critic reads the sequence command, tracked velocity, stall timer
 W_OPROG = float(_env("W_OPROG", "0"))  # per metre: sequence progress ratchet (stairs_oprog)
 OSEQ_R = float(_env("OSEQ_R", "0.27"))  # m per rad of yaw in that ratchet (0.08 m/s side ~ 0.3 rad/s)
@@ -1236,7 +1237,12 @@ def stairs_posture_drift(env) -> torch.Tensor:
   a = min(1.0, env.step_dt / PDRIFT_TAU)
   fresh = (env.episode_length_buf <= 1)[:, None]
   env._pd_ema = torch.where(fresh, d, ema + a * (d - ema))
-  e = torch.relu(env._pd_ema.abs() - PDRIFT_FREE) / PDRIFT_STD
+  free = getattr(env, "_pd_free", None)
+  if free is None:
+    leg = torch.tensor([any(k in robot.joint_names[i] for k in ("CROTCH", "KNEE", "ANKLE")) for i in ids.tolist()],
+                       device=env.device)
+    free = env._pd_free = torch.where(leg, PDRIFT_FREE, PDRIFT_FREE_UPPER)
+  e = torch.relu(env._pd_ema.abs() - free) / PDRIFT_STD
   return (e**2).sum(-1)
 
 
