@@ -343,16 +343,11 @@ RHPS1_ACTUATOR_CROTCH_R = FiniteDifferencePdActuatorCfg(
   velocity_damper_vel_percent=0.9,
 )
 
-# effort_limit below: flat 70.0 on both sides (was the real per-side ELMO
-# current-limit-derived bound, 110.9 L / 69.3 R -- see git history). Reverted:
-# that derivation (tau_max = eta*N*Kt*i_limit) is only valid for the real
-# robot's actual cascaded P(pos)/PI(vel)+current-saturation loop
-# (ElmoReplicaActuator), not for the flat-gain PD + MuJoCo effort clamp this
-# config actually trains with -- the two aren't the same dynamical system, so
-# a limit derived for one doesn't have a principled meaning applied to the
-# other. Until the real actuator replica is what's actually training (see
-# elmo_replica_actuator.py), 70.0 (the more conservative of the two real
-# per-side numbers) on both knees is the honest placeholder.
+# Real knee torque limit: 107 N.m on both knees (Leo, 2026-11-26). The per-side
+# ELMO current-limit numbers once noted here (110.9 L / 69.3 R) are wrong: do
+# not use them. effort_limit below stays a 70.0 placeholder, but the tracking
+# copy task trains the knees at 108 N.m, which matches the robot
+# (RHPS1_KNEE_LIMIT overrides it, see tracking/config/rhps1/stairs.py).
 RHPS1_ACTUATOR_KNEE_L = FiniteDifferencePdActuatorCfg(
   target_names_expr=(r"L_KNEE_P",),
   stiffness=20000.0,
