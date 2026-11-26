@@ -9,7 +9,7 @@ TAG=$1; LR=${2:-}; LC=${3:-}
 cd "$REPO"
 stairs_env "${STAIRS_ENV:-}"   # STAIRS_ENV: another recipe file (default s50e.env)
 export RHPS1_STAIRS_LVL_FILE=$RUNS/${TAG}_lvl.pt
-RESUME=(); ENT=0.0
+RESUME=(); ENT=${ENT_COEF:-0.0}  # resume: ENT_COEF honoured too (velocity runs need 0.0005; default 0 as s50e)
 if [ -z "$LR" ]; then
   export RHPS1_STAIRS_LAND_RAMP_OFF=0 RHPS1_STAIRS_APPROACH_OFF=0 RHPS1_STAIRS_BWC_RAMP=72000 \
     RHPS1_STAIRS_SAT_T0=1.0 RHPS1_STAIRS_SAT_RAMP=72000
