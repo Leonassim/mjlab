@@ -1,0 +1,1 @@
+gimpCT 9500 (run 2026-11-27_03-50-35): gimpC 9000 + W_TD -10, TD_VMAX 0.13; lr fixed 3e-4, recipe gimpCT.env. Sim: Fz p90 765 N, vz 0.11; lift 3.3 cm; CoM +4.4 cm at rest; 32/32 stop, 0/64 falls; back stride 10.2 cm.
