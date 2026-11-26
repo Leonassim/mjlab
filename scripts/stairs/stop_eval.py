@@ -80,6 +80,7 @@ i_leg = [i for i, n in enumerate(jn) if any(t in n for t in ("CROTCH", "KNEE", "
 q0 = robot.data.default_joint_pos.clone()
 pitch0 = None
 rest_p, rest_n = torch.zeros(N), torch.zeros(N)
+rest_c = torch.zeros(N)  # CoM ahead of the ankle midpoint along the heading, m
 rest_dq = torch.zeros(N, len(jn))
 
 
@@ -129,6 +130,11 @@ for _ in range(steps):
   rest_p += pp * rest
   rest_dq += (robot.data.joint_pos - q0).cpu() * rest[:, None]
   rest_n += rest.float()
+  fp = robot.data.body_link_pos_w[:, st.foot_ids, :2]
+  qr = robot.data.root_link_quat_w
+  yw = torch.atan2(2 * (qr[:, 0] * qr[:, 3] + qr[:, 1] * qr[:, 2]), 1 - 2 * (qr[:, 2] ** 2 + qr[:, 3] ** 2))
+  cm = robot.data.data.subtree_com[:, robot.data.indexing.root_body_id, :2] - fp.mean(1)
+  rest_c += (cm[:, 0] * torch.cos(yw) + cm[:, 1] * torch.sin(yw)).cpu() * rest
   q = robot.data.root_link_quat_w
   yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
   hf = torch.stack([torch.cos(yaw), torch.sin(yaw)], 1)
@@ -254,7 +260,8 @@ if rk:
         f" | max |q - q0| jambes {float(dq[i_leg].abs().max()):.1f} deg")
   from mjlab.tasks.tracking.config.rhps1.stairs import STANCE_DEG
 
-  st = {k: float(dq[[jn.index(f"{s}_{k}") for s in ("L", "R")]].mean() + math.degrees(q0[0, jn.index(f"L_{k}")]) - STANCE_DEG[k])
+  sv = {k: float(dq[[jn.index(f"{s}_{k}") for s in ("L", "R")]].mean() + math.degrees(q0[0, jn.index(f"L_{k}")]) - STANCE_DEG[k])
         for k in ("CROTCH_P", "KNEE_P", "ANKLE_P")}
-  print(f"  repos vs posture debout reelle (slot 18 y revient): hanche P {st['CROTCH_P']:+.1f} genou {st['KNEE_P']:+.1f}"
-        f" cheville P {st['ANKLE_P']:+.1f} deg")
+  print(f"  repos vs posture debout reelle (slot 18 y revient): hanche P {sv['CROTCH_P']:+.1f} genou {sv['KNEE_P']:+.1f}"
+        f" cheville P {sv['ANKLE_P']:+.1f} deg | CdM devant les chevilles {100 * float((rest_c[rk] / rest_n[rk]).mean()):+.1f} cm"
+        f" (slot 18 mc_mujoco +4.6)")

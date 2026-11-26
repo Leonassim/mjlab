@@ -62,6 +62,7 @@ FOOTHOLD_REL = _env("FOOTHOLD_REL", "0") == "1"  # edge drop threshold = half th
 FOOTHOLD_DESC_FREE = float(_env("FOOTHOLD_DESC_FREE", "2"))
 STATIC_AIR = float(_env("STATIC_AIR", "0"))  # s; >0: static balance paid only during a swing shorter than this
 STANCE_W0 = float(_env("STANCE_W0", "0.20"))  # m, lateral ankle distance of the initial posture
+STOP_COM_X = float(_env("STOP_COM_X", "0.0"))  # m, stairs_stop_pose CoM target ahead of the ankle midpoint (slot 18 rests at +0.046)
 STANCE_TOL = float(_env("STANCE_TOL", "0.03"))  # m, free band around it
 T_STEP = float(_env("T_STEP", "2.0"))  # s, minimum time between two landings (Leo: ~2 s per step on stairs)
 CAD_RAMP = int(_env("CAD_RAMP", "24000"))  # env steps from this launch to the full cadence cost
@@ -1196,7 +1197,8 @@ def _still(env) -> torch.Tensor:
 
 def stairs_stop_pose(env) -> torch.Tensor:
   """Stopped like slot 18 (tardis 2026-11-19): feet side by side (stagger along the heading, std 3 cm) at the nominal
-  width (std 3 cm), CoM over the middle of the feet (std 2 cm), both feet loaded. Paid only while the command is off.
+  width (std 3 cm), CoM over the middle of the feet (std 2 cm; STOP_COM_X ahead of it: the feet are the ankle frames, and
+  slot 18 rests with the CoM 4.6 cm ahead of them, so 0 paid gimpS for leaning back), both feet loaded. Paid only while the command is off.
   s50e stopped with the feet 6 cm staggered and rocked fore-aft instead of taking a closing step."""
   st = env._stairs
   robot = env.scene["robot"]
@@ -1208,7 +1210,7 @@ def stairs_stop_pose(env) -> torch.Tensor:
   dx = (d * hf).sum(-1)
   w = (-d[:, 0] * hf[:, 1] + d[:, 1] * hf[:, 0]).abs()
   com = robot.data.data.subtree_com[:, robot.data.indexing.root_body_id, :2]
-  c = (com - fp.mean(1)).norm(dim=-1)
+  c = (com - fp.mean(1) - STOP_COM_X * hf).norm(dim=-1)
   k = torch.exp(-((dx / 0.03) ** 2) - ((w - STANCE_W0) / 0.03) ** 2 - (c / 0.02) ** 2)
   both = (st.load.min(-1).values / (0.25 * BW)).clamp(0.0, 1.0)
   return _stairs_only(_still(env) * k * both, env) * _land_ramp(env)  # ramped (tardis: full guards collapsed the copy)
