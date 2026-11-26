@@ -1,0 +1,1 @@
+gimpC 9000 (run 2026-11-27_01-13-05): gimpS 8750 + STOP_COM_X 0.045 (stop-pose CoM 4.5 cm ahead of the ankles, as slot 18); lr fixed 3e-4, recipe gimpC.env. Sim: CoM ahead of ankles +4.3 cm at rest, pelvis +2.8 deg, rest vs stance hip +0.5 knee +0.5 ankle -0.4; 31/32 stop, 0/64 falls; lift 4.0 cm; Fz p90 767 N, vz 0.14.
