@@ -67,6 +67,21 @@ def roll(q):
   return torch.rad2deg(torch.asin((2 * (y * z + w * x)).clamp(-1, 1)))
 
 
+def pitch(q):
+  w, x, y, z = q.unbind(-1)
+  return torch.rad2deg(torch.asin((2 * (w * y - z * x)).clamp(-1, 1)))
+
+
+# rest posture (tardis 2026-11-26: backward falls on the robot from a crouched rest, pelvis tilted back): over the
+# last 2 s of the stop, pelvis pitch vs its value at the reset pose q0, and leg q - q0
+jn = list(robot.joint_names)
+i_leg = [i for i, n in enumerate(jn) if any(t in n for t in ("CROTCH", "KNEE", "ANKLE"))]
+q0 = robot.data.default_joint_pos.clone()
+pitch0 = None
+rest_p, rest_n = torch.zeros(N), torch.zeros(N)
+rest_dq = torch.zeros(N, len(jn))
+
+
 alive = torch.ones(N, dtype=torch.bool)
 fell = torch.zeros(N, dtype=torch.bool)
 walk_pr, walk_cr, walk_lat = [[] for _ in range(N)], [[] for _ in range(N)], [[] for _ in range(N)]
@@ -106,6 +121,13 @@ for _ in range(steps):
   stopped = (ep >= rel).cpu() & alive
   qb = robot.data.body_link_quat_w
   pr, cr = roll(qb[:, i_body]).cpu(), roll(qb[:, i_chest]).cpu()
+  pp = pitch(qb[:, i_body]).cpu()
+  if pitch0 is None:
+    pitch0 = pp.clone()
+  rest = (ep >= rel + int((STOP - 2.0) / dt)).cpu() & alive
+  rest_p += pp * rest
+  rest_dq += (robot.data.joint_pos - q0).cpu() * rest[:, None]
+  rest_n += rest.float()
   q = robot.data.root_link_quat_w
   yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
   hf = torch.stack([torch.cos(yaw), torch.sin(yaw)], 1)
@@ -221,3 +243,11 @@ print(f"  arret: glissement pieds charges med {float(slip[ok].median()) * 100:.1
       f" | immobile apres med {float(last_move[ok].median()):.1f} p90 {float(last_move[ok].quantile(0.9)):.1f} s"
       f" | decalage pieds fin med {float(stagger[ok].median()):.1f} p90 {float(stagger[ok].quantile(0.9)):.1f} cm"
       f" | roulis max med {float(stop_roll[ok].median()):.1f} deg")
+rk = [e for e in ok if rest_n[e] > 0]
+if rk:
+  rp = (rest_p[rk] / rest_n[rk]).mean()
+  dq = torch.rad2deg(rest_dq[rk] / rest_n[rk][:, None]).mean(0)
+  g = {k: float(dq[[jn.index(f"{s}_{k}") for s in ("L", "R")]].mean()) for k in ("CROTCH_P", "KNEE_P", "ANKLE_P")}
+  print(f"  repos: tangage bassin {float(rp):+.1f} deg (q0 {float(pitch0[rk].mean()):+.1f}, ecart {float(rp - pitch0[rk].mean()):+.1f})"
+        f" | jambes q - q0 hanche P {g['CROTCH_P']:+.1f} genou {g['KNEE_P']:+.1f} cheville P {g['ANKLE_P']:+.1f} deg"
+        f" | max |q - q0| jambes {float(dq[i_leg].abs().max()):.1f} deg")
