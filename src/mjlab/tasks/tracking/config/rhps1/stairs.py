@@ -168,6 +168,8 @@ OSEQ_YAW_SS = _env("OSEQ_YAW_SS", "0") == "1"  # yaw tracked/ratcheted only whil
 OSEQ_STALL = float(_env("OSEQ_STALL", "0"))  # >0: stall cost on sequence envs below this speed ratio
 OSEQ_FWD_STEPS = int(_env("OSEQ_FWD_STEPS", "0"))  # command curriculum (tardis, Leo 2026-11-26): before this many
 # env steps (common_step_counter, 24 per iteration), every moving sequence segment is forward; then all axes
+OSEQ_FWD_RAMP = int(_env("OSEQ_FWD_RAMP", "0"))  # >0: after OSEQ_FWD_STEPS, the share of segments drawn on every axis
+# rises linearly over this many env steps (the rest stay forward); 0: all axes at once (gcur froze at the switch)
 OSEQ_WIN = float(_env("OSEQ_WIN", "0"))  # s, >0: tracked velocity = net pelvis displacement (xy, yaw) over this window
 # instead of the OSEQ_TAU EMA (tardis: the stride sway cancels exactly, without the EMA's ~1 s lag)
 OSEQ_STANCE_TOL = float(_env("OSEQ_STANCE_TOL", "0"))  # m, >0: stance free band while a vy command is on (tardis:
@@ -458,8 +460,12 @@ class _State:
     cmd = torch.where((r < OSEQ_COMBO)[..., None], combo, single)
     cmd = cmd * (torch.rand(k, m, device=dev) >= OSEQ_ZERO)[..., None]
     cmd = cmd * (torch.arange(m, device=dev)[None] < nseg[:, None])[..., None]
-    if env.common_step_counter < OSEQ_FWD_STEPS:
-      cmd = torch.nn.functional.pad((cmd.abs().sum(-1, keepdim=True) > 0).float(), (0, 2))
+    p_all = 1.0 if env.common_step_counter >= OSEQ_FWD_STEPS else 0.0
+    if OSEQ_FWD_RAMP > 0:
+      p_all = min(1.0, max(0.0, (env.common_step_counter - OSEQ_FWD_STEPS) / OSEQ_FWD_RAMP))
+    if p_all < 1.0:
+      fwd = torch.nn.functional.pad((cmd.abs().sum(-1, keepdim=True) > 0).float(), (0, 2))
+      cmd = torch.where((torch.rand(k, m, device=dev) < p_all)[..., None], cmd, fwd)
     dur = ((OSEQ_T[0] + torch.rand(k, m, device=dev) * (OSEQ_T[1] - OSEQ_T[0])) / env.step_dt).long()
     end = dur.cumsum(1)
     last = end.gather(1, (nseg - 1)[:, None])
@@ -1352,6 +1358,7 @@ BWC_SWING_ROLL = math.radians(5.5 + 4.0)
 BWC_COP_X = (-0.009 - 0.02, 0.065 + 0.02)  # m, loaded foot's CoP in the ankle frame (BWC LIPM ZMP); slot 18 itself
 BWC_COP_Y = 0.048 + 0.015  # reaches the sole edges at heel strike / toe-off, so this one does not discriminate
 BWC_RAMP = float(_env("BWC_RAMP", "24000"))
+BWC_RAMP_OFF = float(_env("BWC_RAMP_OFF", "0"))  # env steps of the BWC ramp already done (resume)
 
 
 def _bwc_ramp(env, key: str) -> float:
@@ -1359,7 +1366,7 @@ def _bwc_ramp(env, key: str) -> float:
   if c0 is None:
     c0 = env.common_step_counter
     setattr(env, key, c0)
-  return min(1.0, (env.common_step_counter - c0) / BWC_RAMP) if BWC_RAMP > 0 else 1.0
+  return min(1.0, (env.common_step_counter - c0 + BWC_RAMP_OFF) / BWC_RAMP) if BWC_RAMP > 0 else 1.0
 
 
 def _leg_ids(env, groups):
