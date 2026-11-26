@@ -171,6 +171,8 @@ OSEQ_FWD_STEPS = int(_env("OSEQ_FWD_STEPS", "0"))  # command curriculum (tardis,
 # env steps (common_step_counter, 24 per iteration), every moving sequence segment is forward; then all axes
 OSEQ_FWD_RAMP = int(_env("OSEQ_FWD_RAMP", "0"))  # >0: after OSEQ_FWD_STEPS, the share of segments drawn on every axis
 # rises linearly over this many env steps (the rest stay forward); 0: all axes at once (gcur froze at the switch)
+OSEQ_FWD_P = float(_env("OSEQ_FWD_P", "0"))  # constant share of moving segments forced forward, from the start
+# (tardis option c: every axis present from iteration 0, no switch that turns unseen commands into a "stop" cue)
 OSEQ_WIN = float(_env("OSEQ_WIN", "0"))  # s, >0: tracked velocity = net pelvis displacement (xy, yaw) over this window
 # instead of the OSEQ_TAU EMA (tardis: the stride sway cancels exactly, without the EMA's ~1 s lag)
 OSEQ_STANCE_TOL = float(_env("OSEQ_STANCE_TOL", "0"))  # m, >0: stance free band while a vy command is on (tardis:
@@ -464,6 +466,7 @@ class _State:
     p_all = 1.0 if env.common_step_counter >= OSEQ_FWD_STEPS else 0.0
     if OSEQ_FWD_RAMP > 0:
       p_all = min(1.0, max(0.0, (env.common_step_counter - OSEQ_FWD_STEPS) / OSEQ_FWD_RAMP))
+    p_all = min(p_all, 1.0 - OSEQ_FWD_P)
     if p_all < 1.0:
       fwd = torch.nn.functional.pad((cmd.abs().sum(-1, keepdim=True) > 0).float(), (0, 2))
       cmd = torch.where((torch.rand(k, m, device=dev) < p_all)[..., None], cmd, fwd)
