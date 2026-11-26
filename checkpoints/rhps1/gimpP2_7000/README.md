@@ -1,0 +1,1 @@
+gimpP2 7000 (run 2026-11-26_19-26-15): gimp 6250 + W_PDRIFT -2 on the legs, FREE 0.02 rad, STD 0.05; lr fixed 3e-4, recipe gimpP2.env. Sim gate: rest pelvis -2.4 vs q0 +0.1, legs max |q-q0| 1.5 deg; 31/32 stop, 0/64 falls; Fz p90 817 N, vz 0.14; back stride 8.7 cm.
