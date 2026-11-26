@@ -6,6 +6,7 @@ id mod 8): fwd, back, left, right, yaw+, yaw-, fwd+yaw+, fwd+left. Per pattern, 
   leak: mean |speed| on the uncommanded axes (m/s, rad/s for yaw), roll p95 (deg), min lateral ankle width (cm), falls
   hip roll: |CROTCH_R torque| / effort limit (100 N.m) p99 left/right while moving and share >= 0.98
   (tardis: saturation on side steps?)
+  stride: same-foot touchdown-to-touchdown distance while moving, median (cm; tardis: back steps <= slot 24)
   stop: loaded-sole slip after the release (cm), landings after the release
   BENCH_N=64 MOVE_S=6 STOP_S=4 python oseq_eval.py <run> <ckpt> [label]
 """
@@ -74,6 +75,9 @@ wmin = torch.full((N,), 9.0)
 HR_LIM = 100.0  # RHPS1_ACTUATOR_CROTCH_R effort_limit
 hr_ids = [list(robot.joint_names).index(n) for n in ("L_CROTCH_R", "R_CROTCH_R")]
 hr = [[] for _ in range(N)]
+stride = [[] for _ in range(N)]
+last_td = torch.zeros(N, 2, 2)
+has_td = torch.zeros(N, 2, dtype=torch.bool)
 prev_f = None
 prev_lo = torch.zeros(N, 2, dtype=torch.bool)
 anchor = torch.zeros(N, 2, 2)
@@ -103,6 +107,13 @@ for _ in range(int((MOVE + STOP + 1.5) / dt)):
   dd = fpos[:, 0] - fpos[:, 1]
   wl = (-dd[:, 0] * hf[:, 1] + dd[:, 1] * hf[:, 0]).abs().cpu()
   wmin = torch.where(mv, torch.minimum(wmin, wl), wmin)
+  ld = st.land.cpu() & mv[:, None]
+  fcur = fpos.cpu()
+  for e, j in ld.nonzero().tolist():
+    if has_td[e, j]:
+      stride[e].append(float((fcur[e, j] - last_td[e, j]).norm()))
+    last_td[e, j] = fcur[e, j]
+    has_td[e, j] = True
   stopped = (t >= MOVE) & alive
   # net travel of each loaded sole per stance after the release (a path length summed the 50 Hz jitter)
   lo = (st.load > 0.25 * BW).cpu() & stopped[:, None]
@@ -130,9 +141,12 @@ for i, (name, c) in enumerate(PAT):
     rp = float(np.percentile(np.concatenate([np.array(rolls[e]) for e in ok if rolls[e]] or [np.zeros(1)]), 95))
     hs = torch.cat([torch.stack(hr[e]) for e in ok if hr[e]] or [torch.zeros(1, 2)])
     hrp = torch.quantile(hs, 0.99, dim=0).tolist() + (100 * (hs >= 0.98).float().mean(0)).tolist()
+    sl = [x for e in ok for x in stride[e]]
+    sm, ns = (float(np.median(sl)) if sl else 0.0), len(sl)
     print(f"  {name:13s} chute {int(fell[ids].sum())}/{len(ids)} | ratio " + " ".join(f"{x:.2f}" for x in ratio)
           + " | fuite " + " ".join(f"{x:.3f}" for x in leak) + f" | roulis p95 {rp:.1f} | largeur min {float(wmin[ok].min()) * 100:.0f} cm"
           + f" | arret glisse med {float(slip[ok].median()) * 100:.1f} cm poses {float(lands[ok].median()):.0f}"
-          + f" | hanche roulis p99 G/D {hrp[0]:.2f}/{hrp[1]:.2f}, >= 0.98 {hrp[2]:.0f}/{hrp[3]:.0f} %")
+          + f" | hanche roulis p99 G/D {hrp[0]:.2f}/{hrp[1]:.2f}, >= 0.98 {hrp[2]:.0f}/{hrp[3]:.0f} %"
+          + f" | foulee med {sm * 100:.1f} cm ({ns} pas)")
   else:
     print(f"  {name:13s} chute {int(fell[ids].sum())}/{len(ids)}")
