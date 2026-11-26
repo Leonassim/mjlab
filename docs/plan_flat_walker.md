@@ -156,3 +156,7 @@ marcheurs multi-axes viennent de la lignée reprise fw → gh → gi (lr fixe, C
 
 Mode vitesse : apprend vite depuis zéro seulement avec le haut du corps libre ; les bras se corrigent ensuite
 (vcurpA2 3000 : haut du corps à moins de 9° de q0). Même gel des axes que la position.
+
+Mise à jour : **gimpCT 11000** remplace gimpCT 10000 comme candidat robot (10000 en secours). mc_mujoco : recul droit avec CdM
+réel tangage min -1,4° (10000 : -2,6°), Fz p90 arrière 808 N (881), diagonale -3,4/-3,6°, repos CdM +4,8 cm, IMU +2,5° ;
+Fz lacet 922 N reste l axe le plus chargé. gytdC 11500 : diagonale -4,6°, recul -5,0°, pas encore candidat.
