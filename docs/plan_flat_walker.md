@@ -132,3 +132,27 @@ Leçons de la journée :
   genou +10, mais dégrade le lacet ; gcy = gcad 4000 + `OSEQ_YAW_SS` combine les deux (en cours) ;
 - ni la saturation (diagnostic tardis), ni le plafond de vitesse du genou, ni l'enveloppe d'inclinaison de semelle ne
   bloquent le genou (`swing_tilt_probe.py`).
+
+## Mise à jour 2026-11-27 matin : candidat robot gimpCT 10000
+
+`checkpoints/rhps1/gimpCT_10000` (ONNX inclus). Lignée gimp 6250 → gimpP2 → gimpS → gimpC → gimpCT, un seul écart à chaque étape :
+
+| Étape | Écart | Pourquoi |
+|---|---|---|
+| gimpP2 | dérive de posture des jambes vers q0 (`W_PDRIFT -2`, `PDRIFT_FREE 0.02`, `PDRIFT_STD 0.05`) | chutes en arrière sur le robot depuis un repos accroupi, bassin penché en arrière |
+| gimpS | `PDRIFT_REF=stance` : référence = posture debout réelle du contrôleur quand la commande est nulle | le slot 18 ne revient pas à q0 mais à cette posture (genou 29,6 au lieu de 35,6) |
+| gimpC | `STOP_COM_X 0.045` : CdM visé 4,5 cm devant les chevilles à l'arrêt | slot 18 : +4,6 cm ; la pose d'arrêt payait un CdM au-dessus des chevilles, donc le recul |
+| gimpCT | `W_TD -10`, `TD_VMAX 0.13` | gimpC dérivait vers des impacts plus forts après 9000 |
+
+mc_mujoco (tardis) : repos CdM +4,7 cm, IMU +2,4° (slot 18 +4,1°) ; diagonale arrière-gauche tangage min -3,1/-3,0°,
+recul droit avec CdM réel -3,7 cm -2,6° ; Fz p90 avant 779 N, arrière 881 N, lacet 905 N (à surveiller).
+
+Bancs ajoutés : `stop_eval` ligne « repos » (bassin vs q0, jambes vs q0 et vs posture debout réelle, CdM devant les
+chevilles) ; `oseq_eval` couple de roulis de hanche, foulée et Fz/vz de pose par axe.
+
+Problème ouvert : le gel des axes. Toute bascule de commandes (gcur, gcurr, vall) ou mélange depuis zéro (gmix, vomni)
+donne une politique qui ne marche que sur l'avant pur et reste debout sinon (coût d'arrêt < coût de chute). Les seuls
+marcheurs multi-axes viennent de la lignée reprise fw → gh → gi (lr fixe, CRITIC_CMD, OSEQ_YAW_SS).
+
+Mode vitesse : apprend vite depuis zéro seulement avec le haut du corps libre ; les bras se corrigent ensuite
+(vcurpA2 3000 : haut du corps à moins de 9° de q0). Même gel des axes que la position.
