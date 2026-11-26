@@ -158,6 +158,9 @@ OSEQ_V = tuple(float(x) for x in _env("OSEQ_V", "0.12,0.08,0.08,0.3").split(",")
 OSEQ_TAU = float(_env("OSEQ_TAU", "0.4"))  # s, body-velocity smoothing for the tracking reward
 OSEQ_STD = float(_env("OSEQ_STD", "0.7"))
 VRATE_DEAD = float(_env("VRATE_DEAD", "1.2"))  # stairs_vrate free band, slot 18 p95 (tardis 2026-11-25)
+PDRIFT_TAU = float(_env("PDRIFT_TAU", "1.0"))  # s, stairs_posture_drift window
+PDRIFT_FREE = float(_env("PDRIFT_FREE", "0.05"))  # rad, free band on the averaged offset
+PDRIFT_STD = float(_env("PDRIFT_STD", "0.10"))  # rad
 CRITIC_CMD = _env("CRITIC_CMD", "0") == "1"  # critic reads the sequence command, tracked velocity, stall timer
 W_OPROG = float(_env("W_OPROG", "0"))  # per metre: sequence progress ratchet (stairs_oprog)
 OSEQ_R = float(_env("OSEQ_R", "0.27"))  # m per rad of yaw in that ratchet (0.08 m/s side ~ 0.3 rad/s)
@@ -1205,6 +1208,27 @@ def stairs_still_slip(env) -> torch.Tensor:
   return _stairs_only(_still(env) * (v * loaded).sum(-1), env) * _land_ramp(env)
 
 
+def stairs_posture_drift(env) -> torch.Tensor:
+  """Slow drift of the leg joints away from the default pose: their 1 s moving average of (q - q0), beyond a free
+  band PDRIFT_FREE, in units of PDRIFT_STD, squared and summed (W_PDRIFT < 0; tardis 2026-11-26). Velocity actions hold
+  wherever they are, so the posture random-walks into a fall (vcur 500: pitch +11 -> -8 deg, pelvis -7 cm); the gait's
+  own oscillation averages out of the window, only the drift pays."""
+  robot = env.scene["robot"]
+  ids = getattr(env, "_pd_ids", None)
+  if ids is None:
+    ids = env._pd_ids = torch.tensor([i for i, n in enumerate(robot.joint_names)
+                                      if any(k in n for k in ("CROTCH", "KNEE", "ANKLE"))], device=env.device)
+  d = robot.data.joint_pos[:, ids] - robot.data.default_joint_pos[:, ids]
+  ema = getattr(env, "_pd_ema", None)
+  if ema is None:
+    ema = env._pd_ema = d.clone()
+  a = min(1.0, env.step_dt / PDRIFT_TAU)
+  fresh = (env.episode_length_buf <= 1)[:, None]
+  env._pd_ema = torch.where(fresh, d, ema + a * (d - ema))
+  e = torch.relu(env._pd_ema.abs() - PDRIFT_FREE) / PDRIFT_STD
+  return (e**2).sum(-1)
+
+
 def stairs_vrate(env) -> torch.Tensor:
   """Change of the measured joint velocity (mean over the policy step) between two policy steps, per joint in units
   of slot 18's p99 speed, squared and summed (W_VRATE < 0; tardis 2026-11-25). Slot 18 in mc_mujoco: 0.64 per step.
@@ -1939,7 +1963,7 @@ def apply(cfg, play: bool = False) -> None:
                  ("SAMETREAD", stairs_same_tread), ("HEADERR", stairs_heading_err), ("ROLL", stairs_roll),
                  ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike),
                  ("STEP", stairs_step), ("OPROG", stairs_oprog), ("SWINGH", stairs_swing_h),
-                 ("VRATE", stairs_vrate), ("SWINGK", stairs_swing_knee),
+                 ("VRATE", stairs_vrate), ("SWINGK", stairs_swing_knee), ("PDRIFT", stairs_posture_drift),
                  ("SOLEYAW", stairs_sole_yaw), ("HEADHOLD", stairs_headhold)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
