@@ -1359,7 +1359,10 @@ def rhps1_flat_tracking_env_cfg(
     cfg.actions["joint_pos"] = HoldableJointVelocityActionCfg(
       **{f.name: getattr(joint_pos_action, f.name) for f in joint_pos_action.__dataclass_fields__.values()},
       vel_tokens=("CROTCH", "KNEE", "ANKLE") if os.environ.get("RHPS1_VEL_JOINTS", "all") == "legs" else ("",),
-      vel_scale={k: v * _vm for k, v in SLOT18_P99_VEL.items()},
+      # RHPS1_VEL_UPPER_MULT: smaller velocity authority on the upper body, as position mode's 0.0007 upper scale. Its
+      # exploration noise random-walks the arms and head (vcurpa: drift cost 10x the legs' at it 400).
+      vel_scale={k: v * _vm * (1.0 if any(t in k for t in ("CROTCH", "KNEE", "ANKLE")) else float(os.environ.get("RHPS1_VEL_UPPER_MULT", "1.0")))
+                 for k, v in SLOT18_P99_VEL.items()},
       dev_floor=_floor,
       vel_max=float(os.environ.get("RHPS1_VEL_MAX", "3.0")),
       posture_k=float(os.environ.get("RHPS1_POSTURE_K", "1600")),
