@@ -8,6 +8,7 @@ Flat tiles, forward command for WALK_S s, then 0 for STOP_S s (a pause that neve
   BENCH_N=32 WALK_S=8 STOP_S=5 python stop_eval.py <run> <ckpt> [label]
 """
 
+import math
 import os
 import sys
 from dataclasses import asdict
@@ -251,3 +252,9 @@ if rk:
   print(f"  repos: tangage bassin {float(rp):+.1f} deg (q0 {float(pitch0[rk].mean()):+.1f}, ecart {float(rp - pitch0[rk].mean()):+.1f})"
         f" | jambes q - q0 hanche P {g['CROTCH_P']:+.1f} genou {g['KNEE_P']:+.1f} cheville P {g['ANKLE_P']:+.1f} deg"
         f" | max |q - q0| jambes {float(dq[i_leg].abs().max()):.1f} deg")
+  from mjlab.tasks.tracking.config.rhps1.stairs import STANCE_DEG
+
+  st = {k: float(dq[[jn.index(f"{s}_{k}") for s in ("L", "R")]].mean() + math.degrees(q0[0, jn.index(f"L_{k}")]) - STANCE_DEG[k])
+        for k in ("CROTCH_P", "KNEE_P", "ANKLE_P")}
+  print(f"  repos vs posture debout reelle (slot 18 y revient): hanche P {st['CROTCH_P']:+.1f} genou {st['KNEE_P']:+.1f}"
+        f" cheville P {st['ANKLE_P']:+.1f} deg")

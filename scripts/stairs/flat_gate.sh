@@ -13,7 +13,7 @@ for it in $(seq "$FIRST" 500 "${LAST:-99999}"); do
   exec 9>"$OUT/gate.lock"; flock 9
   (cd "$REPO"; source scripts/stairs/common.sh; stairs_env "${GATE_ENV:-}"; export RHPS1_STAIRS_LVL_FILE=
    .venv/bin/python scripts/stairs/oseq_eval.py "$RUN" "model_$it.pt" "${TAG}_$it" 2>&1 | grep -E -A9 "^OSEQ|Error|Traceback" >> "$OUT/oseq.txt"
-   .venv/bin/python scripts/stairs/stop_eval.py "$RUN" "model_$it.pt" "${TAG}_$it" 2>&1 | grep -E -A7 "^STOP|Error|Traceback" >> "$OUT/stop.txt")
+   .venv/bin/python scripts/stairs/stop_eval.py "$RUN" "model_$it.pt" "${TAG}_$it" 2>&1 | grep -E -A8 "^STOP|Error|Traceback" >> "$OUT/stop.txt")
   flock -u 9
   [ "${PRUNE:-1}" = 1 ] && ls "$R"/model_*.pt | grep -vE "model_[0-9]*(000|500)\.pt" | xargs -r rm -f
   df -h / | tail -1

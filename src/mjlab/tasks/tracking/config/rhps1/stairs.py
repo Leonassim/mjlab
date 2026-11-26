@@ -163,6 +163,11 @@ PDRIFT_FREE = float(_env("PDRIFT_FREE", "0.05"))  # rad, free band on the averag
 PDRIFT_STD = float(_env("PDRIFT_STD", "0.10"))  # rad
 PDRIFT_ALL = _env("PDRIFT_ALL", "0") == "1"  # every joint, not only the legs: velocity actions let the arms drift too (vcurp 1000: shoulder yaw +-40 deg, head -29)
 PDRIFT_FREE_UPPER = float(_env("PDRIFT_FREE_UPPER", str(PDRIFT_FREE)))  # rad, free band for the non-leg joints under PDRIFT_ALL (arms may swing for balance: only free-arm velocity runs learned fast)
+PDRIFT_REF = _env("PDRIFT_REF", "q0")  # "stance": legs pulled to the real robot's standing posture, not q0
+# Real RHPS1 standing posture (deg), held by the controller before arming (logs 2026-11-25 / 11-26, 0.2 deg apart;
+# mc_mujoco identical), L/R symmetrised. Slot 18 rests there after walking (BWC's stance); q0 has the knees 6 deg more
+# bent, so a policy resting at q0 sits with the pelvis ~5 deg further back (mc_mujoco IMU -1.8 vs +3.2 to +4.1).
+STANCE_DEG = {"CROTCH_Y": 2.85, "CROTCH_R": 2.33, "CROTCH_P": -14.28, "KNEE_P": 29.59, "ANKLE_R": -2.27, "ANKLE_P": -18.72}
 CRITIC_CMD = _env("CRITIC_CMD", "0") == "1"  # critic reads the sequence command, tracked velocity, stall timer
 W_OPROG = float(_env("W_OPROG", "0"))  # per metre: sequence progress ratchet (stairs_oprog)
 OSEQ_R = float(_env("OSEQ_R", "0.27"))  # m per rad of yaw in that ratchet (0.08 m/s side ~ 0.3 rad/s)
@@ -1220,7 +1225,7 @@ def stairs_still_slip(env) -> torch.Tensor:
 
 
 def stairs_posture_drift(env) -> torch.Tensor:
-  """Slow drift of the leg joints (PDRIFT_ALL: every joint) away from the default pose: their 1 s moving average of (q - q0), beyond a free
+  """Slow drift of the leg joints (PDRIFT_ALL: every joint) away from the default pose (PDRIFT_REF stance: the real standing posture while the command is off): their 1 s moving average of (q - q0), beyond a free
   band PDRIFT_FREE, in units of PDRIFT_STD, squared and summed (W_PDRIFT < 0; tardis 2026-11-26). Velocity actions hold
   wherever they are, so the posture random-walks into a fall (vcur 500: pitch +11 -> -8 deg, pelvis -7 cm); the gait's
   own oscillation averages out of the window, only the drift pays."""
@@ -1230,19 +1235,33 @@ def stairs_posture_drift(env) -> torch.Tensor:
     legs = ("CROTCH", "KNEE", "ANKLE")
     ids = env._pd_ids = torch.tensor([i for i, n in enumerate(robot.joint_names)
                                       if PDRIFT_ALL or any(k in n for k in legs)], device=env.device)
-  d = robot.data.joint_pos[:, ids] - robot.data.default_joint_pos[:, ids]
+  q = robot.data.joint_pos[:, ids]
   ema = getattr(env, "_pd_ema", None)
   if ema is None:
-    ema = env._pd_ema = d.clone()
+    ema = env._pd_ema = q.clone()
   a = min(1.0, env.step_dt / PDRIFT_TAU)
   fresh = (env.episode_length_buf <= 1)[:, None]
-  env._pd_ema = torch.where(fresh, d, ema + a * (d - ema))
+  env._pd_ema = torch.where(fresh, q, ema + a * (q - ema))
+  q0 = robot.data.default_joint_pos[:, ids]
+  if PDRIFT_REF == "stance":
+    # Stance only while the command is off: slot 18 walks between the stance and q0 (knee +3.5, hip +3.2 deg over it).
+    sr = getattr(env, "_pd_stance", None)
+    if sr is None:
+      sr = env._pd_stance = q0[:1].clone()
+      for c, i in enumerate(ids.tolist()):
+        n = robot.joint_names[i]
+        k = n[2:] if n[:2] in ("L_", "R_") else n
+        if k in STANCE_DEG:
+          mirror = -1.0 if n.startswith("R_") and k in ("CROTCH_Y", "CROTCH_R", "ANKLE_R") else 1.0
+          sr[0, c] = math.radians(mirror * STANCE_DEG[k])
+    q0 = torch.where(_still(env)[:, None], sr, q0)
+  d = env._pd_ema - q0
   free = getattr(env, "_pd_free", None)
   if free is None:
     leg = torch.tensor([any(k in robot.joint_names[i] for k in ("CROTCH", "KNEE", "ANKLE")) for i in ids.tolist()],
                        device=env.device)
     free = env._pd_free = torch.where(leg, PDRIFT_FREE, PDRIFT_FREE_UPPER)
-  e = torch.relu(env._pd_ema.abs() - free) / PDRIFT_STD
+  e = torch.relu(d.abs() - free) / PDRIFT_STD
   return (e**2).sum(-1)
 
 
