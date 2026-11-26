@@ -3,7 +3,7 @@
 #   GATE_ENV=scripts/stairs/<recipe>.env: the run's recipe (default s50e.env: wrong for decimation or action-mode changes)
 #   oseq_eval (per axis: speed ratio, leak, roll, min ankle width, stop slip) -> logs/stairs_runs/oseq.txt
 #   stop_eval (roll, hike, swing-knee excursion, foot lift, cadence, slip, stagger) -> logs/stairs_runs/stop.txt
-#   prunes the checkpoints that are not multiples of 500 once gated (PRUNE=0 to keep them)
+#   prunes the checkpoints that are not multiples of 500 once gated, except the newest (PRUNE=0 to keep them)
 set -u
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 TAG=$1; RUN=$2; FIRST=${3:-500}
@@ -15,6 +15,7 @@ for it in $(seq "$FIRST" 500 "${LAST:-99999}"); do
    .venv/bin/python scripts/stairs/oseq_eval.py "$RUN" "model_$it.pt" "${TAG}_$it" 2>&1 | grep -E -A9 "^OSEQ|Error|Traceback" >> "$OUT/oseq.txt"
    .venv/bin/python scripts/stairs/stop_eval.py "$RUN" "model_$it.pt" "${TAG}_$it" 2>&1 | grep -E -A8 "^STOP|Error|Traceback" >> "$OUT/stop.txt")
   flock -u 9
-  [ "${PRUNE:-1}" = 1 ] && ls "$R"/model_*.pt | grep -vE "model_[0-9]*(000|500)\.pt" | xargs -r rm -f
+  # the newest checkpoint is the resume point: never pruned (gytdP2 lost 10250 when it was stopped there)
+  [ "${PRUNE:-1}" = 1 ] && ls -v "$R"/model_*.pt | head -n -1 | grep -vE "model_[0-9]*(000|500)\.pt" | xargs -r rm -f
   df -h / | tail -1
 done
