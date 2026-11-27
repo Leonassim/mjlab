@@ -24,7 +24,7 @@ import sys, numpy as np, mc_log_ui
 l = mc_log_ui.read_log(sys.argv[1])
 keep = ("FloatingBase_position_", "FloatingBase_orientation_", "Observers_Pipeline_MCWaiko_FloatingBase_world_pose_",
         "qIn_", "NewRLQPController_velCmd_", "NewRLQPController_RL_currentAction_", "NewRLQPController_RL_q_",
-        "LeftFootForceSensor_fz", "RightFootForceSensor_fz")
+        "LeftFootForceSensor_", "RightFootForceSensor_")
 np.savez(sys.argv[2], **{k: np.asarray(v, float) for k, v in l.items() if k == "t" or k.startswith(keep)})
 """
 ROBOT = ["L_CROTCH_Y", "L_CROTCH_R", "L_CROTCH_P", "L_KNEE_P", "L_ANKLE_R", "L_ANKLE_P", "CHEST_Y", "CHEST_P",
@@ -56,6 +56,7 @@ qt = np.stack([z[f"NewRLQPController_RL_q_{i}"] for i in range(16)], 1)
 act = np.stack([z[f"NewRLQPController_RL_currentAction_{i}"] for i in range(30)], 1)
 armed = np.abs(act).sum(1) > 0
 F = np.stack([z["LeftFootForceSensor_fz"], z["RightFootForceSensor_fz"]], 1)
+CX = np.stack([z["LeftFootForceSensor_cx"], z["RightFootForceSensor_cx"]], 1)  # moment about the sensor x axis
 vc = np.stack([z[f"NewRLQPController_velCmd_{a}"] for a in "xyz"], 1)
 on = np.where(np.abs(vc).sum(1) > 1e-3)[0]
 if not armed.any() or not len(on):
@@ -165,3 +166,8 @@ if rest.any():
   rl = Fk[rest].mean(0)
   print(f"  rest : sole tilt vs flat L pitch {rt[0, 0]:+.1f} roll {rt[0, 1]:+.1f} | R pitch {rt[1, 0]:+.1f} roll {rt[1, 1]:+.1f} deg"
         f" | load L/R {rl[0]:.0f}/{rl[1]:.0f} N ({100 * rl[0] / max(rl.sum(), 1):.0f} % left)")
+  wid = lambda msk: float(np.mean([abs((fp[i, 0, :2] - fp[i, 1, :2]) @ np.array([-np.sin(pel_yaw[i]), np.cos(pel_yaw[i])])) for i in np.where(msk)[0]]))
+  cxk = CX[idx]
+  cop = lambda msk: 100 * (cxk[msk] / np.maximum(Fk[msk], 1.0)).mean(0)
+  c0, c1 = cop(flat), cop(rest)
+  print(f"       ankle width flat {100 * wid(flat):.1f} cm, rest {100 * wid(rest):.1f} cm | sensor moment/Fz (lateral CoP proxy) flat L {c0[0]:+.1f} R {c0[1]:+.1f}, rest L {c1[0]:+.1f} R {c1[1]:+.1f} cm")

@@ -61,7 +61,7 @@ FOOTHOLD_REL = _env("FOOTHOLD_REL", "0") == "1"  # edge drop threshold = half th
 # descent the foot lands astride the nosing. 2 = unchanged; 1 = cost from one full ray row (3 of 6) at 0.5.
 FOOTHOLD_DESC_FREE = float(_env("FOOTHOLD_DESC_FREE", "2"))
 STATIC_AIR = float(_env("STATIC_AIR", "0"))  # s; >0: static balance paid only during a swing shorter than this
-STANCE_W0 = float(_env("STANCE_W0", "0.20"))  # m, lateral ankle distance of the initial posture
+STANCE_W0 = float(_env("STANCE_W0", "0.20"))  # m, stop-pose ankle width; q0 has 0.20, the real stance 0.216 (mc_mujoco and robot, 2026-11-27)
 STOP_COM_X = float(_env("STOP_COM_X", "0.0"))  # m, stairs_stop_pose CoM target ahead of the ankle midpoint (slot 18 rests at +0.046)
 STANCE_TOL = float(_env("STANCE_TOL", "0.03"))  # m, free band around it
 T_STEP = float(_env("T_STEP", "2.0"))  # s, minimum time between two landings (Leo: ~2 s per step on stairs)
