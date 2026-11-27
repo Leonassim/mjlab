@@ -90,6 +90,11 @@ SWINGH_H = float(_env("SWINGH_H", "0.06"))  # m, stairs_swing_h saturates at thi
 SWINGH_V = float(_env("SWINGH_V", "0.2"))  # m/s, foot speed for full stairs_swing_h pay
 SWINGK_DEG = float(_env("SWINGK_DEG", "20"))  # deg, stairs_swing_knee saturates at this swing-over-stance flexion
 SOLEYAW_RAMP = float(_env("SOLEYAW_RAMP", "12000"))  # env steps, ramp of stairs_sole_yaw (~500 its x 24 steps)
+# Loaded soles flat (tardis 2026-11-27): in mc_mujoco slot 18 lands with 0.3 deg of sole roll and rests flat (0.1);
+# slots 24/25 land at 5.5-6.4 deg, rest at 1.3-3.5 (the robot logs agree: 4.6-5.6 / 2-4), gimpCT 11000 4.1 / 1.3-1.8.
+SOLEFLAT_DEAD_R = math.radians(float(_env("SOLEFLAT_DEAD_R", "0.5")))  # free sole roll, rad
+SOLEFLAT_DEAD_P = math.radians(float(_env("SOLEFLAT_DEAD_P", "2.0")))  # free sole pitch (heel strike, toe-off), rad
+SOLEFLAT_STD = math.radians(float(_env("SOLEFLAT_STD", "2.0")))  # rad
 CLIMB_FRAC = float(_env("CLIMB_FRAC", "0.5"))  # share of stair spawns that climb
 # MODE_FIXED=1: each env keeps its mode, so climbs and descents each get their own curriculum level
 # (shared, rl40 settled at 5 cm where climbs arrived 44% and descents 12%: descents stopped learning).
@@ -1153,6 +1158,16 @@ def stairs_sole_yaw(env) -> torch.Tensor:
   return _stairs_only((w * loaded * on).sum(-1), env) * ramp
 
 
+def stairs_sole_flat(env) -> torch.Tensor:
+  """W_SOLEFLAT (< 0): tilt of each sole carrying > 10 % BW beyond SOLEFLAT_DEAD_R (roll) / _P (pitch), per
+  SOLEFLAT_STD, squared, summed over the feet. Flat ground only (the sole frame is flat on it). The RL walkers land
+  and stand on the sole's edge (Léo 2026-11-27: feet not flat at rest, poor foot placement)."""
+  st = env._stairs
+  pit, rol = _foot_tilt(env)
+  e = (torch.relu(rol.abs() - SOLEFLAT_DEAD_R) / SOLEFLAT_STD) ** 2 + (torch.relu(pit.abs() - SOLEFLAT_DEAD_P) / SOLEFLAT_STD) ** 2
+  return _stairs_only((e * (st.load > 0.1 * BW)).sum(-1), env)
+
+
 def stairs_headhold(env) -> torch.Tensor:
   """W_HEADHOLD (< 0): |heading change since the segment start| (rad, linear) while a translation is commanded with no
   yaw. The robot test of gyaw 4000 / gcy 4500 (2026-11-25) drifted +4-9 deg per 3-6 s on forward; the OTRACK yaw
@@ -2003,7 +2018,7 @@ def apply(cfg, play: bool = False) -> None:
                  ("STOPPOSE", stairs_stop_pose), ("STILLSLIP", stairs_still_slip), ("OTRACK", stairs_otrack), ("HIKE", stairs_hike),
                  ("STEP", stairs_step), ("OPROG", stairs_oprog), ("SWINGH", stairs_swing_h),
                  ("VRATE", stairs_vrate), ("SWINGK", stairs_swing_knee), ("PDRIFT", stairs_posture_drift),
-                 ("SOLEYAW", stairs_sole_yaw), ("HEADHOLD", stairs_headhold)):
+                 ("SOLEYAW", stairs_sole_yaw), ("HEADHOLD", stairs_headhold), ("SOLEFLAT", stairs_sole_flat)):
       if w(k, "0") != 0:
         cfg.rewards["stairs_" + k.lower()] = RewardTermCfg(func=f, weight=w(k, "0"))
     if w("JACC", "0") != 0:
