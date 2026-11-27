@@ -40,7 +40,8 @@ st.seg_cmd[:] = 0.0
 st.seg_cmd[:, 0] = torch.tensor([1.0, 0.0, 0.0])
 st.seg_end[:] = 10**9
 dt = u.step_dt
-ys, rolls, still, qs, widths = [], [], [], [], []
+ys, rolls, still, qs, widths, tps, tfs = [], [], [], [], [], [], []
+am = u.action_manager.get_term(u.action_manager.active_terms[0])
 robot = u.scene["robot"]
 jn = robot.joint_names
 alive = torch.ones(N, dtype=torch.bool)
@@ -65,6 +66,8 @@ for k in range(int((WALK + REST) / dt)):
     rolls.append(torch.rad2deg(ST._foot_tilt(u)[1])[alive].numpy())
     still.append(ST._still(u)[alive].float().mean().item())
     qs.append(robot.data.joint_pos[alive].numpy())
+    tf = robot.data.joint_pos_target.clone(); tfs.append(tf[alive].numpy())
+    tp = tf.clone(); tp[:, am._target_ids] = am._processed_actions; tps.append(tp[alive].numpy())
 y = 100 * np.concatenate(ys)
 r = np.concatenate(rolls)
 print(f"{sys.argv[3] if len(sys.argv) > 3 else sys.argv[2]}: alive {int(alive.sum())}/{N}, still {100 * np.mean(still):.0f} % | rest lateral CoP L {y[:, 0].mean():+.2f} R {y[:, 1].mean():+.2f} cm"
@@ -77,3 +80,6 @@ for n in ("L_CROTCH_R", "R_CROTCH_R", "L_ANKLE_R", "R_ANKLE_R"):
   ref = (-1 if n.startswith("R_") else 1) * ST.STANCE_DEG[k]
   out.append(f"{n} {Q[jn.index(n)] - ref:+.2f}")
 print("  rest q - real stance (deg): " + " ".join(out))
+LEGS = [f"{s}_{j}" for s in "LR" for j in ("CROTCH_Y", "CROTCH_R", "CROTCH_P", "KNEE_P", "ANKLE_R", "ANKLE_P")]
+TP, TF = (np.degrees(np.concatenate(a).mean(0)) for a in (tps, tfs))
+print("  rest deg (policy target / actuator target / measured): " + " | ".join(f"{n} {TP[jn.index(n)]:+.2f}/{TF[jn.index(n)]:+.2f}/{Q[jn.index(n)]:+.2f}" for n in LEGS))
