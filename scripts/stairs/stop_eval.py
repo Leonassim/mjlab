@@ -213,6 +213,7 @@ for _ in range(steps):
 slip += ((prev_f - anchor).norm(dim=-1) * prev_lo).sum(-1)
 d = fpos[:, 0] - fpos[:, 1]
 stagger = (d * hf).sum(-1).abs().cpu() * 100
+width = (-d[:, 0] * hf[:, 1] + d[:, 1] * hf[:, 0]).abs().cpu() * 100  # lateral ankle distance at the end (cm)
 
 ok = (~fell).nonzero().flatten().tolist()
 
@@ -257,6 +258,7 @@ print(f"  arret: glissement pieds charges med {float(slip[ok].median()) * 100:.1
       f" | poses apres arret med {float(lands[ok].median()):.0f}"
       f" | immobile apres med {float(last_move[ok].median()):.1f} p90 {float(last_move[ok].quantile(0.9)):.1f} s"
       f" | decalage pieds fin med {float(stagger[ok].median()):.1f} p90 {float(stagger[ok].quantile(0.9)):.1f} cm"
+      f" | largeur chevilles fin med {float(width[ok].median()):.1f} cm (posture debout 21.6)"
       f" | roulis max med {float(stop_roll[ok].median()):.1f} deg")
 rk = [e for e in ok if rest_n[e] > 0]
 if rk:
