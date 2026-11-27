@@ -10,7 +10,7 @@ id mod 8): fwd, back, left, right, yaw+, yaw-, fwd+yaw+, fwd+left. Per pattern, 
   landings: 60 ms peak sole load p90 (N) and touchdown vz p90 (m/s) while moving, per axis (tardis: yaw Fz)
   pitch: pelvis pitch min and p5 while moving (deg, < 0 = leaning back; tardis: backward lean, robot falls on back+left)
   stop: loaded-sole slip after the release (cm), landings after the release
-  BENCH_N=72 MOVE_S=6 STOP_S=4 python oseq_eval.py <run> <ckpt> [label]
+  BENCH_N=72 MOVE_S=6 STOP_S=4 python oseq_eval.py <run> <ckpt> [label]   (OSEQ_ONLY=a,b keeps only those patterns)
 """
 
 import os
@@ -40,6 +40,9 @@ torch.manual_seed(int(os.environ.get("BENCH_SEED", "0")))
 PAT = (("avant", (1, 0, 0)), ("arriere", (-1, 0, 0)), ("gauche", (0, 1, 0)), ("droite", (0, -1, 0)),
        ("lacet+", (0, 0, 1)), ("lacet-", (0, 0, -1)), ("avant+lacet", (1, 0, 1)), ("avant+gauche", (1, 1, 0)),
        ("arriere+gauche", (-1, 1, 0)))
+_only = [x for x in os.environ.get("OSEQ_ONLY", "").split(",") if x]  # e.g. arriere,arriere+gauche (pitch gate)
+if _only:
+  PAT = tuple(pp for pp in PAT if pp[0] in _only)
 N = int(os.environ.get("BENCH_N", str(8 * len(PAT))))
 
 cfg = load_env_cfg(TASK)
