@@ -18,4 +18,5 @@ EOF
 rm -f $L
 for ki in 0.02 2.0; do L=$(MC_MUJOCO_RHPS1_KI_ANKLE=$ki MC_MUJOCO_RHPS1_CHEST_COM_X=-0.037 RLQP_BENCH_VEL_SEQ="3 0.15 0 0; 4 0 0 0; 3 -0.28 0.15 0; 6 0 0 0" RLQP_BENCH_POLICY_INDEX=$SL RLQP_BENCH_POLICY_PATH=$O bash headless.sh 0 0.15 24 2>/dev/null | tail -1); python3 $P/mcm_fallcheck.py $L "$N back+left KI $ki com" 2>&1 | grep -v PyQt; rm -f $L; done
 LOGS=(); for v in "0.15 0 0" "-0.15 0 0" "0 0.15 0" "0 0 0.3"; do L=$(BENCH_VEL="$v" RLQP_BENCH_POLICY_INDEX=$SL RLQP_BENCH_POLICY_PATH=$O bash headless.sh 0 0.15 20 2>/dev/null | tail -1); LOGS+=($L); done
-cd $REPO && .venv/bin/python scripts/stairs/mcm_metrics.py "${LOGS[@]}" | sed '2s/^/fwd  /;3s/^/back /;4s/^/left /;5s/^/yaw+ /'; rm -f "${LOGS[@]}"
+cd $REPO && .venv/bin/python scripts/stairs/mcm_metrics.py "${LOGS[@]}" | sed '2s/^/fwd  /;3s/^/back /;4s/^/left /;5s/^/yaw+ /'
+Q=(fwd back); for i in 0 1; do .venv/bin/python scripts/stairs/mcm_quality.py ${LOGS[$i]} "$N ${Q[$i]}" | grep -E "land|rest|slip"; done; rm -f "${LOGS[@]}"

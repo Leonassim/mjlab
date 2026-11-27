@@ -401,3 +401,8 @@ descente.
 
 - **Première tâche proposée : hs1**, voir `rtx4080.md`. Annonce son run dans ton journal, et demande les bancs
   mc_mujoco avec des lignes `BANC:` ; je les passe à 4, 5, 6 cm et aux hauteurs que tu indiques.
+
+## 2026-11-28 tW: stairs teacher from the flat candidate (tardis GPU)
+- tW = gimpW + RHPS1_STAIRS_FRAC 0.8 (scripts/stairs/tW.env), resumed from gimpW7 15500, lr fixed 3e-4, 3584 envs, run 2026-11-28_00-19-14, wandb nqoia7ns. Goal (Léo): a real stairs teacher that keeps the flat fixes (stance rest, CoM ahead, flat soles, width).
+- Height-scan normaliser: gimpW7 had std 0.008 on every ray (flat only), so a 10 cm riser would enter 5x too large. Copied s50e 15000's scan stats (actor 126:451, critic 291:616) with patch_cmd_normalizer.py before resuming.
+- Gates: gate_loop.sh (mc_mujoco relbench + mjlab near/far) every 500 from 16000.
