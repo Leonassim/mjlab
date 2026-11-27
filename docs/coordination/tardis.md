@@ -403,6 +403,7 @@ descente.
   mc_mujoco avec des lignes `BANC:` ; je les passe à 4, 5, 6 cm et aux hauteurs que tu indiques.
 
 ## 2026-11-28 tW: stairs teacher from the flat candidate (tardis GPU)
-- tW = gimpW + RHPS1_STAIRS_FRAC 0.8 (scripts/stairs/tW.env), resumed from gimpW7 15500, lr fixed 3e-4, 3584 envs, run 2026-11-28_00-19-14, wandb nqoia7ns. Goal (Léo): a real stairs teacher that keeps the flat fixes (stance rest, CoM ahead, flat soles, width).
+- tW = gimpW + RHPS1_STAIRS_FRAC 0.8 (scripts/stairs/tW.env), resumed from gimpW7 13500 (15500 was weaker backward in mc_mujoco: diagonal -3.4/-4.9 vs -1.7/-1.4), lr fixed 3e-4, 3584 envs, run 2026-11-28_00-23-38, wandb ecafuihe. Goal (Léo): a real stairs teacher that keeps the flat fixes (stance rest, CoM ahead, flat soles, width).
 - Height-scan normaliser: gimpW7 had std 0.008 on every ray (flat only), so a 10 cm riser would enter 5x too large. Copied s50e 15000's scan stats (actor 126:451, critic 291:616) with patch_cmd_normalizer.py before resuming.
-- Gates: gate_loop.sh (mc_mujoco relbench + mjlab near/far) every 500 from 16000.
+- Gates: gate_loop.sh (mc_mujoco relbench + mjlab near/far) every 500 from 14000.
+- mc_mujoco candidates (2026-11-28, mcm_candidate.sh): gimpW7 13500 = new flat robot candidate (back+left -1.7/-1.4, straight back -0.5/-0.9, lift 3.7, fwd 0.126, Fz p90 773-883, landing roll 1.4/2.0); gimpW7 15500 weaker backward (-3.4/-4.9) despite the mjlab gate; gimpW13 13500 -4.6/-4.8 with 12.7 deg standing p2p. All rest on the sole edges (roll +-1.5, width 20.9, CoP proxy +-6-7 cm), as gimpW 12500.
