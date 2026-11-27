@@ -27,6 +27,7 @@ os.environ["RHPS1_STAIRS_YAW_SPAWN"] = "0"
 from mjlab.envs import ManagerBasedRlEnv  # noqa: E402
 from mjlab.rl import RslRlVecEnvWrapper  # noqa: E402
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls  # noqa: E402
+from mjlab.tasks.tracking.config.rhps1.stairs import _foot_tilt  # noqa: E402
 
 TASK = "Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start"
 run, ck = sys.argv[1], sys.argv[2]
@@ -82,6 +83,7 @@ pitch0 = None
 rest_p, rest_n = torch.zeros(N), torch.zeros(N)
 rest_c = torch.zeros(N)  # CoM ahead of the ankle midpoint along the heading, m
 rest_dq = torch.zeros(N, len(jn))
+sole_td, sole_rest, sole_rest_n = [], torch.zeros(N), torch.zeros(N)  # landing-sole |roll| (deg), loaded-sole |roll| at rest
 
 
 alive = torch.ones(N, dtype=torch.bool)
@@ -127,6 +129,12 @@ for _ in range(steps):
   if pitch0 is None:
     pitch0 = pp.clone()
   rest = (ep >= rel + int((STOP - 2.0) / dt)).cpu() & alive
+  _sp, _sr = _foot_tilt(u)
+  sr = torch.rad2deg(_sr.abs()).cpu()
+  sole_td.append(sr[(st.land.cpu() & walking[:, None])])
+  ldd = (st.load > 0.1 * BW).cpu()
+  sole_rest += (sr * ldd).sum(-1) * rest
+  sole_rest_n += ldd.sum(-1).float() * rest
   rest_p += pp * rest
   rest_dq += (robot.data.joint_pos - q0).cpu() * rest[:, None]
   rest_n += rest.float()
@@ -259,9 +267,12 @@ if rk:
         f" | jambes q - q0 hanche P {g['CROTCH_P']:+.1f} genou {g['KNEE_P']:+.1f} cheville P {g['ANKLE_P']:+.1f} deg"
         f" | max |q - q0| jambes {float(dq[i_leg].abs().max()):.1f} deg")
   from mjlab.tasks.tracking.config.rhps1.stairs import STANCE_DEG
+  stc = torch.cat(sole_td) if sole_td else torch.zeros(0)
 
   sv = {k: float(dq[[jn.index(f"{s}_{k}") for s in ("L", "R")]].mean() + math.degrees(q0[0, jn.index(f"L_{k}")]) - STANCE_DEG[k])
         for k in ("CROTCH_P", "KNEE_P", "ANKLE_P")}
   print(f"  repos vs posture debout reelle (slot 18 y revient): hanche P {sv['CROTCH_P']:+.1f} genou {sv['KNEE_P']:+.1f}"
         f" cheville P {sv['ANKLE_P']:+.1f} deg | CdM devant les chevilles {100 * float((rest_c[rk] / rest_n[rk]).mean()):+.1f} cm"
-        f" (slot 18 mc_mujoco +4.6)")
+        f" (slot 18 mc_mujoco +4.6)"
+        f" | semelle |roulis| pose p50/p90 {float(stc.quantile(0.5)) if len(stc) else float('nan'):.1f}/"
+        f"{float(stc.quantile(0.9)) if len(stc) else float('nan'):.1f} deg, repos {float((sole_rest[rk] / sole_rest_n[rk].clamp(min=1)).mean()):.1f}")
