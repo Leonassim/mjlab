@@ -1,0 +1,1 @@
+gimpF 11500 (run 2026-11-27_09-43-45): gimpCT 11000 + W_SOLEFLAT -6; recipe gimpF.env. Diagnostic push (tardis): landing-sole |roll| p50/p90 2.0/2.7 deg (gimpCT 11000 4.0/5.5); pitch gate back+left -3.0 (PASS at threshold).
