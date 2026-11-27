@@ -179,6 +179,7 @@ W_OPROG = float(_env("W_OPROG", "0"))  # per metre: sequence progress ratchet (s
 OSEQ_R = float(_env("OSEQ_R", "0.27"))  # m per rad of yaw in that ratchet (0.08 m/s side ~ 0.3 rad/s)
 OSEQ_YAW_SS = _env("OSEQ_YAW_SS", "0") == "1"  # yaw tracked/ratcheted only while in single support (tardis)
 OSEQ_STALL = float(_env("OSEQ_STALL", "0"))  # >0: stall cost on sequence envs below this speed ratio
+OSEQ_X_NEG_P = float(_env("OSEQ_X_NEG_P", "0.5"))  # share of vx segments drawn backward (vallB: the forward-only base never stepped back)
 OSEQ_FWD_STEPS = int(_env("OSEQ_FWD_STEPS", "0"))  # command curriculum (tardis, Leo 2026-11-26): before this many
 # env steps (common_step_counter, 24 per iteration), every moving sequence segment is forward; then all axes
 OSEQ_FWD_RAMP = int(_env("OSEQ_FWD_RAMP", "0"))  # >0: after OSEQ_FWD_STEPS, the share of segments drawn on every axis
@@ -464,9 +465,11 @@ class _State:
     nseg = torch.randint(OSEQ_N[0], m + 1, (k,), device=dev)
     single = torch.zeros(k, m, 3, device=dev)
     ax = torch.randint(0, 3, (k, m), device=dev)
-    sgn = torch.where(torch.rand(k, m, device=dev) < 0.5, -1.0, 1.0)
+    neg = torch.where(ax == 0, OSEQ_X_NEG_P, 0.5)
+    sgn = torch.where(torch.rand(k, m, device=dev) < neg, -1.0, 1.0)
     single.scatter_(2, ax[..., None], sgn[..., None])
-    combo = torch.where(torch.rand(k, m, 3, device=dev) < 0.5, -1.0, 1.0)
+    pneg = torch.tensor([OSEQ_X_NEG_P, 0.5, 0.5], device=dev)
+    combo = torch.where(torch.rand(k, m, 3, device=dev) < pneg, -1.0, 1.0)
     drop = torch.randint(0, 3, (k, m), device=dev)
     keep3 = torch.rand(k, m, device=dev) < 0.5
     combo = combo * torch.where(keep3[..., None], torch.ones_like(combo),
