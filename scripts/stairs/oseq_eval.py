@@ -8,8 +8,9 @@ id mod 8): fwd, back, left, right, yaw+, yaw-, fwd+yaw+, fwd+left. Per pattern, 
   (tardis: saturation on side steps?)
   stride: same-foot touchdown-to-touchdown distance while moving, median (cm; tardis: back steps <= slot 24)
   landings: 60 ms peak sole load p90 (N) and touchdown vz p90 (m/s) while moving, per axis (tardis: yaw Fz)
+  pitch: pelvis pitch min and p5 while moving (deg, < 0 = leaning back; tardis: backward lean, robot falls on back+left)
   stop: loaded-sole slip after the release (cm), landings after the release
-  BENCH_N=64 MOVE_S=6 STOP_S=4 python oseq_eval.py <run> <ckpt> [label]
+  BENCH_N=72 MOVE_S=6 STOP_S=4 python oseq_eval.py <run> <ckpt> [label]
 """
 
 import os
@@ -33,12 +34,13 @@ from mjlab.tasks.tracking.config.rhps1.stairs import OSEQ_V  # noqa: E402
 TASK = "Mjlab-Tracking-Flat-RHPS1-Copy-V3-Start"
 run, ck = sys.argv[1], sys.argv[2]
 label = sys.argv[3] if len(sys.argv) > 3 else ck
-N = int(os.environ.get("BENCH_N", "64"))
 MOVE, STOP = float(os.environ.get("MOVE_S", "6")), float(os.environ.get("STOP_S", "4"))
 dev = os.environ.get("BENCH_DEV", "cuda:0")
 torch.manual_seed(int(os.environ.get("BENCH_SEED", "0")))
 PAT = (("avant", (1, 0, 0)), ("arriere", (-1, 0, 0)), ("gauche", (0, 1, 0)), ("droite", (0, -1, 0)),
-       ("lacet+", (0, 0, 1)), ("lacet-", (0, 0, -1)), ("avant+lacet", (1, 0, 1)), ("avant+gauche", (1, 1, 0)))
+       ("lacet+", (0, 0, 1)), ("lacet-", (0, 0, -1)), ("avant+lacet", (1, 0, 1)), ("avant+gauche", (1, 1, 0)),
+       ("arriere+gauche", (-1, 1, 0)))
+N = int(os.environ.get("BENCH_N", str(8 * len(PAT))))
 
 cfg = load_env_cfg(TASK)
 cfg.commands["motion"].motion_file = os.environ.get("MJLAB_MOTION_FILE", "docs/bwc_motion_v3.npz")
@@ -71,6 +73,7 @@ alive = torch.ones(N, dtype=torch.bool)
 fell = torch.zeros(N, dtype=torch.bool)
 vsum, vcnt = torch.zeros(N, 3), torch.zeros(N)
 rolls = [[] for _ in range(N)]
+pitches = [[] for _ in range(N)]
 slip, lands = torch.zeros(N), torch.zeros(N)
 wmin = torch.full((N,), 9.0)
 HR_LIM = 100.0  # RHPS1_ACTUATOR_CROTCH_R effort_limit
@@ -102,9 +105,11 @@ for _ in range(int((MOVE + STOP + 1.5) / dt)):
   vcnt += mv.float()
   w, x, y, z = q.unbind(-1)
   r = torch.rad2deg(torch.asin((2 * (y * z + w * x)).clamp(-1, 1))).cpu()
+  pt = torch.rad2deg(torch.asin((2 * (w * y - z * x)).clamp(-1, 1))).cpu()
   hq = (robot.data.qfrc_actuator[:, hr_ids].abs() / HR_LIM).cpu()
   for e in mv.nonzero().flatten().tolist():
     rolls[e].append(abs(float(r[e])))
+    pitches[e].append(float(pt[e]))
     hr[e].append(hq[e])
   fpos = robot.data.body_link_pos_w[:, st.foot_ids, :2]
   dd = fpos[:, 0] - fpos[:, 1]
@@ -155,12 +160,15 @@ for i, (name, c) in enumerate(PAT):
     fz = [x for e in ok for x in fz_pk[e]]
     vz = [x for e in ok for x in vz_td[e]]
     fzp = float(np.percentile(fz, 90)) if fz else float("nan")
+    pa = np.concatenate([np.array(pitches[e]) for e in ok if pitches[e]] or [np.full(1, np.nan)])
+    ptmin, ptp5 = float(np.nanmin(pa)), float(np.nanpercentile(pa, 5))
     vzp = float(np.percentile(vz, 90)) if vz else float("nan")
     print(f"  {name:13s} chute {int(fell[ids].sum())}/{len(ids)} | ratio " + " ".join(f"{x:.2f}" for x in ratio)
           + " | fuite " + " ".join(f"{x:.3f}" for x in leak) + f" | roulis p95 {rp:.1f} | largeur min {float(wmin[ok].min()) * 100:.0f} cm"
           + f" | arret glisse med {float(slip[ok].median()) * 100:.1f} cm poses {float(lands[ok].median()):.0f}"
           + f" | hanche roulis p99 G/D {hrp[0]:.2f}/{hrp[1]:.2f}, >= 0.98 {hrp[2]:.0f}/{hrp[3]:.0f} %"
           + f" | foulee med {sm * 100:.1f} cm ({ns} pas)"
-          + f" | Fz p90 {fzp:.0f} N vz p90 {vzp:.2f}")
+          + f" | Fz p90 {fzp:.0f} N vz p90 {vzp:.2f}"
+          + f" | tangage min/p5 {ptmin:+.1f}/{ptp5:+.1f} deg")
   else:
     print(f"  {name:13s} chute {int(fell[ids].sum())}/{len(ids)}")
