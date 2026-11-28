@@ -45,6 +45,8 @@ x0 = robot.data.root_link_pos_w[:, :2].cpu().clone()
 dmax = torch.zeros(N)
 fid = u._stairs.foot_ids
 zmax = torch.zeros(N)
+qdm = torch.zeros(N, len(robot.joint_names))
+qd4 = torch.zeros(N, len(robot.joint_names))
 alive = torch.ones(N, dtype=torch.bool)
 n = 0
 for k in range(int(T / dt)):
@@ -57,6 +59,9 @@ for k in range(int(T / dt)):
     dmax = torch.maximum(dmax, (robot.data.root_link_pos_w[:, :2].cpu() - x0).norm(dim=-1))
     fz = robot.data.body_link_pos_w[:, fid, 2].cpu()
     zmax = torch.maximum(zmax, (fz.max(1).values - fz.min(1).values))
+    qd = robot.data.joint_vel.cpu().abs()
+    qdm = torch.maximum(qdm, qd)
+    qd4 += (qd > 4.0).float()
     n += 1
 acc, vx = acc / n, vx / n
 pyr = u._stairs.pyr.cpu().bool()
@@ -71,3 +76,7 @@ for i in order[:18]:
   print(f"  {names[i]:28s} " + " ".join(f"{M[g][i]:+13.2f}" for g in groups) + f"   {M['stairs climb'][i] - M['stairs stall'][i]:+9.2f}")
 print("  " + " | ".join(f"{g}: travel {100 * dmax[m].mean():.0f} cm, max foot-to-foot height {100 * zmax[m].mean():.1f} cm" for g, m in groups.items() if m.any()))
 print("  total".ljust(31) + " ".join(f"{M[g].sum():+13.2f}" for g in groups))
+sm = pyr & alive
+if sm.any():
+  top = qdm[sm].max(0).values.argsort(descending=True)[:5]
+  print("  stairs joint speed: " + ", ".join(f"{robot.joint_names[j]} max {qdm[sm][:, j].max():.1f} p90 {qdm[sm][:, j].quantile(0.9):.1f} >4 {100 * qd4[sm][:, j].mean() / n:.2f}%" for j in top))
