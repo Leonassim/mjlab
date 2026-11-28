@@ -198,7 +198,8 @@ VMAX = float(_env("VMAX", "0.25"))  # m/s, smoothed; faster costs
 VCAP = float(_env("VCAP", "0"))  # m/s, 0 = off
 BUCKET = float(_env("BUCKET", "0.1"))  # m of credit, so in-step pelvis surges are still paid
 # Copy terms kept in RL mode: the robot's own regularizers, none reads the reference.
-_RL_KEEP = ("action_rate_l2", "joint_limit", "self_collisions", "slip_speed", "ankle_vibration", "roll_rate")
+_RL_KEEP = ("action_rate_l2", "joint_limit", "self_collisions", "slip_speed", "ankle_vibration", "roll_rate",
+            "joint_speed_cap")  # joint_speed_cap: only built with RHPS1_JOINT_VMAX (tSeK)
 # BWC landing limits (rl3 landed 3x harder than slot 20). A landing needs LAND_AIR s airborne first:
 # under exploration noise the copy's caps counted every contact chatter and rl4 fell on purpose.
 TD_VMAX = float(_env("TD_VMAX", "0.21"))  # m/s, the BWC's fastest landing
