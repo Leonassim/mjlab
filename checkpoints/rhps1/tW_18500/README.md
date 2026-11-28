@@ -1,0 +1,1 @@
+tW 18500 (run 2026-11-28_00-23-38, tardis), recipe tW.env (gimpW + FRAC 0.8) from gimpW7 13500 with s50e scan normaliser stats; lr fixed 3e-4. tW_lvl.pt = stairs curriculum levels (RHPS1_STAIRS_LVL_FILE). mjlab detcheck 18500 near 26/32 arrivals 0 falls.
