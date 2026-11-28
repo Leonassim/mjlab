@@ -3,6 +3,7 @@
 # the mc_rtc logs are deleted afterwards unless KEEP_LOGS=1.
 # 50 Hz policies need RLQP_BENCH_POLICY_STEP=0.02 (default here); 200 Hz ones RLQP_BENCH_POLICY_STEP=0.005.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+[ -s "$1" ] || { echo "RELBENCH $2: no ONNX at $1"; exit 1; }
 export RLQP_BENCH_POLICY_PATH=$1 RLQP_BENCH_POLICY_STEP=${RLQP_BENCH_POLICY_STEP:-0.02}; LOGS=()
 for H in ${HS:-0.04 0.05 0.06}; do for V in ${VSTS:-2.0 3.0 4.0 5.0}; do
   L=$(VST=$V bash "$S/headless.sh" $H 0.15 25 2>/dev/null | tail -1); LOGS+=("$L")

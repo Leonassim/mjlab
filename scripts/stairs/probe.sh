@@ -8,6 +8,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 P=$1; shift; ARGS=()
 while [ $# -gt 0 ] && [ "$1" != "--" ]; do ARGS+=("$1"); shift; done
 [ "${1:-}" = "--" ] && shift
-cd "$REPO"; stairs_env
+cd "$REPO"; stairs_env "${GATE_ENV:-}"
 export RHPS1_STAIRS_LVL_FILE= CLIP_ACTIONS=12 BENCH_NO_OVERRIDE=1 CUDA_VISIBLE_DEVICES= "$@"  # CPU: the GPU stays with training
 nice -n 5 .venv/bin/python "$S/$P" "${ARGS[@]}" 2>&1 | grep -v "^Module\|Warn"
